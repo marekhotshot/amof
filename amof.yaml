@@ -1,0 +1,49 @@
+version: 1
+
+repos:
+  - name: infra
+    url: "git@github.com:yourorg/infra.git"
+    branch: main
+    path: "repos/infra"
+    include:
+      - "src/"
+      - "scripts/"
+      - "terraform/"
+    exclude:
+      - "**/node_modules"
+      - "**/build"
+      - "**/.terraform"
+
+  - name: service-a
+    url: "git@github.com:yourorg/service-a.git"
+    branch: develop
+    path: "repos/service-a"
+    include:
+      - "src/"
+      - "config/"
+      - "Dockerfile"
+      - "README.md"
+    exclude:
+      - "**/dist"
+      - "**/.local"
+
+  - name: service-b
+    url: "git@github.com:yourorg/service-b.git"
+    branch: develop
+    path: "repos/service-b"
+    include:
+      - "src/"
+      - "config/"
+      - "README.md"
+    exclude:
+      - "**/dist"
+
+guardrails:
+  no_touch_paths:
+    - "/repos/**/.github"
+    - "/repos/**/deploy"
+    - "/repos/**/k8s/prod"
+
+context:
+  summary_tokens: 8000
+  max_files: 200
