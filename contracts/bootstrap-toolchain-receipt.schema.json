@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/bootstrap-toolchain-receipt.schema.json",
+  "title": "Bootstrap Toolchain Receipt",
+  "description": "Receipt describing required and optional local bootstrap toolchain probes for a governed workstation bootstrap evaluation.",
+  "type": "object",
+  "required": [
+    "result_kind",
+    "contract_version",
+    "checked_at",
+    "status",
+    "required_tools",
+    "optional_tools"
+  ],
+  "properties": {
+    "result_kind": {
+      "type": "string",
+      "const": "amof_bootstrap_toolchain_receipt"
+    },
+    "contract_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checked_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "WARN",
+        "BLOCKED"
+      ]
+    },
+    "required_tools": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/toolProbe"
+      }
+    },
+    "optional_tools": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/toolProbe"
+      }
+    }
+  },
+  "$defs": {
+    "stringOrNull": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "toolProbe": {
+      "type": "object",
+      "required": [
+        "name",
+        "required",
+        "available",
+        "resolved_path",
+        "version",
+        "error",
+        "status"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "resolved_path": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "version": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "error": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "WARN",
+            "BLOCKED"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

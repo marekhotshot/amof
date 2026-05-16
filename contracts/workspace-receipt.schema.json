@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/workspace-receipt.schema.json",
+  "title": "Workspace Receipt",
+  "description": "Execution-plane receipt for one isolated per-run workspace materialization. Emitted as workspace-receipt.json after the workspace is created and exact-SHA verification completes.",
+  "type": "object",
+  "required": [
+    "run_id",
+    "repo_name",
+    "repo_url",
+    "expected_sha",
+    "actual_sha",
+    "branch_or_ref",
+    "dirty",
+    "workspace_path",
+    "receipt_path",
+    "timestamp"
+  ],
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "description": "Optional schema version label for emitters."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repo_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repo_url": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expected_sha": {
+      "$ref": "#/$defs/gitSha"
+    },
+    "actual_sha": {
+      "$ref": "#/$defs/gitSha"
+    },
+    "branch_or_ref": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Resolved branch name or fallback ref label for the materialized checkout."
+    },
+    "dirty": {
+      "type": "boolean",
+      "description": "Whether the materialized workspace had local modifications immediately after checkout."
+    },
+    "workspace_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "receipt_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "candidate_sha": {
+      "description": "Optional candidate commit associated with the run when materialization is derived from a candidate workspace.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/gitSha"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

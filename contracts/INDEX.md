@@ -1,0 +1,24 @@
+# Contracts Index
+
+Status: canonical
+
+## Canonical
+
+- [README.md](README.md)
+- [director-intake-client-contract.md](director-intake-client-contract.md)
+- [director-intake-execution-contract.schema.json](director-intake-execution-contract.schema.json)
+- [director-plan-result.schema.json](director-plan-result.schema.json)
+- [workspace-receipt.schema.json](workspace-receipt.schema.json)
+- [execution-handoff-result.schema.json](execution-handoff-result.schema.json)
+- [governed-workstation-bootstrap-contract.schema.json](governed-workstation-bootstrap-contract.schema.json)
+- [bootstrap-source-checkout-receipt.schema.json](bootstrap-source-checkout-receipt.schema.json)
+- [bootstrap-toolchain-receipt.schema.json](bootstrap-toolchain-receipt.schema.json)
+- [bootstrap-provider-configuration-receipt.schema.json](bootstrap-provider-configuration-receipt.schema.json)
+- [bootstrap-failure-receipt.schema.json](bootstrap-failure-receipt.schema.json)
+- [up10-bootstrap-summary.schema.json](up10-bootstrap-summary.schema.json)
+- [bootstrap-sha256-manifest.schema.json](bootstrap-sha256-manifest.schema.json)
+- [examples/director-intake-dirty-workspace.example.json](examples/director-intake-dirty-workspace.example.json)
+- [examples/director-intake-source-fix-ticket.example.json](examples/director-intake-source-fix-ticket.example.json)
+- [examples/governed-workstation-bootstrap-pass.example.json](examples/governed-workstation-bootstrap-pass.example.json)
+- [examples/governed-workstation-bootstrap-warn.example.json](examples/governed-workstation-bootstrap-warn.example.json)
+- [examples/governed-workstation-bootstrap-blocked.example.json](examples/governed-workstation-bootstrap-blocked.example.json)

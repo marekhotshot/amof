@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# amof-agent — shortcut for `amof agent` with auto .env loading.
+#
+# Usage:
+#   scripts/amof-agent                 # interactive chat mode
+#   scripts/amof-agent "do something"  # single-shot mode
+#   scripts/amof-agent --plan "big"    # plan-execute mode
+#
+# Config is loaded from .amof/agent.yaml by the Python CLI automatically.
+# No need for -e flag if default_ecosystem is set in agent.yaml.
+
+set -euo pipefail
+
+# Resolve workspace root (parent of scripts/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$WORKSPACE"
+
+# ── Auto-load .env ──────────────────────────────────────────────
+if [[ -f .env ]]; then
+    set -a; source .env; set +a
+fi
+
+# ── Resolve Python ──────────────────────────────────────────────
+if [[ -x .venv/bin/python ]]; then
+    PYTHON=.venv/bin/python
+elif command -v python3 &>/dev/null; then
+    PYTHON=python3
+else
+    echo "Error: No Python found. Run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
+    exit 1
+fi
+
+# ── Build command ───────────────────────────────────────────────
+# All config (ecosystem, model_ladder, verbose, etc.) is loaded
+# by the Python CLI from .amof/agent.yaml automatically.
+CMD=("$PYTHON" scripts/amof.py agent)
+
+# ── Parse shortcuts ─────────────────────────────────────────────
+GOAL=""
+EXTRA_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --plan)
+            EXTRA_ARGS+=(--plan-execute)
+            shift
+            ;;
+        --cost)
+            shift
+            EXTRA_ARGS+=(--max-cost "$1")
+            shift
+            ;;
+        -e)
+            shift
+            CMD=("$PYTHON" scripts/amof.py -e "$1" agent)
+            shift
+            ;;
+        --resume|--plan-file)
+            EXTRA_ARGS+=("$1" "$2")
+            shift 2
+            ;;
+        --*)
+            EXTRA_ARGS+=("$1")
+            shift
+            ;;
+        *)
+            if [[ -z "$GOAL" ]]; then
+                GOAL="$1"
+            else
+                EXTRA_ARGS+=("$1")
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Add extra args and goal
+CMD+=("${EXTRA_ARGS[@]}")
+if [[ -n "$GOAL" ]]; then
+    CMD+=("$GOAL")
+fi
+
+# ── Run ─────────────────────────────────────────────────────────
+exec "${CMD[@]}"

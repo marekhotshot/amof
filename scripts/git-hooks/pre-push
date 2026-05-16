@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -eu
+
+if [ "${AMOF_ALLOW_MAIN_PUSH:-}" = "1" ]; then
+  exit 0
+fi
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [ "${remote_ref}" = "refs/heads/main" ]; then
+    echo "[amof] direct pushes to main are blocked locally." >&2
+    echo "[amof] Use 'amof promote-main --push' for promotion or 'amof promote-main-revert' for revert-only rollback." >&2
+    exit 1
+  fi
+done
+
+exit 0

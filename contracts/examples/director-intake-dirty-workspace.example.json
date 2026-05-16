@@ -1,0 +1,109 @@
+{
+  "result_kind": "director_intake_execution_contract",
+  "contract_version": "1.0.0",
+  "ticket_summary": {
+    "ticket_id": "AMOF-158",
+    "rough_intent": "Figure out whether the current workspace can safely be used for AMOF intake work.",
+    "bounded_goal": "Classify the current dirty workspace, identify which truth domains are trustworthy, and prepare a read-only executor prompt for a bounded follow-up.",
+    "task_kind": "dirty_workspace_intake",
+    "target_environment": "local",
+    "service": "root-wrapper-shell"
+  },
+  "inspection_scope": {
+    "repos": [
+      "root"
+    ],
+    "paths_read": [
+      "docs/operations/root-baseline-and-repo-roles.md",
+      "contracts/director-intake-client-contract.md",
+      "contracts/director-delivery-contract.md",
+      ".gitignore"
+    ],
+    "runtime_sources": [],
+    "notes": "Root workspace is a wrapper/config/audit shell, not canonical implementation truth."
+  },
+  "source_truth": {
+    "status": "confirmed",
+    "summary": "Repo-role guidance exists and says root is not canonical AMOF implementation truth.",
+    "evidence": [
+      {
+        "kind": "file",
+        "path": "docs/operations/root-baseline-and-repo-roles.md",
+        "summary": "Declares root as wrapper_config_audit_shell and points AMOF backend/CLI/runtime truth to repos/amof.",
+        "freshness": "fresh"
+      },
+      {
+        "kind": "contract",
+        "path": "contracts/director-intake-client-contract.md",
+        "summary": "Requires separate source, runtime, and workspace truth before execution.",
+        "freshness": "fresh"
+      }
+    ]
+  },
+  "runtime_truth": {
+    "status": "unknown",
+    "summary": "No fresh runtime evidence was inspected for this workspace-only intake task.",
+    "evidence": []
+  },
+  "workspace_truth": {
+    "status": "confirmed",
+    "summary": "Workspace state is materially dirty and must be treated as an input to planning, not ignored.",
+    "evidence": [
+      {
+        "kind": "workspace",
+        "summary": "Visible modified and untracked files indicate that root workspace state can affect task classification.",
+        "freshness": "fresh"
+      },
+      {
+        "kind": "file",
+        "path": ".gitignore",
+        "summary": "Ignored external repo checkouts mean root dirt cannot be assumed to represent canonical implementation changes.",
+        "freshness": "fresh"
+      }
+    ]
+  },
+  "allowed_mutations": [
+    "read-only inspection",
+    "draft a bounded execution plan",
+    "prepare a follow-up prompt scoped to wrapper/config/audit surfaces only"
+  ],
+  "forbidden_mutations": [
+    "edit files",
+    "clean unrelated workspace dirt",
+    "commit or push",
+    "build or deploy",
+    "mutate production or runtime surfaces"
+  ],
+  "validation_gates": [
+    {
+      "name": "canonical_repo_resolution",
+      "requirement": "Confirm whether the requested follow-up work belongs in root or in repos/amof before any file edits are allowed.",
+      "failure_action": "stop"
+    },
+    {
+      "name": "dirty_state_classification",
+      "requirement": "Identify which dirty files are in-scope versus unrelated before handing work to an executor.",
+      "failure_action": "defer"
+    }
+  ],
+  "ambiguities": [
+    {
+      "question": "Should the follow-up treat current untracked root files as canonical new evidence, archive candidates, or unrelated operator material?",
+      "impact": "Execution scope cannot be bounded safely until the dirty state is classified.",
+      "required_resolver": "operator"
+    }
+  ],
+  "stop_conditions": [
+    "Stop if the requested follow-up requires editing files before canonical repo ownership is established.",
+    "Stop if dirty workspace material cannot be separated into in-scope and unrelated changes."
+  ],
+  "risk_classification": {
+    "level": "medium",
+    "reasons": [
+      "Dirty workspace state can cause the executor to touch unrelated files.",
+      "Root workspace is not canonical implementation truth for AMOF runtime changes."
+    ]
+  },
+  "executor_disposition": "defer",
+  "next_executor_prompt": "Perform a read-only classification of the current workspace dirt. Determine which files belong to root wrapper/config/audit scope versus canonical repos such as repos/amof. Do not edit files, build, deploy, or push. Return a bounded in-scope file set, any ambiguities that require operator resolution, and a recommendation for whether a follow-up task belongs in root or repos/amof."
+}

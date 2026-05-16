@@ -1,0 +1,2 @@
+"""AMOF test suite."""
+

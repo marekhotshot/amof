@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/execution-handoff-result.schema.json",
+  "title": "Execution Handoff Result",
+  "description": "Execution-plane handoff result emitted after a Director intake envelope successfully materializes an isolated per-run workspace. Emitted as execution-handoff-result.json.",
+  "type": "object",
+  "required": [
+    "result_kind",
+    "status",
+    "intake_path",
+    "run_id",
+    "repo_name",
+    "repo_url",
+    "expected_sha",
+    "actual_sha",
+    "dirty",
+    "workspace_path",
+    "receipt_path",
+    "timestamp"
+  ],
+  "properties": {
+    "result_kind": {
+      "type": "string",
+      "const": "workspace_materialization_handoff_result"
+    },
+    "contract_version": {
+      "type": "string",
+      "description": "Optional schema version label for emitters."
+    },
+    "status": {
+      "type": "string",
+      "const": "ready",
+      "description": "Current success-state emitted when the workspace receipt is ready for the next orchestration step."
+    },
+    "intake_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repo_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repo_url": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expected_sha": {
+      "$ref": "#/$defs/gitSha"
+    },
+    "actual_sha": {
+      "$ref": "#/$defs/gitSha"
+    },
+    "dirty": {
+      "type": "boolean"
+    },
+    "workspace_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "receipt_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to the companion workspace-receipt.json artifact."
+    },
+    "candidate_sha": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/gitSha"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "timestamp": {
+      "$ref": "#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/bootstrap-provider-configuration-receipt.schema.json",
+  "title": "Bootstrap Provider Configuration Receipt",
+  "description": "Receipt describing redacted provider-configuration state during a governed workstation bootstrap evaluation.",
+  "type": "object",
+  "required": [
+    "result_kind",
+    "contract_version",
+    "checked_at",
+    "status",
+    "current_context",
+    "controlplane_mode",
+    "execution_backend",
+    "workspace_backend",
+    "evidence_backend",
+    "provider_profile_refs",
+    "provider_profile_ref_count",
+    "provider_health_status",
+    "kubeconfig_ref",
+    "kubeconfig_ref_exists",
+    "redaction_rules"
+  ],
+  "properties": {
+    "result_kind": {
+      "type": "string",
+      "const": "amof_bootstrap_provider_configuration_receipt"
+    },
+    "contract_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checked_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "WARN",
+        "BLOCKED"
+      ]
+    },
+    "current_context": {
+      "type": "string",
+      "minLength": 1
+    },
+    "controlplane_mode": {
+      "$ref": "#/$defs/stringOrNull"
+    },
+    "execution_backend": {
+      "$ref": "#/$defs/stringOrNull"
+    },
+    "workspace_backend": {
+      "$ref": "#/$defs/stringOrNull"
+    },
+    "evidence_backend": {
+      "$ref": "#/$defs/stringOrNull"
+    },
+    "provider_profile_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "provider_profile_ref_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "provider_health_status": {
+      "type": "string",
+      "enum": [
+        "healthy",
+        "unknown",
+        "unconfigured",
+        "unavailable",
+        "stale"
+      ]
+    },
+    "kubeconfig_ref": {
+      "$ref": "#/$defs/stringOrNull"
+    },
+    "kubeconfig_ref_exists": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "redaction_rules": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "stringOrNull": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

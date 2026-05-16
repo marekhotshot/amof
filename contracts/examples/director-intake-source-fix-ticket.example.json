@@ -1,0 +1,95 @@
+{
+  "result_kind": "director_intake_execution_contract",
+  "contract_version": "1.0.0",
+  "ticket_summary": {
+    "ticket_id": "AMOF-160",
+    "rough_intent": "Turn a rough bug report into a bounded source-fix ticket without mixing in runtime repair.",
+    "bounded_goal": "Produce a ticket-ready executor prompt for a small source-only fix with explicit path bounds, validation gates, and stop conditions.",
+    "task_kind": "bounded_source_fix_ticket",
+    "target_environment": "n/a",
+    "service": "director-intake"
+  },
+  "inspection_scope": {
+    "repos": [
+      "root"
+    ],
+    "paths_read": [
+      "contracts/director-intake-client-contract.md",
+      "contracts/director-intake-execution-contract.schema.json",
+      "docs/operations/root-baseline-and-repo-roles.md"
+    ],
+    "runtime_sources": [],
+    "notes": "This example models ticket generation for a source-only change request."
+  },
+  "source_truth": {
+    "status": "confirmed",
+    "summary": "The task is framed as a source-only contract and must stay within declared repo/path bounds.",
+    "evidence": [
+      {
+        "kind": "contract",
+        "path": "contracts/director-intake-client-contract.md",
+        "summary": "Requires explicit mutation policy, validation gates, and stop conditions before executor handoff.",
+        "freshness": "fresh"
+      },
+      {
+        "kind": "file",
+        "path": "docs/operations/root-baseline-and-repo-roles.md",
+        "summary": "Explains that canonical AMOF implementation changes belong in repos/amof, not root wrapper shell.",
+        "freshness": "fresh"
+      }
+    ]
+  },
+  "runtime_truth": {
+    "status": "unknown",
+    "summary": "No runtime evidence is needed for a bounded source-fix ticket unless the ticket explicitly claims a runtime symptom that must be proven.",
+    "evidence": []
+  },
+  "workspace_truth": {
+    "status": "partial",
+    "summary": "Local workspace may contain supporting context, but the ticket should remain valid even if the current workspace is not clean.",
+    "evidence": [
+      {
+        "kind": "workspace",
+        "summary": "Ticket generation uses local workspace context but should not inherit unrelated dirt into the allowed mutation scope.",
+        "freshness": "fresh"
+      }
+    ]
+  },
+  "allowed_mutations": [
+    "edit a named source path under the canonical repo",
+    "add or update a focused test if the change requires it",
+    "run bounded validation commands tied to the changed path"
+  ],
+  "forbidden_mutations": [
+    "broad refactors outside the named path bounds",
+    "runtime or deployment changes",
+    "secret rotation",
+    "release or promotion actions"
+  ],
+  "validation_gates": [
+    {
+      "name": "canonical_repo_and_path_scope",
+      "requirement": "Name the canonical repo and allowed path set before starting source edits.",
+      "failure_action": "stop"
+    },
+    {
+      "name": "acceptance_check_definition",
+      "requirement": "Define the specific test, lint, or readback checks that prove the source fix is complete.",
+      "failure_action": "defer"
+    }
+  ],
+  "ambiguities": [],
+  "stop_conditions": [
+    "Stop if the requested change expands beyond the named repo or allowed paths.",
+    "Stop if runtime or deploy actions become necessary to satisfy the request.",
+    "Stop if acceptance checks cannot be named concretely."
+  ],
+  "risk_classification": {
+    "level": "low",
+    "reasons": [
+      "This is bounded source-only ticket generation with explicit path and validation requirements."
+    ]
+  },
+  "executor_disposition": "replay_now",
+  "next_executor_prompt": "Implement a small source-only fix in the canonical repo and only within the explicitly named allowed paths. Do not touch runtime, deployment, release, or unrelated files. Before editing, restate the bounded goal, allowed paths, forbidden mutations, and acceptance checks. If the task expands beyond those limits or requires runtime intervention, stop and report the new ambiguity instead of proceeding."
+}

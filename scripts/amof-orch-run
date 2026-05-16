@@ -1,0 +1,371 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOG="${AMOF_ORCH_RUN_LOG:-/tmp/amof-orch-run-$(date +%Y%m%d-%H%M%S).log}"
+API="${AMOF_ORCH_RUN_API:-http://amof-controlplane:8000}"
+KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
+MAX_POLLS="${AMOF_ORCH_MAX_POLLS:-60}"
+POLL_INTERVAL_SEC="${AMOF_ORCH_POLL_INTERVAL_SEC:-2}"
+ECOSYSTEM="${AMOF_ORCH_RUN_ECOSYSTEM:-amof-platform}"
+PROMPT="${AMOF_ORCH_RUN_PROMPT:-Write a 2-step hardening plan only. Step 1: inspect one runtime subsystem and identify one bounded safe improvement. Step 2: apply one minimal hardening change. At each step, check DoD, cancel flag, queue state, max_steps, max_tokens, max_cost, timeout, and no-progress. Do not redesign architecture. Do not touch UI. Stop as soon as the verifier decides DONE, RETRY, ESCALATE, or STOP.}"
+MODE="${AMOF_ORCH_RUN_MODE:-plan-execute}"
+RUNTIME_PROFILE="${AMOF_ORCH_RUN_RUNTIME_PROFILE:-}"
+SESSION_ID="${AMOF_ORCH_RUN_SESSION_ID:-}"
+AGENT_ID="${AMOF_ORCH_RUN_AGENT_ID:-}"
+THREAD_ID="${AMOF_ORCH_RUN_THREAD_ID:-}"
+ARENA_MODE="${AMOF_ORCH_RUN_ARENA_MODE:-}"
+TEAM_ID="${AMOF_ORCH_RUN_TEAM_ID:-}"
+DELEGATION_ID="${AMOF_ORCH_RUN_DELEGATION_ID:-}"
+BACKLOG_ITEM_ID="${AMOF_ORCH_RUN_BACKLOG_ITEM_ID:-}"
+TRIGGER_KIND="${AMOF_ORCH_RUN_TRIGGER_KIND:-}"
+PARENT_RUN_ID="${AMOF_ORCH_RUN_PARENT_RUN_ID:-}"
+PAYLOAD_JSON="${AMOF_ORCH_RUN_PAYLOAD:-}"
+PAYLOAD_FILE="${AMOF_ORCH_RUN_PAYLOAD_FILE:-}"
+BATCH_MANIFEST_FILE="${AMOF_ORCH_RUN_BATCH_MANIFEST_FILE:-}"
+OPENAPI_FILE="$(mktemp)"
+START_FILE="$(mktemp)"
+RUN_FILE="$(mktemp)"
+PAYLOAD_TMP_FILE="$(mktemp)"
+
+cleanup() {
+  rm -f "$OPENAPI_FILE" "$START_FILE" "$RUN_FILE" "$PAYLOAD_TMP_FILE"
+}
+
+trap cleanup EXIT
+
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "# ERROR: required command not found: $1" | tee -a "$LOG"
+    echo "$LOG"
+    exit 1
+  fi
+}
+
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\"'\"'/g")"
+}
+
+build_payload() {
+  if [ -n "$PAYLOAD_FILE" ]; then
+    cat "$PAYLOAD_FILE"
+    return
+  fi
+
+  if [ -n "$PAYLOAD_JSON" ]; then
+    printf '%s' "$PAYLOAD_JSON"
+    return
+  fi
+
+  ECOSYSTEM="$ECOSYSTEM" \
+  PROMPT="$PROMPT" \
+  MODE="$MODE" \
+  RUNTIME_PROFILE="$RUNTIME_PROFILE" \
+  SESSION_ID="$SESSION_ID" \
+  AGENT_ID="$AGENT_ID" \
+  THREAD_ID="$THREAD_ID" \
+  ARENA_MODE="$ARENA_MODE" \
+  TEAM_ID="$TEAM_ID" \
+  DELEGATION_ID="$DELEGATION_ID" \
+  BACKLOG_ITEM_ID="$BACKLOG_ITEM_ID" \
+  TRIGGER_KIND="$TRIGGER_KIND" \
+  PARENT_RUN_ID="$PARENT_RUN_ID" \
+  python3 - "$BATCH_MANIFEST_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+import os
+
+batch_manifest_file = sys.argv[1]
+
+payload = {
+    "ecosystem": os.environ["ECOSYSTEM"],
+    "prompt": os.environ["PROMPT"],
+    "mode": os.environ["MODE"],
+}
+
+optional_env_map = {
+    "runtime_profile": "RUNTIME_PROFILE",
+    "session_id": "SESSION_ID",
+    "agent_id": "AGENT_ID",
+    "thread_id": "THREAD_ID",
+    "arena_mode": "ARENA_MODE",
+    "team_id": "TEAM_ID",
+    "delegation_id": "DELEGATION_ID",
+    "backlog_item_id": "BACKLOG_ITEM_ID",
+    "trigger_kind": "TRIGGER_KIND",
+    "parent_run_id": "PARENT_RUN_ID",
+}
+
+for field, env_name in optional_env_map.items():
+    value = os.environ.get(env_name, "")
+    if value:
+        payload[field] = value
+
+if batch_manifest_file:
+    payload["batch_manifest"] = json.loads(Path(batch_manifest_file).read_text(encoding="utf-8"))
+
+print(json.dumps(payload, ensure_ascii=True, separators=(",", ":")))
+PY
+}
+
+extract_run_id() {
+  local file="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '(.run_id // .id // .task_id // .run.run_id // .run.id // .run.task_id // .task.run_id // .task.id // .task.task_id // empty)' "$file" 2>/dev/null || true
+    return
+  fi
+  python3 -c '
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+for key in ("run_id", "id", "task_id"):
+    value = data.get(key)
+    if value:
+        print(value)
+        raise SystemExit(0)
+
+for obj_key in ("run", "task"):
+    obj = data.get(obj_key) or {}
+    for key in ("run_id", "id", "task_id"):
+        value = obj.get(key)
+        if value:
+            print(value)
+            raise SystemExit(0)
+' "$file" 2>/dev/null || true
+}
+
+extract_field() {
+  local file="$1"
+  local field="$2"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg field "$field" '.[$field] // empty' "$file" 2>/dev/null || true
+    return
+  fi
+  python3 -c '
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+value = data.get(sys.argv[2])
+if value is None:
+    raise SystemExit(0)
+print(value)
+' "$file" "$field" 2>/dev/null || true
+}
+
+extract_last_message() {
+  local file="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '
+      if .last_message then
+        .last_message
+      elif (.events | type) == "array" and (.events | length) > 0 then
+        .events[-1].message // empty
+      elif (.logs | type) == "array" and (.logs | length) > 0 then
+        .logs[-1] // empty
+      else
+        empty
+      end
+    ' "$file" 2>/dev/null || true
+    return
+  fi
+  python3 -c '
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+message = data.get("last_message")
+if message:
+    print(message)
+    raise SystemExit(0)
+
+events = data.get("events") or []
+if events:
+    message = events[-1].get("message")
+    if message:
+        print(message)
+        raise SystemExit(0)
+
+logs = data.get("logs") or []
+if logs:
+    print(logs[-1])
+' "$file" 2>/dev/null || true
+}
+
+run() {
+  "$KUBECTL_BIN" -n amof-system run orch-debug \
+    --image=curlimages/curl \
+    --restart=Never \
+    --rm -i --quiet \
+    --command -- sh -c "$1"
+}
+
+need_cmd "$KUBECTL_BIN"
+need_cmd python3
+
+echo "# AMOF orchestrator run" | tee "$LOG"
+echo "# started_at=$(date -Iseconds)" | tee -a "$LOG"
+
+echo "# health" | tee -a "$LOG"
+run "curl -s $API/health" | tee -a "$LOG"
+echo | tee -a "$LOG"
+
+echo "# ready" | tee -a "$LOG"
+run "curl -s $API/ready" | tee -a "$LOG"
+echo | tee -a "$LOG"
+
+echo "# openapi paths" | tee -a "$LOG"
+run "curl -sS $(shell_quote "$API/openapi.json")" | tee "$OPENAPI_FILE" >/dev/null
+python3 - "$OPENAPI_FILE" <<'PY' | tee -a "$LOG"
+import json
+import sys
+p=json.load(open(sys.argv[1]))
+for k in sorted(p.get("paths",{}).keys()):
+    if "/api/v1/control" in k:
+        print(k)
+PY
+
+START_PATH="$(python3 - "$OPENAPI_FILE" <<'PY'
+import json
+import sys
+p=json.load(open(sys.argv[1]))
+cands=[k for k in p.get("paths",{}) if "/api/v1/control" in k and "start" in k.lower()]
+print(cands[0] if cands else "")
+PY
+)"
+
+RUN_STATUS_PATH="$(python3 - "$OPENAPI_FILE" <<'PY'
+import json
+import sys
+p=json.load(open(sys.argv[1]))
+paths = p.get("paths", {})
+print("/api/v1/runs/{run_id}/status" if "/api/v1/runs/{run_id}/status" in paths else "")
+PY
+)"
+
+RUN_DETAILS_PATH="$(python3 - "$OPENAPI_FILE" <<'PY'
+import json
+import sys
+p=json.load(open(sys.argv[1]))
+paths = p.get("paths", {})
+print("/api/v1/runs/{run_id}" if "/api/v1/runs/{run_id}" in paths else "")
+PY
+)"
+
+echo "# start_path=$START_PATH" | tee -a "$LOG"
+if [ -n "$RUN_STATUS_PATH" ]; then
+  echo "# run_status_path=$RUN_STATUS_PATH" | tee -a "$LOG"
+fi
+if [ -n "$RUN_DETAILS_PATH" ]; then
+  echo "# run_details_path=$RUN_DETAILS_PATH" | tee -a "$LOG"
+fi
+
+if [ -z "$START_PATH" ]; then
+  echo "# ERROR: startTask path not found" | tee -a "$LOG"
+  echo "$LOG"
+  exit 1
+fi
+
+if [ -z "$RUN_STATUS_PATH" ] && [ -z "$RUN_DETAILS_PATH" ]; then
+  echo "# ERROR: no run lookup path found in openapi" | tee -a "$LOG"
+  echo "$LOG"
+  exit 1
+fi
+
+PAYLOAD="$(build_payload)"
+printf '%s' "$PAYLOAD" > "$PAYLOAD_TMP_FILE"
+
+echo "# payload=$(cat "$PAYLOAD_TMP_FILE")" | tee -a "$LOG"
+
+echo "# start task" | tee -a "$LOG"
+START_RESP="$(run "curl -sS -X POST $(shell_quote "$API$START_PATH") -H 'content-type: application/json' --data-binary $(shell_quote "$PAYLOAD")")"
+echo "$START_RESP" | tee -a "$LOG"
+echo | tee -a "$LOG"
+printf '%s' "$START_RESP" > "$START_FILE"
+
+RUN_ID="$(extract_run_id "$START_FILE")"
+QUEUE_STATUS="$(extract_field "$START_FILE" "queue_status")"
+START_RUN_STATUS="$(extract_field "$START_FILE" "run_status")"
+
+echo "# run_id=$RUN_ID" | tee -a "$LOG"
+if [ -n "$QUEUE_STATUS" ]; then
+  echo "# queue_status=$QUEUE_STATUS" | tee -a "$LOG"
+fi
+if [ -n "$START_RUN_STATUS" ]; then
+  echo "# start_run_status=$START_RUN_STATUS" | tee -a "$LOG"
+fi
+
+if [ -z "$RUN_ID" ]; then
+  echo "# ERROR: startTask did not return a run_id" | tee -a "$LOG"
+  echo "$LOG"
+  exit 1
+fi
+
+RUN_STATUS_URL=""
+RUN_LOOKUP_KIND=""
+if [ -n "$RUN_STATUS_PATH" ]; then
+  RUN_STATUS_URL="$API${RUN_STATUS_PATH//\{run_id\}/$RUN_ID}"
+  RUN_LOOKUP_KIND="status"
+else
+  RUN_STATUS_URL="$API${RUN_DETAILS_PATH//\{run_id\}/$RUN_ID}"
+  RUN_LOOKUP_KIND="details"
+fi
+
+echo "# polling $RUN_STATUS_URL" | tee -a "$LOG"
+TERMINAL_STATUSES_REGEX='^(success|failed|cancelled|stopped|error)$'
+FINAL_STATUS=""
+FINAL_FINISHED_AT=""
+FINAL_EXIT_CODE=""
+FINAL_MESSAGE=""
+LAST_KNOWN_STATUS=""
+
+for i in $(seq 1 "$MAX_POLLS"); do
+  RUN_RESP="$(run "curl -fsS $(shell_quote "$RUN_STATUS_URL")" 2>/dev/null || true)"
+  if [ -z "$RUN_RESP" ]; then
+    echo "# poll=$i run_id=$RUN_ID lookup=$RUN_LOOKUP_KIND status=unknown reason=run lookup failed" | tee -a "$LOG"
+  else
+    printf '%s' "$RUN_RESP" > "$RUN_FILE"
+    LAST_KNOWN_STATUS="$(extract_field "$RUN_FILE" "status")"
+    FINAL_FINISHED_AT="$(extract_field "$RUN_FILE" "finished_at")"
+    FINAL_EXIT_CODE="$(extract_field "$RUN_FILE" "exit_code")"
+    FINAL_MESSAGE="$(extract_last_message "$RUN_FILE")"
+    echo "# poll=$i run_id=$RUN_ID lookup=$RUN_LOOKUP_KIND status=${LAST_KNOWN_STATUS:-unknown}" | tee -a "$LOG"
+    if [[ "${LAST_KNOWN_STATUS:-}" =~ $TERMINAL_STATUSES_REGEX ]]; then
+      FINAL_STATUS="$LAST_KNOWN_STATUS"
+      break
+    fi
+  fi
+  sleep "$POLL_INTERVAL_SEC"
+done
+
+if [ -n "$FINAL_STATUS" ]; then
+  echo "# final run_id=$RUN_ID status=$FINAL_STATUS finished_at=${FINAL_FINISHED_AT:-unknown} exit_code=${FINAL_EXIT_CODE:-unknown}" | tee -a "$LOG"
+  if [ -n "$FINAL_MESSAGE" ]; then
+    echo "# final_message=$FINAL_MESSAGE" | tee -a "$LOG"
+  fi
+else
+  echo "# final run_id=$RUN_ID status=unknown reason=run did not reach a terminal state within ${MAX_POLLS} polls last_known_status=${LAST_KNOWN_STATUS:-unknown}" | tee -a "$LOG"
+  if [ -n "$FINAL_MESSAGE" ]; then
+    echo "# last_message=$FINAL_MESSAGE" | tee -a "$LOG"
+  fi
+fi
+
+echo "# finished_at=$(date -Iseconds)" | tee -a "$LOG"
+echo "$LOG"
+
+if [ -z "$FINAL_STATUS" ]; then
+  exit 2
+fi
+
+if [ "$FINAL_STATUS" = "success" ]; then
+  exit 0
+fi
+
+exit 1

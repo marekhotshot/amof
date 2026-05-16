@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/director-plan-result.schema.json",
+  "title": "Director Plan Result",
+  "description": "Planner-side receipt emitted when Director successfully produces a bounded materialization plan. Emitted as director-plan-result.json.",
+  "type": "object",
+  "required": [
+    "result_kind",
+    "status",
+    "run_id",
+    "repo",
+    "expected_sha",
+    "intake_path",
+    "target_base_dir",
+    "timestamp"
+  ],
+  "properties": {
+    "result_kind": {
+      "type": "string",
+      "const": "director_plan_materialization_result"
+    },
+    "contract_version": {
+      "type": "string",
+      "description": "Optional schema version label for emitters."
+    },
+    "status": {
+      "type": "string",
+      "const": "planned",
+      "description": "Current success-state emitted when the planner has produced a bounded intake envelope for workspace materialization."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repo": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Git URL or local repository path that the plan targets."
+    },
+    "expected_sha": {
+      "$ref": "#/$defs/gitSha"
+    },
+    "intake_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to the generated director_intake_execution_contract JSON artifact."
+    },
+    "target_base_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "$ref": "#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

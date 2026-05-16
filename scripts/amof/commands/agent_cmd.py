@@ -1,0 +1,2151 @@
+"""Agent command -- runs the AMOF orchestrator agent.
+
+CLI entry point for `amof agent`.
+Supports single-shot and interactive modes.
+Supports model ladder for cost optimization (--model-ladder).
+Supports plan-execute with interactive approval and checkpointing.
+Supports resume on cost cap / crash via incremental session saves.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from ..app_paths import get_app_paths, indexes_dir, runs_dir, vector_store_dir
+
+# Default model tiers when --model-ladder is enabled
+DEFAULT_TIERS = {
+    "fast":     "claude-haiku-4-5",
+    "standard": "claude-sonnet-4-5",
+    "strong":   "claude-opus-4-6",
+}
+
+
+def _legacy_agent_dir(workspace_root: Path) -> Path:
+    return workspace_root / ".amof"
+
+
+def _safe_workspace_label(workspace_root: Path) -> str:
+    raw = workspace_root.resolve(strict=False).name or "workspace"
+    safe = "".join(c if c.isalnum() or c in {"-", "_"} else "-" for c in raw).strip("-")
+    return safe or "workspace"
+
+
+def _workspace_runtime_key(workspace_root: Path) -> str:
+    resolved = workspace_root.resolve(strict=False)
+    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:12]
+    return f"{_safe_workspace_label(resolved)}-{digest}"
+
+
+def _agent_config_path(workspace_root: Path) -> Path:
+    app_config_path = get_app_paths().config_root / "agent.yaml"
+    legacy_config_path = _legacy_agent_dir(workspace_root) / "agent.yaml"
+    if app_config_path.exists() or not legacy_config_path.exists():
+        return app_config_path
+    return legacy_config_path
+
+
+def _agent_rules_path(workspace_root: Path, filename: str) -> Path:
+    app_rules_path = get_app_paths().config_root / "rules" / filename
+    legacy_rules_path = _legacy_agent_dir(workspace_root) / "rules" / filename
+    if app_rules_path.exists() or not legacy_rules_path.exists():
+        return app_rules_path
+    return legacy_rules_path
+
+
+def _agent_allowed_rules_path() -> Path:
+    return get_app_paths().config_root / "rules" / "allowed.yaml"
+
+
+def _agent_runs_session_dir(session_id: str, *, session_subdir: str = "runs") -> Path:
+    base_dir = runs_dir() if session_subdir == "runs" else runs_dir() / session_subdir
+    return base_dir / session_id
+
+
+def _legacy_session_dir(workspace_root: Path, session_id: str, *, session_subdir: str = "runs") -> Path:
+    return _legacy_agent_dir(workspace_root) / session_subdir / session_id
+
+
+def _resolve_session_dir(workspace_root: Path, session_id: str, *, session_subdir: str = "runs") -> Path:
+    app_session_dir = _agent_runs_session_dir(session_id, session_subdir=session_subdir)
+    legacy_dir = _legacy_session_dir(workspace_root, session_id, session_subdir=session_subdir)
+    if app_session_dir.exists() or not legacy_dir.exists():
+        return app_session_dir
+    return legacy_dir
+
+
+def _agent_vector_store_path(workspace_root: Path) -> Path:
+    return vector_store_dir() / _workspace_runtime_key(workspace_root)
+
+
+def _agent_index_path(workspace_root: Path, ecosystem_name: str) -> Path:
+    return indexes_dir() / _workspace_runtime_key(workspace_root) / (ecosystem_name or "default")
+
+
+def _configure_guardrails(guardrails: Any, workspace_root: Path) -> None:
+    app_allowed_path = _agent_allowed_rules_path()
+    guardrails._allowed_path = app_allowed_path
+    guardrails._always_allowed = guardrails._load_always_allowed()
+    if guardrails._always_allowed:
+        return
+    legacy_allowed_path = _legacy_agent_dir(workspace_root) / "rules" / "allowed.yaml"
+    if legacy_allowed_path.exists():
+        guardrails._allowed_path = legacy_allowed_path
+        legacy_allowed = guardrails._load_always_allowed()
+        guardrails._allowed_path = app_allowed_path
+        guardrails._always_allowed = legacy_allowed
+
+
+def _auto_load_env(env_path: Path) -> None:
+    """Auto-load .env file into os.environ if API keys aren't set.
+
+    Handles KEY=value, KEY='value', KEY="value", and comments.
+    Only loads variables that are not already in the environment.
+    """
+    if not env_path.exists():
+        return
+    # Skip if keys are already set
+    if (
+        os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY")
+    ):
+        return
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip()
+            # Strip surrounding quotes
+            if (val.startswith('"') and val.endswith('"')) or \
+               (val.startswith("'") and val.endswith("'")):
+                val = val[1:-1]
+            # Only set if not already in env (don't override explicit exports)
+            if key and key not in os.environ:
+                os.environ[key] = val
+    except Exception:
+        pass  # Best-effort; if .env is unreadable, error message will guide user
+
+
+def cmd_agent_install() -> int:
+    """Set up the agent environment: create venv, install dependencies, verify API key.
+
+    Usage: amof agent install
+    """
+    workspace_root = Path.cwd()
+    req_file = workspace_root / "requirements.txt"
+    venv_dir = workspace_root / ".venv"
+
+    print("\n  AMOF Agent Environment Setup\n")
+
+    # Step 1: Check requirements.txt
+    if not req_file.exists():
+        sys.stderr.write("  ✗ requirements.txt not found in workspace root\n")
+        return 1
+    print("  [1/4] requirements.txt found")
+
+    # Step 2: Create venv if needed
+    if venv_dir.exists():
+        print(f"  [2/4] Virtual environment exists: {venv_dir}")
+    else:
+        print(f"  [2/4] Creating virtual environment: {venv_dir}")
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "venv", str(venv_dir)],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                sys.stderr.write(f"  ✗ Failed to create venv:\n{result.stderr}\n")
+                return 1
+        except Exception as e:
+            sys.stderr.write(f"  ✗ Failed to create venv: {e}\n")
+            return 1
+
+    # Step 3: Install dependencies into venv
+    venv_pip = venv_dir / "bin" / "pip"
+    if not venv_pip.exists():
+        venv_pip = venv_dir / "Scripts" / "pip.exe"  # Windows
+
+    if not venv_pip.exists():
+        sys.stderr.write(f"  ✗ pip not found in venv: {venv_pip}\n")
+        return 1
+
+    print(f"  [3/4] Installing dependencies...")
+    try:
+        result = subprocess.run(
+            [str(venv_pip), "install", "-r", str(req_file)],
+            capture_output=True, text=True, timeout=180,
+        )
+        if result.returncode != 0:
+            sys.stderr.write(f"  ✗ pip install failed:\n{result.stderr}\n")
+            return 1
+        # Count installed packages
+        lines = [l for l in result.stdout.splitlines() if "Successfully installed" in l or "already satisfied" in l.lower()]
+        if lines:
+            print(f"        {lines[-1].strip()}")
+        else:
+            print("        Dependencies up to date")
+    except subprocess.TimeoutExpired:
+        sys.stderr.write("  ✗ pip install timed out after 180s\n")
+        return 1
+    except Exception as e:
+        sys.stderr.write(f"  ✗ pip install failed: {e}\n")
+        return 1
+
+    # Step 4: Verify key packages
+    venv_python = venv_dir / "bin" / "python"
+    if not venv_python.exists():
+        venv_python = venv_dir / "Scripts" / "python.exe"
+
+    print("  [4/4] Verifying packages...")
+    for pkg in ["anthropic", "openai"]:
+        try:
+            result = subprocess.run(
+                [str(venv_python), "-c", f"import {pkg}; print({pkg}.__version__)"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                ver = result.stdout.strip()
+                print(f"        ✓ {pkg} {ver}")
+            else:
+                print(f"        ⚠ {pkg} not installed (optional)")
+        except Exception:
+            print(f"        ⚠ {pkg} check failed (optional)")
+
+    # Step 5: Check .env and API keys
+    env_file = workspace_root / ".env"
+    has_env = env_file.exists()
+    has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+
+    if has_env and not has_api_key:
+        # .env exists but keys not loaded -- try to read it
+        try:
+            env_text = env_file.read_text(encoding="utf-8")
+            for line in env_text.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, val = line.partition("=")
+                    key = key.strip()
+                    val = val.strip().strip("'\"")
+                    if key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY") and val:
+                        has_api_key = True
+                        break
+        except Exception:
+            pass
+
+    api_status = "✓ API key found" if has_api_key else "⚠ No API key in .env (add ANTHROPIC_API_KEY or OPENAI_API_KEY)"
+    print(f"  [5/5] {api_status}")
+
+    # Summary
+    print(f"""
+  ✓ Agent environment ready!
+
+  Run the agent:
+    source .env && amof agent
+""")
+    if not has_api_key:
+        print("  (first add your API key to .env)\n")
+    return 0
+
+
+def _load_agent_config(workspace_root: Path, config_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Load defaults from AMOF app-data, falling back to legacy workspace config.
+
+    Returns a dict with config values. Missing keys are absent (not None).
+    Uses proper YAML parsing to handle nested structures (provider_fallback,
+    routing, budget_warning_thresholds, etc.).
+    """
+    config_path = config_path or _agent_config_path(workspace_root)
+    if not config_path.exists():
+        return {}
+
+    try:
+        import yaml
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+        return config
+    except ImportError:
+        pass  # Fall back to simple parser if yaml not available
+    except Exception:
+        pass
+
+    # Fallback: simple line-by-line parser (no nested structures)
+    config: Dict[str, Any] = {}
+    try:
+        text = config_path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("-"):
+                continue
+            if ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if not value:
+                continue  # skip keys with nested values
+            # Strip inline comments
+            if not (value.startswith('"') or value.startswith("'")):
+                comment_idx = value.find("  #")
+                if comment_idx < 0:
+                    comment_idx = value.find(" #")
+                if comment_idx > 0:
+                    value = value[:comment_idx].rstrip()
+            # Type coercion
+            if value.lower() in ("true", "yes"):
+                config[key] = True
+            elif value.lower() in ("false", "no"):
+                config[key] = False
+            else:
+                try:
+                    config[key] = float(value)
+                except ValueError:
+                    config[key] = value
+    except Exception:
+        pass
+
+    return config
+
+
+def _interactive_confirm(command: str, reason: str) -> str:
+    """Prompt user for confirmation when a sensitive/dangerous command is detected.
+
+    Returns "yes", "no", or "always".
+    Uses colored output for visibility in the interactive shell.
+    """
+    try:
+        # Import colors — may not be available if running outside interactive context
+        from ..orchestrator import colors as c
+    except ImportError:
+        c = None
+
+    # Formatting helpers
+    def _warn(text: str) -> str:
+        return f"{c.YELLOW}{text}{c.RESET}" if c else text
+
+    def _cmd(text: str) -> str:
+        return f"{c.BOLD}{text}{c.RESET}" if c else text
+
+    def _dim(text: str) -> str:
+        return f"{c.INFO}{text}{c.RESET}" if c else text
+
+    # Truncate very long commands for display
+    display_cmd = command.strip()
+    if len(display_cmd) > 120:
+        display_cmd = display_cmd[:117] + "..."
+
+    print()
+    print(_warn(f"  ⚠ Guardrail: {reason}"))
+    print(f"  Command: {_cmd(display_cmd)}")
+    print()
+    print(f"  {_dim('[y]es')}  Allow this once")
+    print(f"  {_dim('[n]o')}   Block this command")
+    print(f"  {_dim('[a]lways')}  Allow and remember (saved to AMOF app-data rules/allowed.yaml)")
+    print()
+
+    try:
+        choice = input(f"  Allow? [y/n/a] > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return "no"
+
+    if choice in ("a", "always"):
+        return "always"
+    elif choice in ("y", "yes"):
+        return "yes"
+    else:
+        return "no"
+
+
+def cmd_agent(
+    manifest: Dict[str, Any],
+    goal: Optional[str] = None,
+    plan_mode: Optional[bool] = None,
+    model: Optional[str] = None,
+    verbose: Optional[bool] = None,
+    max_cost: Optional[float] = None,
+    model_ladder: Optional[bool] = None,
+    fast_model: Optional[str] = None,
+    strong_model: Optional[str] = None,
+    plan_execute: Optional[bool] = None,
+    planner_model: Optional[str] = None,
+    provider: Optional[str] = None,
+    resume_session: Optional[str] = None,
+    plan_file: Optional[str] = None,
+    no_follow_up: Optional[bool] = None,
+    continue_budget: Optional[float] = None,
+) -> int:
+    """Run the AMOF coding agent.
+
+    If goal is provided, runs in single-shot mode.
+    If no goal, runs in interactive REPL mode.
+
+    Loads defaults from AMOF app-data, with legacy workspace `.amof` config
+    treated as a compatibility fallback when app-data config is absent.
+    CLI flags always take priority over config file values.
+    """
+    workspace_root = Path.cwd()
+
+    # ── Load config defaults from AMOF app-data, or legacy workspace config ──
+    cfg = _load_agent_config(workspace_root)
+
+    # Apply config defaults where CLI args were not explicitly set (None)
+    if verbose is None:
+        verbose = cfg.get("verbose", False)
+    if max_cost is None:
+        raw = cfg.get("default_max_cost")
+        max_cost = float(raw) if raw is not None else None
+    if model_ladder is None:
+        model_ladder = cfg.get("model_ladder", False)
+    if provider is None:
+        provider = str(cfg.get("default_provider", "anthropic"))
+    if plan_mode is None:
+        plan_mode = False
+    if plan_execute is None:
+        plan_execute = False
+    if no_follow_up is None:
+        no_follow_up = False
+    if continue_budget is None:
+        continue_budget = 1.0
+
+    # Export thinking budget from config (picked up by AnthropicClient)
+    thinking_budget = cfg.get("thinking_budget")
+    if thinking_budget and not os.environ.get("AMOF_THINKING_BUDGET"):
+        os.environ["AMOF_THINKING_BUDGET"] = str(int(thinking_budget))
+
+    # Auto-load .env if API key isn't already in environment
+    _auto_load_env(Path.cwd() / ".env")
+
+    # Resolve API key based on provider
+    if provider == "openai":
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            sys.stderr.write(
+                "[agent] OPENAI_API_KEY not set.\n"
+                "  Add to .env: OPENAI_API_KEY=sk-...\n"
+            )
+            return 1
+    elif provider == "openrouter":
+        api_key = os.environ.get("OPENROUTER_API_KEY", "")
+        if not api_key:
+            sys.stderr.write(
+                "[agent] OPENROUTER_API_KEY not set.\n"
+                "  Add to .env: OPENROUTER_API_KEY=sk-or-...\n"
+            )
+            return 1
+    elif provider == "bedrock":
+        api_key = ""
+        region = (
+            os.environ.get("AMOF_BEDROCK_REGION")
+            or os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION")
+        )
+        if not region:
+            sys.stderr.write(
+                "[agent] AWS_REGION not set for Bedrock.\n"
+                "  Export AWS_REGION (or AMOF_BEDROCK_REGION) and optionally AWS_PROFILE.\n"
+            )
+            return 1
+    else:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            sys.stderr.write(
+                "[agent] ANTHROPIC_API_KEY not set.\n"
+                "  Add to .env: ANTHROPIC_API_KEY=sk-ant-...\n"
+            )
+            return 1
+
+    # Early check: if .venv exists but we're not running from it, auto-relaunch
+    venv_dir = Path.cwd() / ".venv"
+    venv_python = venv_dir / "bin" / "python"
+    if not venv_python.exists():
+        venv_python = venv_dir / "Scripts" / "python.exe"  # Windows
+    if venv_dir.exists() and venv_python.exists():
+        in_venv = (sys.prefix != sys.base_prefix) or str(venv_dir) in sys.prefix
+        if not in_venv:
+            # Check if the SDK is actually importable from system python
+            try:
+                import anthropic  # noqa: F401
+            except ImportError:
+                # Re-exec with the venv python instead of asking user to activate
+                sys.stderr.write("[agent] Using virtual environment: .venv\n")
+                sys.stderr.flush()
+                os.execv(str(venv_python), [str(venv_python)] + sys.argv)
+
+    # Lazy import to avoid import errors when SDK isn't installed.
+    try:
+        from ..orchestrator.llm.anthropic import AnthropicClient
+        from ..orchestrator.tools import create_default_registry, Guardrails
+        from ..orchestrator.agent import Agent
+        from ..orchestrator.session import Session
+        from ..orchestrator.telemetry import SessionTelemetry
+        from ..orchestrator.events import EventLog
+        from ..orchestrator.context.builder import ContextBuilder
+        from ..orchestrator.context.summarizer import ContextSummarizer
+        from ..orchestrator.model_router import ModelRouter
+    except ImportError as e:
+        missing = str(e)
+        sys.stderr.write(f"[agent] Missing dependency: {missing}\n")
+
+        # Check if running from a venv
+        venv_dir = Path.cwd() / ".venv"
+        if venv_dir.exists():
+            venv_python = venv_dir / "bin" / "python"
+            if venv_python.exists():
+                sys.stderr.write(
+                    "\n[agent] A virtual environment exists but isn't activated.\n"
+                    "  Run:\n"
+                    "    source .venv/bin/activate\n"
+                    "    amof agent\n"
+                )
+                return 1
+
+        # Try auto-install
+        req_file = Path("requirements.txt")
+        if req_file.exists():
+            sys.stderr.write("[agent] Attempting to install dependencies...\n")
+            installed = False
+            for extra_args in [[], ["--break-system-packages"]]:
+                try:
+                    cmd = [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)] + extra_args
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                    if result.returncode == 0:
+                        sys.stderr.write("[agent] Dependencies installed. Retrying imports...\n")
+                        from ..orchestrator.llm.anthropic import AnthropicClient  # noqa: F811
+                        from ..orchestrator.tools import create_default_registry, Guardrails  # noqa: F811
+                        from ..orchestrator.agent import Agent  # noqa: F811
+                        from ..orchestrator.session import Session  # noqa: F811
+                        from ..orchestrator.telemetry import SessionTelemetry  # noqa: F811
+                        from ..orchestrator.events import EventLog  # noqa: F811
+                        from ..orchestrator.context.builder import ContextBuilder  # noqa: F811
+                        from ..orchestrator.context.summarizer import ContextSummarizer  # noqa: F811
+                        from ..orchestrator.model_router import ModelRouter  # noqa: F811
+                        installed = True
+                        break
+                except ImportError:
+                    # pip worked but import still fails
+                    sys.stderr.write("[agent] Installed but import still fails. Try: amof agent install\n")
+                    return 1
+                except Exception:
+                    continue
+            if not installed:
+                sys.stderr.write(
+                    "\n[agent] Auto-install failed. Set up the environment with:\n"
+                    "    amof agent install\n"
+                    "    source .venv/bin/activate\n"
+                    "    amof agent\n"
+                )
+                return 1
+        else:
+            sys.stderr.write(
+                "\n[agent] requirements.txt not found. Set up the environment with:\n"
+                "    amof agent install\n"
+            )
+            return 1
+
+    # Provider-specific client factory
+    def _make_client(mdl: str) -> Any:
+        """Create an LLM client for the configured provider."""
+        # Check if the model string is openrouter/ style
+        if mdl.startswith("openrouter/"):
+            from ..orchestrator.llm.openai_client import OpenAIClient
+            return OpenAIClient(api_key=os.environ.get("OPENROUTER_API_KEY", ""), model=mdl)
+        
+        if provider in ("openai", "openrouter"):
+            from ..orchestrator.llm.openai_client import OpenAIClient
+            if provider == "openrouter" and not mdl.startswith("openrouter/"):
+                mdl = f"openrouter/{mdl}"
+            return OpenAIClient(api_key=api_key, model=mdl)
+        if provider == "bedrock":
+            from ..orchestrator.llm.bedrock_anthropic import BedrockAnthropicClient
+
+            return BedrockAnthropicClient(model=mdl)
+        else:
+            return AnthropicClient(api_key=api_key, model=mdl)
+
+    mode = "plan" if plan_mode else "build"
+
+    # Set up guardrails from config + manifest
+    from ..orchestrator.tools.base import GuardrailConfig
+
+    no_touch = manifest.get("guardrails", {}).get("no_touch_paths", [])
+    readonly_repos = {}
+    for r in manifest.get("repos", []):
+        if r.get("readonly"):
+            readonly_repos[r["name"]] = Path(r["path"])
+
+    guardrail_config = GuardrailConfig.load(_agent_rules_path(workspace_root, "guardrails.yaml"))
+
+    guardrails = Guardrails(
+        no_touch_paths=no_touch,
+        readonly_repos=readonly_repos,
+        mode=mode,
+        config=guardrail_config,
+        confirm_fn=_interactive_confirm,
+    )
+    _configure_guardrails(guardrails, workspace_root)
+
+    # Create components
+    session = Session(mode=mode)
+    session.ecosystem = manifest.get("ecosystem")
+    budget_thresholds = cfg.get("budget_warning_thresholds", [0.50, 0.75, 0.90])
+    telemetry = SessionTelemetry(
+        max_cost=max_cost,
+        warning_thresholds=[float(t) for t in budget_thresholds],
+    )
+    events = EventLog(session_id=session.id)
+
+    # ---- Model setup ----
+    model_router = None
+    context_summarizer = None
+
+    # Default model depends on provider
+    if provider == "openai":
+        default_model = model or os.environ.get("AMOF_OPENAI_MODEL", "gpt-4o")
+    elif provider == "openrouter":
+        default_model = model or os.environ.get(
+            "AMOF_OPENROUTER_MODEL",
+            os.environ.get("AMOF_OPENAI_MODEL", "openrouter/openai/gpt-4o-mini"),
+        )
+    elif provider == "bedrock":
+        default_model = model or os.environ.get(
+            "AMOF_BEDROCK_STANDARD_MODEL_ID",
+            "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+        )
+    else:
+        default_model = model or "claude-3-5-sonnet-latest"
+
+    primary_llm = _make_client(default_model)
+
+    if model_ladder:
+        from ..orchestrator.llm.profile_catalog import (
+            build_clients_from_selection,
+            get_profile_selection,
+        )
+
+        # Check for new llm_ladder format
+        llm_ladder_cfg = cfg.get("llm_ladder", {}).get("roles", {})
+        orchestrator_cascade = llm_ladder_cfg.get("orchestrator", {}).get("cascade", [])
+        worker_cascade = llm_ladder_cfg.get("worker", {}).get("cascade", [])
+
+        models = {}
+
+        profile_selection = get_profile_selection(cfg)
+        if cfg.get("llm_profile_selection"):
+            models = build_clients_from_selection(profile_selection)
+            orchestrator_cascade = [slot for slot in ("fast", "standard", "strong") if slot in models]
+            worker_cascade = list(orchestrator_cascade)
+        elif orchestrator_cascade or worker_cascade:
+            # New format: Instantiate clients for all unique models in both cascades
+            for mdl in set(orchestrator_cascade + worker_cascade):
+                models[mdl] = _make_client(mdl)
+        else:
+            # Fallback to legacy fast/standard/strong mapping
+            if provider == "openai":
+                fast_id = fast_model or os.environ.get("AMOF_FAST_MODEL", "gpt-4o-mini")
+                standard_id = model or os.environ.get("AMOF_MODEL", "gpt-4o")
+                strong_id = strong_model or os.environ.get("AMOF_STRONG_MODEL", "gpt-5.1-codex")
+            elif provider == "openrouter":
+                fast_id = fast_model or os.environ.get("AMOF_FAST_MODEL", "openrouter/openai/gpt-4o-mini")
+                standard_id = model or os.environ.get("AMOF_MODEL", "openrouter/openai/gpt-4o")
+                strong_id = strong_model or os.environ.get("AMOF_STRONG_MODEL", "openrouter/openai/gpt-4.1")
+            else:
+                fast_id = fast_model or os.environ.get("AMOF_FAST_MODEL", DEFAULT_TIERS["fast"])
+                standard_id = model or os.environ.get("AMOF_MODEL", DEFAULT_TIERS["standard"])
+                strong_id = strong_model or os.environ.get("AMOF_STRONG_MODEL", DEFAULT_TIERS["strong"])
+
+            models = {
+                "fast": _make_client(fast_id),
+                "standard": _make_client(standard_id),
+                "strong": _make_client(strong_id),
+            }
+            orchestrator_cascade = ["fast", "standard", "strong"]
+            worker_cascade = ["fast", "standard", "strong"]
+
+        # Build fallback models (alternate provider) for failover
+        fallback_cfg = cfg.get("provider_fallback", {})
+        fallback_provider_name = fallback_cfg.get("fallback", "openai" if provider != "openai" else "anthropic")
+        fallback_cooldown = float(fallback_cfg.get("cooldown_seconds", 60))
+        fallback_models: Dict[str, Any] = {}
+
+        try:
+            if fallback_provider_name == "openai" and provider != "openai":
+                openai_key = os.environ.get("OPENAI_API_KEY", "")
+                if openai_key:
+                    from ..orchestrator.llm.openai_client import OpenAIClient
+                    fallback_models = {
+                        "fast": OpenAIClient(api_key=openai_key, model="gpt-4o-mini"),
+                        "standard": OpenAIClient(api_key=openai_key, model="gpt-4o"),
+                        "strong": OpenAIClient(api_key=openai_key, model="gpt-5.1-codex"),
+                    }
+            elif fallback_provider_name == "anthropic" and provider != "anthropic":
+                anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                if anthropic_key:
+                    fallback_models = {
+                        "fast": AnthropicClient(api_key=anthropic_key, model=DEFAULT_TIERS["fast"]),
+                        "standard": AnthropicClient(api_key=anthropic_key, model=DEFAULT_TIERS["standard"]),
+                        "strong": AnthropicClient(api_key=anthropic_key, model=DEFAULT_TIERS["strong"]),
+                    }
+        except Exception as e:
+            # Mini Ultra Plan 2 / Phase L1: surface alternate-provider
+            # build failures at WARNING (was DEBUG, which silently hid
+            # missing-key situations from operators). The
+            # `failure_class` tag aligns with the
+            # ``classify_provider_status``-derived taxonomy so the
+            # missing-fallback condition is greppable in operator logs
+            # alongside real provider errors.
+            logger.warning(
+                "Fallback provider %s unavailable (failure_class=provider_fallback_unavailable): %s",
+                fallback_provider_name,
+                e,
+            )
+
+        routing_config = cfg.get("routing", {})
+
+        # Default tier logic: use "standard" if present, else first in cascade
+        def_tier = "standard" if "standard" in models else orchestrator_cascade[0] if orchestrator_cascade else next(iter(models))
+
+        model_router = ModelRouter(
+            models=models,
+            default_tier=def_tier,
+            fallback_models=fallback_models if fallback_models else None,
+            provider_cooldown=fallback_cooldown,
+            routing_config=routing_config,
+            cascade=orchestrator_cascade,
+        )
+        primary_llm = model_router  # Router acts as LLMClient
+
+        # ContextSummarizer uses the fast model for cheap compression
+        fast_mdl_key = "fast" if "fast" in models else orchestrator_cascade[0] if orchestrator_cascade else next(iter(models.keys()))
+        context_summarizer = ContextSummarizer(
+            summarizer_llm=models[fast_mdl_key],
+            threshold_pct=60.0,
+            keep_recent=6,
+        )
+
+        if verbose:
+            sys.stderr.write(
+                f"[agent] Model ladder enabled ({provider})\n"
+                f"  Orchestrator: {orchestrator_cascade}\n"
+                f"  Worker:       {worker_cascade}\n"
+            )
+
+    from ..orchestrator.trust_boundary import create_trust_state
+
+    trust_state = create_trust_state(goal) if goal.strip() else None
+
+    # ---- Runner factory + tool registry ----
+    runner_factory = None
+    model_clients = {"standard": _make_client(default_model)} if not model_ladder else models
+    runners_config_path = _agent_rules_path(workspace_root, "runners.yaml")
+    runner_cost_fraction = float(cfg.get("runner_cost_fraction", 0.3))
+    runner_max_cost = (max_cost or 5.0) * runner_cost_fraction
+
+    if runners_config_path.exists():
+        try:
+            from ..orchestrator.runners import RunnerFactory
+            # Build worker tool registry first (without delegate), then create factory
+            _base_tools = create_default_registry(
+                guardrails=guardrails,
+                ops_tools=cfg.get("ops_tools", True),
+                workspace_root=workspace_root,
+                jenkins_jobs=cfg.get("jenkins_jobs"),
+                deploy_presets=cfg.get("deploy_presets"),
+                role="worker",
+                events=events,
+                trust_state=trust_state,
+                policy_source="runner",
+            )
+            runner_factory = RunnerFactory.from_config(
+                config_path=runners_config_path,
+                model_clients=model_clients,
+                parent_tools=_base_tools,
+                guardrails=guardrails,
+                workspace_root=workspace_root,
+                max_cost_per_runner=runner_max_cost,
+                verbose=verbose,
+                cascade=worker_cascade if model_ladder else None,
+            )
+            if verbose:
+                sys.stderr.write(
+                    f"[agent] Runners loaded: {', '.join(runner_factory.runner_names)}\n"
+                )
+        except Exception as e:
+            sys.stderr.write(f"[agent] Runner factory init failed (non-fatal): {e}\n")
+            runner_factory = None
+
+    # ---- Vector Memory Setup ----
+    vector_store = None
+    ecosystem_name = manifest.get("ecosystem", "")
+    try:
+        from ..orchestrator.memory import VectorStore
+        vector_store = VectorStore(persist_directory=_agent_vector_store_path(workspace_root))
+        if verbose:
+            sys.stderr.write("[agent] Vector memory initialized.\n")
+    except Exception as e:
+        sys.stderr.write(f"[agent] Vector memory unavailable (non-fatal): {e}\n")
+
+    # Create full tool registry (with DelegateTool if factory available)
+    summarizer_llm = model_clients.get("fast") if model_ladder else None
+    tools = create_default_registry(
+        guardrails=guardrails,
+        ops_tools=cfg.get("ops_tools", True),
+        workspace_root=workspace_root,
+        runner_factory=runner_factory,
+        parent_telemetry=telemetry,
+        summarizer_llm=summarizer_llm,
+        jenkins_jobs=cfg.get("jenkins_jobs"),
+        deploy_presets=cfg.get("deploy_presets"),
+        role="orchestrator",
+        vector_store=vector_store,
+        ecosystem_name=ecosystem_name,
+        events=events,
+        trust_state=trust_state,
+        policy_source="master",
+    )
+
+    # ---- Auto-index codebase (Merkle tree + incremental LLM index) ----
+    codebase_index = None
+    index_dir = _agent_index_path(workspace_root, ecosystem_name)
+
+    repos_root = workspace_root / "repos"
+    if repos_root.exists() and cfg.get("auto_index", True):
+        try:
+            from ..orchestrator.indexer import CodebaseIndexer
+            from ..orchestrator.manifest_scope import resolve_scope
+
+            scope = resolve_scope(manifest, workspace_root, ecosystem=ecosystem_name)
+            if scope.is_empty():
+                sys.stderr.write(
+                    f"[agent] Indexing scope empty for ecosystem={ecosystem_name} "
+                    f"(skipped={scope.skipped}); skipping auto-index\n"
+                )
+            else:
+                indexer = CodebaseIndexer(
+                    indexer_llm=primary_llm,
+                    repos_root=repos_root,
+                    index_dir=index_dir,
+                    vector_store=vector_store,
+                    ecosystem_name=ecosystem_name,
+                    repo_roots=scope.repo_roots,
+                )
+                if verbose:
+                    sys.stderr.write(
+                        f"[agent] Indexing scope: {scope.repo_count} repo(s) "
+                        f"({', '.join(p.name for p in scope.repo_roots)})\n"
+                    )
+
+                if indexer.index_path.exists() and indexer.tree_path.exists():
+                    from ..orchestrator.merkle import MerkleTree
+                    current_tree = MerkleTree.build_from_roots(scope.repo_roots)
+                    cached_tree = MerkleTree.load(indexer.tree_path)
+
+                    if current_tree.hash == cached_tree.hash:
+                        codebase_index = indexer._load_cached()
+                        if verbose:
+                            sys.stderr.write(
+                                f"[agent] Index up to date ({codebase_index.file_count} files)\n"
+                            )
+                    else:
+                        diff = MerkleTree.diff(cached_tree, current_tree)
+                        sys.stderr.write(
+                            f"[agent] Index stale ({diff.summary()}), updating...\n"
+                        )
+                        codebase_index = indexer.index(force=False)
+                        sys.stderr.write(
+                            f"[agent] Index updated ({codebase_index.file_count} files, "
+                            f"${codebase_index.indexing_cost:.4f})\n"
+                        )
+                else:
+                    sys.stderr.write("[agent] No codebase index found, creating...\n")
+                    codebase_index = indexer.index(force=True)
+                    sys.stderr.write(
+                        f"[agent] Indexed {codebase_index.file_count} files "
+                        f"(${codebase_index.indexing_cost:.4f})\n"
+                    )
+        except Exception as e:
+            sys.stderr.write(f"[agent] Auto-index failed (non-fatal): {e}\n")
+
+    # Build context (with codebase index if available)
+    context_builder = ContextBuilder(
+        workspace_root=workspace_root,
+        manifest=manifest,
+        base_prompt_path=workspace_root / "prompts" / "master.md",
+        codebase_index=codebase_index,
+    )
+    system_prompt = context_builder.build(mode=mode)
+
+    # Create agent
+    agent = Agent(
+        llm=primary_llm,
+        tools=tools,
+        system_prompt=system_prompt,
+        session=session,
+        telemetry=telemetry,
+        events=events,
+        verbose=verbose,
+        model_router=model_router,
+        context_summarizer=context_summarizer,
+    )
+
+    # ---- Signal handler for graceful shutdown ----
+    _shutdown_requested = False
+
+    def _handle_signal(signum, frame):
+        nonlocal _shutdown_requested
+        if _shutdown_requested:
+            # Second signal: force exit
+            sys.exit(130)
+        _shutdown_requested = True
+        sys.stderr.write("\n[agent] Interrupt received — saving session & journal...\n")
+        # Save session state
+        _save_session(session, telemetry, events, workspace_root)
+        # Write journal with interrupted status
+        try:
+            journal_goal = session.goal or "interactive-shell"
+            if journal_goal == "interactive-shell" and session.messages:
+                first_user = next((m.content for m in session.messages if m.role == "user"), None)
+                if first_user:
+                    journal_goal = first_user[:120]
+            _generate_journal(
+                session, journal_goal, "interrupted",
+                telemetry, events, manifest, workspace_root,
+            )
+        except Exception:
+            pass  # best-effort journal on interrupt
+        sys.stderr.write(
+            f"[agent] Session saved. To resume:\n"
+            f"  amof agent --resume {session.id}\n"
+        )
+        sys.exit(130)
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
+    # ---- Resume from previous session ----
+    if resume_session:
+        session_dir = _resolve_session_dir(workspace_root, resume_session)
+        messages_path = session_dir / "messages.jsonl"
+        telemetry_path = session_dir / "telemetry.json"
+        if messages_path.exists():
+            _load_session_messages(session, messages_path)
+            if verbose:
+                sys.stderr.write(f"[agent] Resumed session {resume_session} ({session.turn_count} turns)\n")
+        if telemetry_path.exists():
+            _load_telemetry(telemetry, telemetry_path)
+            if verbose:
+                sys.stderr.write(f"[agent] Restored telemetry (${telemetry.total_cost:.4f} spent)\n")
+
+    # ---- Plan-execute mode ----
+    if plan_execute and goal:
+        from ..orchestrator.planner import TaskPlanner, ExecutionPlan
+        from ..orchestrator.executor import SubtaskExecutor
+
+        # Determine planner model (defaults to strong tier)
+        planner_model_id = planner_model or os.environ.get(
+            "AMOF_PLANNER_MODEL", DEFAULT_TIERS.get("strong", "claude-opus-4-6")
+        )
+        planner_llm = _make_client(planner_model_id)
+
+        if verbose:
+            sys.stderr.write(f"[agent] Plan-execute mode | Planner: {planner_model_id}\n")
+
+        events.session_start(mode="plan-execute", goal=goal, ecosystem=session.ecosystem)
+
+        # Check if we're resuming from a plan file
+        plan = None
+        eco_name = manifest.get("ecosystem", "default")
+        plans_dir = workspace_root / "ecosystems" / eco_name / "plans"
+
+        if plan_file:
+            plan_path = Path(plan_file)
+            if plan_path.exists():
+                plan = ExecutionPlan.load_from_markdown(plan_path)
+                completed = sum(1 for st in plan.subtasks if st.status == "completed")
+                print(f"[plan-execute] Resumed plan from {plan_path} ({completed}/{len(plan.subtasks)} tasks done)")
+            else:
+                sys.stderr.write(f"[plan-execute] Plan file not found: {plan_file}\n")
+                return 1
+
+        if plan is None:
+            # Build codebase context for the planner
+            codebase_context = context_builder.build(mode="plan")
+
+            # Build guardrail info text for the planner
+            guardrail_info_parts = []
+            if no_touch:
+                guardrail_info_parts.append(f"no_touch_paths: {', '.join(no_touch)}")
+            if readonly_repos:
+                guardrail_info_parts.append(f"readonly repos: {', '.join(readonly_repos.keys())}")
+            guardrail_info = "\n".join(guardrail_info_parts) if guardrail_info_parts else None
+
+            # Interactive planning loop: plan -> questions -> user review
+            planner = TaskPlanner(
+                planner_llm=planner_llm,
+                workspace_root=workspace_root,
+            )
+
+            task_with_answers = goal
+            max_plan_retries = 3
+            while True:
+                print(f"[plan-execute] Planning with {planner_model_id}...")
+
+                # Retry loop for transient parse / API errors
+                plan = None
+                for attempt in range(1, max_plan_retries + 1):
+                    try:
+                        plan = planner.plan(
+                            task=task_with_answers,
+                            codebase_context=codebase_context,
+                            guardrail_info=guardrail_info,
+                        )
+                        break  # success
+                    except Exception as e:
+                        if attempt < max_plan_retries:
+                            sys.stderr.write(
+                                f"[plan-execute] Planning attempt {attempt}/{max_plan_retries} "
+                                f"failed: {e}\n  Retrying...\n"
+                            )
+                        else:
+                            sys.stderr.write(
+                                f"[plan-execute] Planning failed after {max_plan_retries} "
+                                f"attempts: {e}\n"
+                            )
+
+                if plan is None:
+                    return 1
+
+                # Display extended thinking (if produced by thinking model)
+                thinking_text = planner.last_thinking
+                if thinking_text:
+                    sys.stderr.write("[plan-execute] Thinking:\n")
+                    for tl in thinking_text.strip().splitlines()[:30]:
+                        sys.stderr.write(f"  {tl}\n")
+                    total_lines = len(thinking_text.strip().splitlines())
+                    if total_lines > 30:
+                        sys.stderr.write(f"  ... ({total_lines - 30} more lines)\n")
+
+                # Handle planner questions
+                if plan.questions:
+                    print(f"\n[plan-execute] The planner has questions:\n")
+                    answers = []
+                    for i, q in enumerate(plan.questions, 1):
+                        print(f"  {i}. {q}")
+                    print()
+                    try:
+                        user_answers = input("Your answers (or 'skip' to plan without answering): ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        return 1
+                    if user_answers.lower() != "skip":
+                        task_with_answers = f"{goal}\n\nUser answers to planner questions:\n{user_answers}"
+                        continue
+                    # skip: proceed with current plan
+
+                # Save plan to ecosystem plans folder
+                slug = "-".join(goal.lower().split()[:6])
+                slug = "".join(c for c in slug if c.isalnum() or c == "-")[:50]
+                plan_path = plans_dir / f"{time.strftime('%Y-%m-%d')}-{slug}.md"
+                plan.save_as_markdown(plan_path, session_id=session.id)
+                print(f"\n[plan-execute] Plan saved to: {plan_path}")
+
+                # Show plan summary
+                print(f"\n=== Execution Plan ({len(plan.subtasks)} tasks, ${plan.planning_cost:.4f}) ===\n")
+                print(f"Analysis: {plan.analysis[:200]}...")
+                print()
+                print(plan.summary())
+                if plan.risks:
+                    print(f"\nRisks: {', '.join(plan.risks)}")
+                print()
+
+                # Interactive approval
+                try:
+                    choice = input("[a]pprove  [e]dit  [r]eject  > ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    return 1
+
+                if choice in ("a", "approve", ""):
+                    # Re-read plan file in case user edited it
+                    plan = ExecutionPlan.load_from_markdown(plan_path)
+                    break
+                elif choice in ("r", "reject"):
+                    print("[plan-execute] Plan rejected.")
+                    return 0
+                elif choice in ("e", "edit"):
+                    try:
+                        feedback = input("Feedback (or edit the .md file directly, then press Enter): ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        return 1
+                    if feedback:
+                        task_with_answers = f"{goal}\n\nUser feedback on previous plan:\n{feedback}"
+                    else:
+                        # User edited file directly, re-read it
+                        plan = ExecutionPlan.load_from_markdown(plan_path)
+                        break
+                    continue
+                else:
+                    print(f"Unknown choice: {choice}")
+                    continue
+
+        # Record planning cost in telemetry
+        if plan.planning_cost > 0:
+            from ..orchestrator.llm.base import Usage
+            planner_usage = Usage(
+                model=plan.planner_model,
+                prompt_tokens=0, completion_tokens=0,
+                latency_ms=plan.planning_latency_ms,
+                estimated_cost=plan.planning_cost,
+            )
+            telemetry.record_from_usage(planner_usage, tier="strong")
+
+        # Phase 2: Execute
+        executor = SubtaskExecutor(
+            runner_factory=runner_factory,
+            parent_telemetry=telemetry,
+            verbose=verbose,
+        )
+
+        print("[plan-execute] Executing subtasks...")
+        plan = executor.execute_plan(plan)
+
+        # Summary
+        completed = sum(1 for st in plan.subtasks if st.status == "completed")
+        print(f"\n[plan-execute] Execution complete: {completed}/{len(plan.subtasks)} tasks done")
+        print(plan.summary())
+
+        # Save session and generate journal
+        events.session_end(telemetry.to_dict())
+        _save_session(session, telemetry, events, workspace_root)
+
+        # Auto-journal
+        _generate_journal(session, goal, agent.stop_reason if hasattr(agent, 'stop_reason') else "completed",
+                          telemetry, events, manifest, workspace_root, plan)
+
+        # Auto-tag if configured
+        _auto_tag_if_configured(cfg, workspace_root)
+
+        print(f"\n{telemetry.summary()}")
+        print(f"Event log: {events.log_path}")
+
+        # Post-run follow-up menu
+        if not no_follow_up:
+            return _post_run_menu(
+                agent=agent, session=session, telemetry=telemetry, events=events,
+                workspace_root=workspace_root, manifest=manifest, plan=plan,
+                continue_budget=continue_budget, goal=goal,
+            )
+
+        return 0 if not plan.has_failures else 1
+
+    if goal:
+        # Single-shot mode
+        events.session_start(mode=mode, goal=goal, ecosystem=session.ecosystem)
+
+        model_info = primary_llm.model_name()
+        if model_router:
+            names = model_router.tier_model_names()
+            model_info = " / ".join(f"{t}={n}" for t, n in names.items())
+        print(f"[agent] Mode: {mode.upper()} | Models: {model_info} | Session: {session.id}")
+        print(f"[agent] Goal: {goal}\n")
+
+        response = agent.run(goal)
+        print()
+        for line in response.splitlines():
+            print(f"[chat] {line}")
+        print()
+
+        # Save session and journal
+        events.session_end(telemetry.to_dict())
+        _save_session(session, telemetry, events, workspace_root)
+        _generate_journal(session, goal, agent.stop_reason, telemetry, events, manifest, workspace_root)
+
+        # Auto-tag if configured
+        _auto_tag_if_configured(cfg, workspace_root)
+
+        print(f"\n{telemetry.summary()}")
+        print(f"Event log: {events.log_path}")
+
+        # Post-run follow-up menu
+        if not no_follow_up:
+            return _post_run_menu(
+                agent=agent, session=session, telemetry=telemetry, events=events,
+                workspace_root=workspace_root, manifest=manifest,
+                continue_budget=continue_budget, goal=goal,
+            )
+    else:
+        # Interactive chat shell (plan-execute by default)
+        from ..orchestrator.planner import TaskPlanner, ExecutionPlan
+        from ..orchestrator.executor import SubtaskExecutor
+
+        planner_model_id = planner_model or os.environ.get(
+            "AMOF_PLANNER_MODEL", DEFAULT_TIERS.get("strong", "claude-opus-4-6")
+        )
+        planner_llm = _make_client(planner_model_id)
+
+        codebase_context = context_builder.build(mode="plan")
+        guardrail_info_parts = []
+        if no_touch:
+            guardrail_info_parts.append(f"no_touch_paths: {', '.join(no_touch)}")
+        if readonly_repos:
+            guardrail_info_parts.append(f"readonly repos: {', '.join(readonly_repos.keys())}")
+        guardrail_info = "\n".join(guardrail_info_parts) if guardrail_info_parts else None
+
+        return _run_interactive_shell(
+            agent=agent,
+            planner_llm=planner_llm,
+            planner_model_id=planner_model_id,
+            runner_factory=runner_factory,
+            session=session,
+            telemetry=telemetry,
+            events=events,
+            guardrails=guardrails,
+            workspace_root=workspace_root,
+            manifest=manifest,
+            codebase_context=codebase_context,
+            guardrail_info=guardrail_info,
+            verbose=verbose,
+            continue_budget=continue_budget,
+        )
+
+    return 0
+
+
+# ---- Helper functions ----
+
+
+def _save_session(session, telemetry, events, workspace_root: Path, session_subdir: str = "runs") -> Path:
+    """Save session state for resume capability.
+
+    Saves:
+    - messages.jsonl: conversation history (append-only for crash safety)
+    - telemetry.json: cumulative metrics
+
+    session_subdir: subdir under app-data runs (default "runs"). Use "sessions" for UI conversation persistence.
+    """
+    session_dir = _agent_runs_session_dir(session.id, session_subdir=session_subdir)
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save messages as JSONL (each line is one message)
+    messages_path = session_dir / "messages.jsonl"
+    with open(messages_path, "w", encoding="utf-8") as f:
+        for msg in session.get_messages_for_api():
+            f.write(json.dumps(msg, default=str) + "\n")
+
+    # Save telemetry
+    telemetry_path = session_dir / "telemetry.json"
+    telemetry_path.write_text(
+        json.dumps(telemetry.to_dict(), indent=2, default=str),
+        encoding="utf-8",
+    )
+
+    return session_dir
+
+
+def _load_session_messages(session, messages_path: Path) -> None:
+    """Load conversation history from a saved session."""
+    with open(messages_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            msg = json.loads(line)
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                session.add_user_message(content)
+            elif role == "assistant":
+                session.add_assistant_message(content=content)
+
+
+def _load_telemetry(telemetry, telemetry_path: Path) -> None:
+    """Restore telemetry state from a saved session."""
+    data = json.loads(telemetry_path.read_text(encoding="utf-8"))
+    # We can't fully reconstruct CallMetrics, but we can set the cost baseline
+    # so extend_budget works correctly
+    if "total_cost" in data:
+        telemetry._restored_cost = data["total_cost"]
+
+
+def _generate_journal(session, goal, stop_reason, telemetry, events, manifest, workspace_root, plan=None):
+    """Generate auto-journal entry after a run."""
+    try:
+        from ..orchestrator.journal import generate_entry
+        from ..manifest import get_journal_dir
+        eco_name = manifest.get("ecosystem", "default")
+        journal_dir = get_journal_dir(eco_name, base=str(workspace_root))
+        entry_path = generate_entry(
+            session_id=session.id,
+            goal=goal,
+            stop_reason=stop_reason,
+            telemetry=telemetry,
+            events=events,
+            ecosystem=eco_name,
+            output_dir=journal_dir,
+            plan=plan,
+            session=session,
+        )
+        print(f"Journal: {entry_path}")
+    except Exception as e:
+        sys.stderr.write(f"[agent] Journal generation failed: {e}\n")
+
+
+def _auto_tag_if_configured(cfg: Dict[str, Any], workspace_root: Path) -> None:
+    """Auto-tag a release if auto_tag_on_complete is configured.
+
+    Reads the setting from agent config and tags as the specified pre-release stage.
+    """
+    auto_tag = cfg.get("auto_tag_on_complete", False)
+    if not auto_tag or auto_tag is True:
+        return  # False or True-without-stage: skip
+
+    # auto_tag should be a string like "alpha", "beta", "rc"
+    stage = str(auto_tag).lower()
+    if stage not in ("alpha", "beta", "rc"):
+        return
+
+    try:
+        from .release import release_from_agent
+        tag = release_from_agent(workspace_root, bump="patch", pre=stage)
+        if tag:
+            print(f"[agent] Auto-tagged: {tag}")
+    except Exception as e:
+        sys.stderr.write(f"[agent] Auto-tag failed: {e}\n")
+
+
+def _post_run_menu(
+    agent=None, session=None, telemetry=None, events=None,
+    workspace_root=None, manifest=None, plan=None,
+    continue_budget=1.0, goal="",
+) -> int:
+    """Interactive post-run menu: continue, follow-up, review, merge, done.
+
+    Returns exit code.
+    """
+    stop_reason = getattr(agent, "stop_reason", "completed") if agent else "completed"
+    cost_str = f"${telemetry.total_cost:.2f}" if telemetry else "$0.00"
+
+    print(f"\n--- Run complete ({stop_reason} | {cost_str} spent) ---")
+    if plan and plan.file_path:
+        completed = sum(1 for st in plan.subtasks if st.status == "completed")
+        print(f"Plan:    {plan.file_path} ({completed}/{len(plan.subtasks)} tasks done)")
+    print(f"Session: {_agent_runs_session_dir(session.id)}")
+    print()
+
+    while True:
+        print("What next?")
+        print(f"  [c] Continue with more budget (+${continue_budget:.2f})")
+        print(f"  [f] Follow-up task (new goal, keeps context)")
+        print(f"  [r] Review changes (git diff --stat)")
+        print(f"  [t] Tag release (bump version, update docs, commit, tag, push)")
+        print(f"  [m] Merge checkpoint to feature branch")
+        print(f"  [q] Done")
+        print()
+
+        try:
+            choice = input("> ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return 0
+
+        if choice in ("q", "done", ""):
+            return 0
+
+        elif choice in ("c", "continue"):
+            if telemetry:
+                telemetry.extend_budget(continue_budget)
+                print(f"[agent] Budget extended by ${continue_budget:.2f} (new limit: ${telemetry.max_cost:.2f})")
+            if agent:
+                response = agent.run("Continue from where you left off. Check what was already done and continue with the next task.")
+                print()
+                for line in response.splitlines():
+                    print(f"[chat] {line}")
+                print()
+                # Save after continue
+                if session and workspace_root:
+                    _save_session(session, telemetry, events, workspace_root)
+                    _generate_journal(session, goal, agent.stop_reason, telemetry, events, manifest, workspace_root, plan)
+                print(f"\n{telemetry.summary()}")
+
+        elif choice in ("f", "follow-up"):
+            try:
+                new_goal = input("New goal: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                continue
+            if not new_goal:
+                continue
+            if agent:
+                response = agent.run(new_goal)
+                print()
+                for line in response.splitlines():
+                    print(f"[chat] {line}")
+                print()
+                if session and workspace_root:
+                    _save_session(session, telemetry, events, workspace_root)
+                print(f"\n{telemetry.summary()}")
+
+        elif choice in ("r", "review"):
+            try:
+                result = subprocess.run(
+                    ["git", "diff", "--stat"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                print(f"\n{result.stdout}\n")
+            except Exception as e:
+                print(f"  Error: {e}")
+
+        elif choice in ("m", "merge"):
+            try:
+                # Get current branch and try cherry-pick to feature branch
+                current = subprocess.run(
+                    ["git", "branch", "--show-current"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                current_branch = current.stdout.strip()
+                print(f"  Current branch: {current_branch}")
+
+                # Find the feature branch (strip -cp-... suffix)
+                if "-cp-" in current_branch:
+                    feature_branch = current_branch.rsplit("-cp-", 1)[0]
+                    head_hash = subprocess.run(
+                        ["git", "rev-parse", "HEAD"],
+                        capture_output=True, text=True, timeout=10,
+                    ).stdout.strip()
+
+                    print(f"  Cherry-picking {head_hash[:8]} to {feature_branch}...")
+                    subprocess.run(["git", "checkout", feature_branch], capture_output=True, timeout=10)
+                    result = subprocess.run(
+                        ["git", "cherry-pick", "--no-commit", head_hash],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if result.returncode == 0:
+                        try:
+                            msg = input("  Commit message: ").strip() or "feat: agent continuity features"
+                        except (EOFError, KeyboardInterrupt):
+                            msg = "feat: agent work"
+                        subprocess.run(["git", "commit", "-m", msg], capture_output=True, timeout=30)
+                        print(f"  Merged to {feature_branch}!")
+                    else:
+                        print(f"  Cherry-pick failed: {result.stderr}")
+                        subprocess.run(["git", "cherry-pick", "--abort"], capture_output=True, timeout=10)
+                        subprocess.run(["git", "checkout", current_branch], capture_output=True, timeout=10)
+                else:
+                    print("  Not on a checkpoint branch — nothing to merge.")
+            except Exception as e:
+                print(f"  Error: {e}")
+
+        elif choice in ("t", "tag", "release"):
+            try:
+                from ..orchestrator import colors as c_mod
+            except ImportError:
+                c_mod = None
+            _run_release_flow(c_mod, workspace_root or Path.cwd())
+
+        else:
+            print(f"  Unknown choice: {choice}")
+
+
+# ── Release flow (used by interactive shell + post-run menu) ──
+
+
+def _run_release_flow(c, workspace_root: Path) -> None:
+    """Interactive release flow for the shell and post-run menu.
+
+    Prompts user for bump type and pre-release stage, then runs the release.
+    """
+    from .release import cmd_release, _get_latest_tag, Version
+
+    latest_tag = _get_latest_tag()
+    if not latest_tag:
+        print(c.error("  No existing tags found. Run: amof release patch --alpha"))
+        return
+
+    current = Version.parse(latest_tag)
+    if not current:
+        print(c.error(f"  Cannot parse tag '{latest_tag}'"))
+        return
+
+    # Show current version and options
+    print()
+    print(c.header("  Release"))
+    print(f"  Current: {c.BOLD}{current.tag}{c.RESET}")
+    print()
+
+    # Build options based on current version
+    options = []
+    if current.pre:
+        # Can increment pre, promote to next stage, or promote to stable
+        next_pre = current.next_pre()
+        options.append(("1", f"{next_pre.tag}", "patch", current.pre, None))
+
+        stage_idx = ["alpha", "beta", "rc"].index(current.pre) if current.pre in ["alpha", "beta", "rc"] else -1
+        if stage_idx < 2:
+            next_stage = ["alpha", "beta", "rc"][stage_idx + 1]
+            promoted = current.promote(next_stage)
+            options.append(("2", f"{promoted.tag}", "promote", None, next_stage))
+
+        stable = current.promote()
+        options.append(("3", f"{stable.tag}", "promote", None, None))
+    else:
+        # Stable: offer patch/minor/major with alpha
+        options.append(("1", f"{current.bump('patch', 'alpha').tag}", "patch", "alpha", None))
+        options.append(("2", f"{current.bump('patch').tag}", "patch", None, None))
+        options.append(("3", f"{current.bump('minor', 'alpha').tag}", "minor", "alpha", None))
+        options.append(("4", f"{current.bump('major', 'alpha').tag}", "major", "alpha", None))
+
+    for num, tag, _, _, _ in options:
+        print(f"  [{num}] {tag}")
+    print(f"  [c] Cancel")
+    print()
+
+    try:
+        choice = input(f"  {c.USER}>{c.RESET} ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    if choice.lower() in ("c", "cancel", ""):
+        return
+
+    # Find matching option
+    selected = None
+    for num, tag, bump, pre, promote_target in options:
+        if choice == num:
+            selected = (bump, pre, promote_target)
+            break
+
+    if not selected:
+        print(c.error(f"  Unknown option: {choice}"))
+        return
+
+    bump, pre, promote_target = selected
+    rc = cmd_release(
+        bump=bump,
+        pre=pre,
+        promote_target=promote_target,
+        push=True,
+        dry_run=False,
+        yes=True,
+    )
+    if rc != 0:
+        print(c.error("  Release failed."))
+
+
+# ── Interactive shell ──────────────────────────────────────────
+
+
+def _run_interactive_shell(
+    agent,
+    planner_llm,
+    planner_model_id: str,
+    runner_factory: Any,
+    session,
+    telemetry,
+    events,
+    guardrails,
+    workspace_root: Path,
+    manifest: Dict[str, Any],
+    codebase_context: str,
+    guardrail_info: Optional[str],
+    verbose: bool,
+    continue_budget: float = 1.0,
+) -> int:
+    """Run interactive chat shell with two modes: execute (default) and plan.
+
+    Execute mode (default):
+        Type a task -> agent runs it directly. Continuous conversation.
+        The master agent can delegate to specialized runners via the Delegate tool.
+
+    Plan mode (/plan):
+        Can be entered anytime. Uses current conversation context.
+        Creates a plan file -> user refines -> agent enhances -> user approves.
+        After approval, master starts fresh with the confirmed plan.
+
+    Returns exit code.
+    """
+    from ..orchestrator.planner import TaskPlanner, ExecutionPlan
+    from ..orchestrator.executor import SubtaskExecutor
+    from ..orchestrator import colors as c
+
+    eco = manifest.get("ecosystem", "")
+    events.session_start(mode="interactive", goal="interactive-shell", ecosystem=eco)
+
+    # Banner
+    print()
+    print(c.header(f"  AMOF Agent Shell ({eco})"))
+    print()
+    model_info = agent.llm.model_name()
+    if agent.model_router:
+        names = agent.model_router.tier_model_names()
+        model_info = " / ".join(f"{t}={n}" for t, n in names.items())
+    print(c.info(f"  Models:  {model_info}"))
+    print(c.info(f"  Planner: {planner_model_id}"))
+    print(c.info(f"  Session: {session.id}"))
+    # Show runners if available
+    delegate_tool = agent.tools.get("Delegate")
+    if delegate_tool and hasattr(delegate_tool, '_factory'):
+        runner_names = delegate_tool._factory.runner_names
+        if runner_names:
+            print(c.info(f"  Runners: {', '.join(runner_names)}"))
+    print()
+    print(c.info("  Mode: execute (default) — type a task, agent runs it."))
+    print(c.info("  /plan <task>       enter plan mode (uses conversation context)"))
+    print(c.info("  /checkpoints       show git checkpoints"))
+    print(c.info("  /status            cost & telemetry"))
+    print(c.info("  /review            git diff --stat"))
+    print(c.info("  /release           tag a release"))
+    print(c.info("  /help              all commands"))
+    print(c.info("  Ctrl+C cancel      Ctrl+D exit"))
+    print()
+
+    planner = TaskPlanner(
+        planner_llm=planner_llm,
+        workspace_root=workspace_root,
+    )
+
+    eco_name = manifest.get("ecosystem", "default")
+    plans_dir = workspace_root / "ecosystems" / eco_name / "plans"
+
+    try:
+        while True:
+            # Prompt
+            try:
+                line = input(f"{c.USER}>>> {c.RESET}").strip()
+            except EOFError:
+                print()
+                break
+
+            if not line:
+                continue
+
+            # Multi-line: trailing backslash
+            while line.endswith("\\"):
+                line = line[:-1]
+                try:
+                    cont = input(f"{c.USER}... {c.RESET}")
+                except EOFError:
+                    break
+                line = line + "\n" + cont
+            line = line.strip()
+            if not line:
+                continue
+
+            # ── Slash commands ───────────────────────────────
+            if line.startswith("/"):
+                parts = line.split(None, 1)
+                cmd = parts[0].lower()
+
+                if cmd in ("/quit", "/exit", "/q"):
+                    break
+
+                elif cmd in ("/status", "/cost"):
+                    print(f"\n{c.info(telemetry.summary())}\n")
+                    continue
+
+                elif cmd == "/help":
+                    print()
+                    print(c.header("  Modes"))
+                    print("  execute (default)  Type a task, agent runs it. Continuous conversation.")
+                    print("  plan (/plan)       Plan mode. Create, refine, and execute structured plans.")
+                    print()
+                    print(c.header("  Commands"))
+                    print(f"  {c.USER}/plan <task>{c.RESET}       Enter plan mode (uses conversation context if available)")
+                    print(f"  {c.USER}/p <task>{c.RESET}          Same as /plan")
+                    print(f"  {c.USER}/checkpoints{c.RESET}       List git checkpoints on helper branch")
+                    print(f"  {c.USER}/restore <hash>{c.RESET}    Restore to a checkpoint")
+                    print(f"  {c.USER}/status{c.RESET}            Show session telemetry & cost")
+                    print(f"  {c.USER}/review{c.RESET}            Show git diff --stat")
+                    print(f"  {c.USER}/release{c.RESET}           Tag a release")
+                    print(f"  {c.USER}/quit{c.RESET}              Exit the shell")
+                    print()
+                    print(c.header("  Tips"))
+                    print("  - All inputs in execute mode are part of one conversation (follow-ups).")
+                    print("  - /plan can be used anytime — it passes conversation context to the planner.")
+                    print("  - After plan approval, master starts fresh with only the confirmed plan.")
+                    print("  - End a line with \\ to continue on the next line.")
+                    print("  - Ctrl+C cancels current run. Ctrl+D exits (writes journal).")
+                    print()
+                    continue
+
+                elif cmd == "/review":
+                    try:
+                        result = subprocess.run(
+                            ["git", "diff", "--stat"],
+                            capture_output=True, text=True, timeout=30,
+                        )
+                        print(f"\n{result.stdout}\n")
+                    except Exception as e:
+                        print(c.error(f"  Error: {e}"))
+                    continue
+
+                elif cmd == "/release":
+                    _run_release_flow(c, workspace_root)
+                    continue
+
+                elif cmd == "/checkpoints":
+                    _show_checkpoints(agent, c)
+                    continue
+
+                elif cmd == "/restore":
+                    commit_hash = parts[1].strip() if len(parts) > 1 else ""
+                    if not commit_hash:
+                        print(c.error("  Usage: /restore <commit-hash>"))
+                        continue
+                    _restore_checkpoint(agent, commit_hash, c)
+                    continue
+
+                elif cmd in ("/plan", "/p"):
+                    task = parts[1] if len(parts) > 1 else ""
+                    if not task:
+                        print(c.error("  Usage: /plan <task description>"))
+                        continue
+
+                    # ── Plan mode: pass conversation context to planner ──
+                    # If we have conversation history, summarize it for the planner
+                    conversation_context = ""
+                    if session.messages and len(session.messages) > 0:
+                        conversation_context = _summarize_conversation_for_planner(
+                            session, c
+                        )
+
+                    # Enter plan-edit-refine-execute flow
+                    _run_plan_flow(
+                        task=task,
+                        planner=planner,
+                        planner_model_id=planner_model_id,
+                        agent=agent,
+                        runner_factory=runner_factory,
+                        guardrails=guardrails,
+                        session=session,
+                        telemetry=telemetry,
+                        events=events,
+                        workspace_root=workspace_root,
+                        plans_dir=plans_dir,
+                        codebase_context=codebase_context,
+                        guardrail_info=guardrail_info,
+                        verbose=verbose,
+                        c=c,
+                        conversation_context=conversation_context,
+                    )
+                    continue
+
+                else:
+                    print(c.error(f"  Unknown command: {cmd}. Type /help"))
+                    continue
+
+            # ── Execute mode (default): quick execution ──────
+            # Run task directly. All inputs are part of one conversation.
+
+            # Auto-extend budget if exhausted — user sending a message means "keep going"
+            if telemetry.cost_exceeded:
+                old_limit = telemetry.max_cost or 0
+                extend_amount = max(continue_budget, 1.0)
+                telemetry.extend_budget(extend_amount)
+                print(c.info(
+                    f"  [Budget was exhausted (${old_limit:.2f}). "
+                    f"Auto-extended by ${extend_amount:.2f} → new limit ${telemetry.max_cost:.2f}]"
+                ))
+
+            print(f"\n{c.action('  Running...')}\n")
+            try:
+                response = agent.run(line)
+                print(f"\n{c.agent(response)}\n")
+            except KeyboardInterrupt:
+                print(f"\n{c.info('  (cancelled)')}\n")
+            cost = f"${telemetry.total_cost:.2f}"
+            print(c.info(f"  [{cost} spent]"))
+            print()
+
+            # Save session periodically
+            _save_session(session, telemetry, events, workspace_root)
+
+    except KeyboardInterrupt:
+        print()
+
+    # Session end
+    events.session_end(telemetry.to_dict())
+    _save_session(session, telemetry, events, workspace_root)
+    # Use the session goal if available, otherwise derive from first user message
+    journal_goal = session.goal or "interactive-shell"
+    if journal_goal == "interactive-shell" and session.messages:
+        first_user = next((m.content for m in session.messages if m.role == "user"), None)
+        if first_user:
+            journal_goal = first_user[:120]
+    _generate_journal(session, journal_goal, "completed", telemetry, events, manifest, workspace_root)
+
+    print(f"\n{c.info(telemetry.summary())}")
+    print(c.info(f"Event log: {events.log_path}"))
+    # Show session ID for easy resume
+    print(c.info(f"Session: {session.id}"))
+    print(c.info(f"  To resume: amof agent --resume {session.id}"))
+    return 0
+
+
+def _show_checkpoints(agent, c) -> None:
+    """Show git checkpoints from the helper branch."""
+    checkpoint_tool = agent.tools.get("GitCheckpoint")
+    if checkpoint_tool is None:
+        print(c.error("  GitCheckpoint tool not available."))
+        return
+
+    result = checkpoint_tool.execute(action="list")
+    if result.success:
+        print(f"\n{result.output}\n")
+    else:
+        print(c.error(f"  {result.error or 'No checkpoints found.'}"))
+
+
+def _restore_checkpoint(agent, commit_hash: str, c) -> None:
+    """Restore to a git checkpoint."""
+    checkpoint_tool = agent.tools.get("GitCheckpoint")
+    if checkpoint_tool is None:
+        print(c.error("  GitCheckpoint tool not available."))
+        return
+
+    result = checkpoint_tool.execute(action="restore", commit_hash=commit_hash)
+    if result.success:
+        print(f"\n{c.success(result.output)}\n")
+    else:
+        print(c.error(f"  {result.error}"))
+
+
+def _summarize_conversation_for_planner(session, c) -> str:
+    """Build a conversation summary to pass as context to the planner.
+
+    Extracts key user messages and assistant responses (no tool output)
+    to give the planner awareness of what has been discussed.
+    """
+    parts = []
+    for msg in session.messages:
+        if msg.role == "user" and msg.content:
+            parts.append(f"User: {msg.content[:500]}")
+        elif msg.role == "assistant" and msg.content:
+            parts.append(f"Agent: {msg.content[:300]}")
+
+    if not parts:
+        return ""
+
+    # Limit to last 10 exchanges to keep it manageable
+    if len(parts) > 20:
+        parts = parts[-20:]
+
+    summary = "\n\n".join(parts)
+    print(c.info(f"  (Including {len(parts)} conversation turns as context for planner)"))
+    return f"\n\n## Conversation Context (from current session)\n{summary}"
+
+
+def _run_plan_flow(
+    task: str,
+    planner,
+    planner_model_id: str,
+    agent,
+    runner_factory: Any,
+    guardrails,
+    session,
+    telemetry,
+    events,
+    workspace_root: Path,
+    plans_dir: Path,
+    codebase_context: str,
+    guardrail_info: Optional[str],
+    verbose: bool,
+    c,
+    conversation_context: str = "",
+) -> None:
+    """Plan-edit-refine-execute workflow.
+
+    Flow:
+    1. Agent creates a boilerplate plan file with task outline
+    2. User opens the file in their editor and edits it
+    3. User presses Enter → agent reads the file, refines it with the LLM
+    4. Agent overwrites the file with a detailed plan (analysis, tasks, risks)
+    5. User reviews: [a]pprove / [e]dit / [r]eject
+       - If [e]dit: user edits the file again → goto step 3
+       - If [a]pprove: master starts FRESH with confirmed plan → executes
+       - If [r]eject: return to shell
+
+    If conversation_context is provided (from mid-session /plan), it's included
+    in the planner's input so it has awareness of what was discussed.
+    """
+    from ..orchestrator.planner import ExecutionPlan
+    from ..orchestrator.executor import SubtaskExecutor
+
+    # ── Step 1: Create boilerplate plan file ─────────────────
+    slug = "-".join(task.lower().split()[:6])
+    slug = "".join(ch for ch in slug if ch.isalnum() or ch == "-")[:50] or "plan"
+    plan_path = plans_dir / f"{time.strftime('%Y-%m-%d')}-{slug}.md"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+
+    # Avoid collision
+    counter = 1
+    while plan_path.exists():
+        counter += 1
+        plan_path = plans_dir / f"{time.strftime('%Y-%m-%d')}-{slug}-{counter}.md"
+
+    boilerplate = _create_plan_boilerplate(task, session.id, plan_path)
+    plan_path.write_text(boilerplate, encoding="utf-8")
+
+    print(f"\n{c.plan('  Plan file created:')}")
+    print(c.info(f"  {plan_path}"))
+    print()
+    print(c.plan("  Edit this file in your editor to describe what you want."))
+    print(c.plan("  Add goals, constraints, files to change, anything relevant."))
+    print(c.plan("  When done, come back here and press Enter."))
+    print()
+
+    # ── Step 2-4: Edit-refine loop ───────────────────────────
+    plan = None
+    while True:
+        try:
+            input(f"  {c.USER}Press Enter when ready (or 'q' to cancel): {c.RESET}")
+        except (EOFError, KeyboardInterrupt):
+            print(c.info("\n  Cancelled."))
+            return
+
+        # Check if user typed 'q'
+        # (input() already consumed the line, but we can check the file)
+        # Re-read the user's edits
+        try:
+            user_content = plan_path.read_text(encoding="utf-8")
+        except Exception as e:
+            print(c.error(f"  Could not read {plan_path}: {e}"))
+            continue
+
+        if not user_content.strip():
+            print(c.error("  Plan file is empty. Please add your task description."))
+            continue
+
+        # ── Step 3: Agent refines the plan with LLM ──────────
+        print(f"\n{c.plan(f'  Refining plan with {planner_model_id}...')}")
+
+        plan = None
+        # Extract the user's intent from the file
+        # Pass original task + user's edits + conversation context (if mid-session)
+        enriched_task = f"{task}\n\n---\nUser's plan notes:\n{user_content}"
+        if conversation_context:
+            enriched_task = f"{enriched_task}\n{conversation_context}"
+
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                plan = planner.plan(
+                    task=enriched_task,
+                    codebase_context=codebase_context,
+                    guardrail_info=guardrail_info,
+                )
+                break
+            except KeyboardInterrupt:
+                print(f"\n{c.info('  (planning cancelled)')}")
+                return
+            except Exception as exc:
+                if attempt < max_retries:
+                    print(c.error(f"  Attempt {attempt}/{max_retries} failed: {exc}"))
+                else:
+                    print(c.error(f"  Planning failed: {exc}"))
+
+        if plan is None:
+            print(c.error("  Could not generate plan. Edit the file and try again."))
+            continue
+
+        # Display thinking if available
+        thinking_text = planner.last_thinking
+        if thinking_text:
+            print(f"\n{c.info('  Thinking:')}")
+            thinking_lines = thinking_text.strip().splitlines()
+            for tl in thinking_lines[:20]:
+                print(c.thinking(f"  {tl}"))
+            if len(thinking_lines) > 20:
+                print(c.info(f"  ... ({len(thinking_lines) - 20} more lines)"))
+
+        # Record planning cost
+        if plan.planning_cost > 0:
+            from ..orchestrator.llm.base import Usage
+            planner_usage = Usage(
+                model=plan.planner_model,
+                prompt_tokens=0, completion_tokens=0,
+                latency_ms=plan.planning_latency_ms,
+                estimated_cost=plan.planning_cost,
+            )
+            telemetry.record_from_usage(planner_usage, tier="strong")
+
+        # Handle planner questions
+        if plan.questions:
+            print(f"\n{c.question('  The planner needs clarification:')}\n")
+            for i, q in enumerate(plan.questions, 1):
+                print(c.question(f"  {i}. {q}"))
+            print()
+            try:
+                answers = input(f"{c.USER}  Your answer: {c.RESET}").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                continue
+            if answers and answers.lower() != "skip":
+                enriched_task = f"{enriched_task}\n\nUser answers:\n{answers}"
+                try:
+                    plan = planner.plan(
+                        task=enriched_task,
+                        codebase_context=codebase_context,
+                        guardrail_info=guardrail_info,
+                    )
+                except Exception as exc:
+                    print(c.error(f"  Re-planning failed: {exc}"))
+                    continue
+                if plan is None:
+                    continue
+
+        # ── Step 4: Overwrite the file with the detailed plan ─
+        plan.save_as_markdown(plan_path, session_id=session.id)
+
+        # Show summary in shell
+        print(f"\n{c.header(f'  Plan ({len(plan.subtasks)} tasks, ${plan.planning_cost:.4f})')}\n")
+        if plan.analysis:
+            for ln in plan.analysis.splitlines()[:5]:
+                print(c.plan(f"  {ln}"))
+            if len(plan.analysis.splitlines()) > 5:
+                print(c.info("  ..."))
+            print()
+
+        for st in plan.subtasks:
+            marker = {"pending": " ", "completed": "x"}.get(st.status, " ")
+            tier_color = {
+                "fast": c.GREEN, "standard": c.YELLOW, "strong": c.RED,
+            }.get(st.model_tier, "")
+            print(f"  [{marker}] {st.id}. {c.BOLD}{st.title}{c.RESET}  {tier_color}{st.model_tier}{c.RESET}")
+        if plan.risks:
+            print(f"\n{c.YELLOW}  Risks: {', '.join(plan.risks)}{c.RESET}")
+        print(f"\n{c.info(f'  Plan updated: {plan_path}')}")
+
+        # ── Step 5: Approve / Edit / Reject ──────────────────
+        print()
+        try:
+            choice = input(
+                f"  {c.USER}[a]{c.RESET}pprove  "
+                f"{c.USER}[e]{c.RESET}dit  "
+                f"{c.USER}[r]{c.RESET}eject  > "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+
+        if choice in ("r", "reject"):
+            print(c.info("  Plan rejected."))
+            return
+
+        if choice in ("e", "edit"):
+            print(c.plan("  Edit the plan file, then come back and press Enter."))
+            continue  # back to "Press Enter when ready"
+
+        # ── Approve (default) → Execute ──────────────────────
+        # Re-read in case user made last-second edits
+        try:
+            plan = ExecutionPlan.load_from_markdown(plan_path)
+        except Exception:
+            pass  # use the in-memory plan
+
+        break  # exit the edit-refine loop
+
+    if plan is None:
+        return
+
+    # ── Phase 2: Execute the plan ────────────────────────────
+    print(f"\n{c.header('  Executing...')}\n")
+
+    executor = SubtaskExecutor(
+        runner_factory=runner_factory,
+        parent_telemetry=telemetry,
+        verbose=verbose,
+    )
+
+    try:
+        plan = executor.execute_plan(plan)
+    except KeyboardInterrupt:
+        print(f"\n{c.info('  (execution interrupted)')}")
+
+    # Update the plan file with final checkbox state
+    try:
+        plan.save_as_markdown(plan_path, session_id=session.id)
+    except Exception:
+        pass
+
+    # Summary
+    completed = sum(1 for st in plan.subtasks if st.status == "completed")
+    total = len(plan.subtasks)
+    failed = sum(1 for st in plan.subtasks if st.status == "failed")
+
+    print()
+    if failed == 0 and completed == total:
+        print(c.success(f"  Done: {completed}/{total} tasks completed ✓"))
+    elif failed > 0:
+        print(c.error(f"  Done: {completed}/{total} tasks, {failed} failed"))
+    else:
+        print(c.plan(f"  Done: {completed}/{total} tasks completed"))
+
+    cost = f"${telemetry.total_cost:.2f}"
+    print(c.info(f"  [{cost} spent]"))
+    print(c.info(f"  Plan: {plan_path}"))
+    print()
+
+    # Save session
+    _save_session(session, telemetry, events, workspace_root)
+
+
+def _create_plan_boilerplate(task: str, session_id: str, plan_path: Path) -> str:
+    """Create a boilerplate plan file for the user to edit.
+
+    The file contains the task description and sections for the user to fill in.
+    The agent will read this file, enhance it with a detailed plan, and
+    overwrite it with the full plan.
+    """
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    return f"""# {task[:120]}
+
+**Created**: {now}
+**Session**: {session_id}
+**Status**: draft
+
+## Goal
+
+{task}
+
+## Context / Constraints
+
+<!-- Add any context the agent should know:
+     - Which files/services are involved?
+     - Any constraints or requirements?
+     - What should NOT be changed?
+     - Preferred approach?
+-->
+
+
+
+## Expected Outcome
+
+<!-- What does "done" look like?
+     - What should work after execution?
+     - Any specific tests to verify?
+-->
+
+
+
+---
+
+## Tasks
+
+<!-- The agent will replace this section with a detailed task list.
+     You can pre-fill tasks here if you have specific steps in mind.
+     Format: - [ ] 1. **Task title** (model_tier)
+-->
+
+- [ ] 1. **TBD** (standard)
+
+"""

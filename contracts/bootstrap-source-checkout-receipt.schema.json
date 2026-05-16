@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/bootstrap-source-checkout-receipt.schema.json",
+  "title": "Bootstrap Source Checkout Receipt",
+  "description": "Receipt describing the source checkout surfaces observed during a governed workstation bootstrap evaluation.",
+  "type": "object",
+  "required": [
+    "result_kind",
+    "contract_version",
+    "checked_at",
+    "layout_mode",
+    "canonical_amof_code_path",
+    "source_repos",
+    "dirty_repo_count",
+    "dirty_repo_names",
+    "forbidden_state_roots",
+    "status"
+  ],
+  "properties": {
+    "result_kind": {
+      "type": "string",
+      "const": "amof_bootstrap_source_checkout_receipt"
+    },
+    "contract_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checked_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "layout_mode": {
+      "type": "string",
+      "enum": [
+        "standalone_repo",
+        "split_workspace"
+      ]
+    },
+    "canonical_amof_code_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_repos": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sourceRepo"
+      }
+    },
+    "dirty_repo_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dirty_repo_names": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "forbidden_state_roots": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "WARN",
+        "BLOCKED"
+      ]
+    }
+  },
+  "$defs": {
+    "stringOrNull": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sourceRepo": {
+      "type": "object",
+      "required": [
+        "name",
+        "role",
+        "required",
+        "path",
+        "exists",
+        "git_remote_url",
+        "current_branch",
+        "current_head",
+        "dirty_count"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "git_remote_url": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "current_branch": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "current_head": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "dirty_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

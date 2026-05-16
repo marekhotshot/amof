@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/bootstrap-failure-receipt.schema.json",
+  "title": "Bootstrap Failure Receipt",
+  "description": "Failure receipt emitted when a governed workstation bootstrap bundle is blocked by one or more doctor gates.",
+  "type": "object",
+  "required": [
+    "result_kind",
+    "contract_version",
+    "generated_at",
+    "bootstrap_status",
+    "blocked_gate_names",
+    "blocked_gates",
+    "doctor_warnings",
+    "doctor_failures"
+  ],
+  "properties": {
+    "result_kind": {
+      "type": "string",
+      "const": "amof_bootstrap_failure_receipt"
+    },
+    "contract_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "bootstrap_status": {
+      "type": "string",
+      "const": "BLOCKED"
+    },
+    "blocked_gate_names": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "blocked_gates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/doctorGate"
+      }
+    },
+    "doctor_warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "doctor_failures": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "doctorGate": {
+      "type": "object",
+      "required": [
+        "name",
+        "status",
+        "summary",
+        "evidence"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "WARN",
+            "BLOCKED"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
