@@ -1,0 +1,15 @@
+name: xai-default
+provider: xai
+lane: planner
+model_family: openai-compatible
+model_env: AMOF_XAI_MODEL
+credential_refs:
+  api_key_env: XAI_API_KEY
+  base_url_env: XAI_OPENAI_BASE_URL
+redaction_policy:
+  record_secret_names_only: true
+allow_direct_git_write: false
+status: template_only_until_provider_resolver_support
+notes:
+  - xAI profile metadata is available for planning/bootstrap records.
+  - Current public agent execution may require provider resolver support before xAI can be used directly.

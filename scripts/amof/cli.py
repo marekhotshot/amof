@@ -346,6 +346,34 @@ def parse_args() -> argparse.Namespace:
     )
     paths_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
+    setup_parser = subparsers.add_parser(
+        "setup",
+        help="Guided setup for public AMOF profiles",
+    )
+    setup_sub = setup_parser.add_subparsers(dest="setup_cmd")
+    setup_provider = setup_sub.add_parser(
+        "provider",
+        help="Create an AMOF provider profile in app-data",
+    )
+    setup_provider.add_argument(
+        "provider_template",
+        nargs="?",
+        choices=["openrouter", "local-qwen", "openai", "anthropic", "xai", "runpod"],
+        help="Provider template to use",
+    )
+    setup_provider.add_argument("--list", dest="list_templates", action="store_true", help="List provider templates")
+    setup_provider.add_argument("--name", dest="profile_name", help="Provider profile name to write")
+    setup_provider.add_argument("--lane", help="Override profile lane")
+    setup_provider.add_argument("--model", help="Concrete model id to record")
+    setup_provider.add_argument("--model-env", help="Environment variable name containing the model id")
+    setup_provider.add_argument("--api-key-env", help="Environment variable name containing the API key")
+    setup_provider.add_argument("--base-url", help="Concrete OpenAI-compatible base URL to record")
+    setup_provider.add_argument("--base-url-env", help="Environment variable name containing the base URL")
+    setup_provider.add_argument("--activate", action="store_true", help="Add this profile name to the current context")
+    setup_provider.add_argument("--dry-run", action="store_true", help="Print target path and YAML without writing")
+    setup_provider.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    setup_provider.add_argument("--print-template", action="store_true", help="Print the resolved YAML template without writing")
+
     update_parser = subparsers.add_parser(
         "update",
         help="Update AMOF from the public release tags",

@@ -37,6 +37,7 @@ This public `main` intentionally keeps a narrow, installable surface:
 - `./scripts/install-amof.sh`
 - `amof check`
 - `amof doctor`
+- `amof setup provider`
 - `amof init --adopt .`
 - `amof agent --plan "Inspect this repo"`
 - `amof bootstrap contract`
@@ -56,6 +57,7 @@ What works on this reduced main:
 - `amof check`
 - `amof paths --json`
 - `amof doctor --json`
+- `amof setup provider --list`
 - `amof init --adopt .`
 - `amof agent --plan "Inspect this repo"`
 - `amof bootstrap contract --json`
@@ -147,6 +149,41 @@ It does not write files into the target repo by default. Live LLM planning or
 execution still requires provider configuration; without provider keys, the
 agent should reach the provider setup/key validation message rather than fail on
 missing `--ecosystem/-e`.
+
+## Configure A Provider Profile
+
+Provider setup stores profile metadata and environment variable references in
+AMOF app-data. It does not store raw API keys, and it does not call the provider
+while writing the profile. Live agent calls still require the referenced
+environment variables to be set in your shell.
+
+OpenRouter:
+
+```bash
+export OPENROUTER_API_KEY="<redacted>"
+amof setup provider openrouter --name openrouter-default --activate
+```
+
+Local Qwen/Ollama-compatible endpoint:
+
+```bash
+amof setup provider local-qwen --name local-qwen \
+  --base-url http://localhost:11434/v1 \
+  --model qwen2.5-coder:7b \
+  --activate
+```
+
+Runpod:
+
+```bash
+export RUNPOD_API_KEY="<redacted>"
+export RUNPOD_OPENAI_BASE_URL="<redacted>"
+amof setup provider runpod --name runpod-heavy --activate
+```
+
+For scripts or CI, add `--yes` to skip the confirmation prompt. The xAI profile
+template is available for planning/bootstrap records, but current live execution
+may require provider resolver support before xAI can be used directly.
 
 ## Install From Source
 

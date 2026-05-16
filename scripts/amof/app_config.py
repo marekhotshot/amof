@@ -159,6 +159,25 @@ def upsert_context(name: str, payload: dict[str, Any]) -> None:
     save_contexts(contexts_payload)
 
 
+def activate_provider_profile_ref(profile_name: str, *, context_name: str | None = None) -> dict[str, Any]:
+    normalized_profile = str(profile_name or "").strip()
+    if not normalized_profile:
+        raise ValueError("provider profile name is required")
+    target_context = str(context_name or get_current_context_name() or "local").strip() or "local"
+    context_payload = get_context(target_context)
+    credentials = context_payload.setdefault("credentials", {})
+    if not isinstance(credentials, dict):
+        credentials = {}
+        context_payload["credentials"] = credentials
+    refs = credentials.get("provider_profile_refs")
+    provider_refs = [str(item) for item in refs] if isinstance(refs, list) else []
+    if normalized_profile not in provider_refs:
+        provider_refs.append(normalized_profile)
+    credentials["provider_profile_refs"] = provider_refs
+    upsert_context(target_context, context_payload)
+    return deepcopy(context_payload)
+
+
 def _normalize_optional_string(value: Any) -> str | None:
     if value is None:
         return None
@@ -428,6 +447,7 @@ __all__ = [
     "ALLOWED_EXECUTION_BACKENDS",
     "ALLOWED_WORKSPACE_BACKENDS",
     "add_named_context",
+    "activate_provider_profile_ref",
     "current_context_prompt_cache_file",
     "ensure_default_context_config",
     "get_context",

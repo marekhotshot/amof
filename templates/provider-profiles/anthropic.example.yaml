@@ -1,0 +1,15 @@
+name: anthropic-default
+provider: anthropic
+lane: planner
+model_family: anthropic
+model_env: AMOF_ANTHROPIC_MODEL
+default_model: claude-sonnet-4-5
+credential_refs:
+  api_key_env: ANTHROPIC_API_KEY
+redaction_policy:
+  record_secret_names_only: true
+allow_direct_git_write: false
+status: setup_profile_only
+notes:
+  - Stores the ANTHROPIC_API_KEY environment variable name only.
+  - Anthropic remains the default provider when no agent provider is configured.

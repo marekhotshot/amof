@@ -1,0 +1,16 @@
+name: local-qwen
+provider: local
+lane: worker
+model_family: openai-compatible
+model_env: AMOF_LOCAL_QWEN_MODEL
+default_model: qwen2.5-coder:7b
+credential_refs: {}
+base_url_env: AMOF_LOCAL_OPENAI_BASE_URL
+default_base_url: http://localhost:11434/v1
+redaction_policy:
+  record_secret_names_only: true
+allow_direct_git_write: false
+status: template_only_until_runner_profile_is_configured
+notes:
+  - No API key is required by default for local Ollama-compatible endpoints.
+  - Start the local OpenAI-compatible server before using this profile for live inference.

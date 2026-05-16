@@ -1,0 +1,15 @@
+name: openai-default
+provider: openai
+lane: planner
+model_family: openai-compatible
+model_env: AMOF_OPENAI_MODEL
+default_model: gpt-4o
+credential_refs:
+  api_key_env: OPENAI_API_KEY
+redaction_policy:
+  record_secret_names_only: true
+allow_direct_git_write: false
+status: setup_profile_only
+notes:
+  - Stores the OPENAI_API_KEY environment variable name only.
+  - Current CLI execution also accepts --provider openai.

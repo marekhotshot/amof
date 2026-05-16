@@ -1,0 +1,15 @@
+name: runpod-heavy
+provider: runpod
+lane: heavy-lane
+model_family: openai-compatible
+model_env: AMOF_RUNPOD_MODEL
+credential_refs:
+  api_key_env: RUNPOD_API_KEY
+  base_url_env: RUNPOD_OPENAI_BASE_URL
+redaction_policy:
+  record_secret_names_only: true
+allow_direct_git_write: false
+status: template_only_until_runner_profile_is_configured
+notes:
+  - Runpod uses an OpenAI-compatible endpoint URL from RUNPOD_OPENAI_BASE_URL.
+  - This setup command records references only and does not call Runpod.
