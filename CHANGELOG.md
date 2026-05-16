@@ -8,6 +8,29 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.2.1] - 2026-05-16
+
+### Fixed
+
+- Installed CLI agent runtime now includes the provider/runtime dependencies needed for public agent planning.
+- Active provider profile is used as the default agent provider when no `--provider` is passed.
+- Adopted repo agent runs keep journals and plan outputs in AMOF app-data by default.
+- Public adopted repo planning loads packaged default guardrails instead of warning about no protections.
+- Optional vector memory no longer prints noisy `chromadb` warnings in default plan mode.
+- Agent install guidance now distinguishes AMOF runtime dependencies from target project dependencies.
+
+### Validation
+
+- Verified unit tests.
+- Verified Docker pipx candidate smoke.
+- Verified adopted repo stayed clean.
+- Verified activated OpenRouter profile selected by default.
+- Verified missing key reported `OPENROUTER_API_KEY`.
+- Verified no `--ecosystem/-e is required` failure.
+- Verified no missing Python module errors.
+- Verified no `NO protections` warning.
+- Verified no default `chromadb` noise.
+
 ## [2.2.0] - 2026-05-16
 
 ### Added
