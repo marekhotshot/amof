@@ -704,7 +704,21 @@ class ToolRegistry:
         # Write-class tools check path
         if name in ("Write", "StrReplace", "Delete"):
             path = args.get("path", "")
-            return self.guardrails.check_write(path)
+            guardrail_error = self.guardrails.check_write(path)
+            if guardrail_error:
+                return guardrail_error
+            if name == "Write" and path:
+                target_path = Path(path).resolve()
+                full_rewrite_authorized = bool(
+                    self.trust_state and self.trust_state.full_rewrite_authorized
+                )
+                if target_path.exists() and not full_rewrite_authorized:
+                    return (
+                        "BLOCKED: Write cannot overwrite an existing file for this task. "
+                        "Use StrReplace for targeted edits, or make the top-level task "
+                        "explicitly request a full-file rewrite."
+                    )
+            return None
 
         # Shell checks command (dangerous + sensitive prompts handled inside check_shell)
         if name == "Shell":

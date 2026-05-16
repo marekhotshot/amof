@@ -52,7 +52,7 @@ PROVIDER_DEFAULT_MODELS = {
         "planner": "gpt-4o",
     },
     "openrouter": {
-        "worker": "openai/gpt-4o-mini",
+        "worker": "anthropic/claude-sonnet-4.5",
         "planner": "anthropic/claude-sonnet-4.5",
     },
     "bedrock": {
@@ -62,6 +62,18 @@ PROVIDER_DEFAULT_MODELS = {
 }
 MUTATION_INTENT_RE = re.compile(
     r"\b(add|write|create|edit|modify|update|patch|replace|delete|remove|refactor|implement|fix|change)\b",
+    re.IGNORECASE,
+)
+FULL_REWRITE_INTENT_RE = re.compile(
+    r"\b(rewrite|replace|overwrite|regenerate)\b.{0,40}\b(entire|whole|file|from scratch)\b|"
+    r"\b(entire|whole)\b.{0,40}\b(file)\b",
+    re.IGNORECASE,
+)
+REQUESTED_PATH_RE = re.compile(
+    r"(?<![\w/.-])((?:[\w.-]+/)*[\w.-]+\.(?:md|markdown|py|js|jsx|ts|tsx|json|yaml|yml|toml|txt|rst|sh|css|html))"
+)
+LINE_BOUND_RE = re.compile(
+    r"\b(?:under|less than|fewer than|no more than|max(?:imum)?|within|keep(?:\s+the\s+change)?\s+under)\s+(\d+)\s+lines?\b",
     re.IGNORECASE,
 )
 
@@ -587,6 +599,182 @@ def _git_probe(workspace_root: Path) -> dict[str, str]:
     return {
         "status": _run(["git", "status", "--short"]),
         "diff": _run(["git", "diff", "--"]),
+        "numstat": _run(["git", "diff", "--numstat", "--"]),
+    }
+
+
+def _extract_requested_paths(text: str) -> list[str]:
+    paths: set[str] = set()
+    for match in REQUESTED_PATH_RE.finditer(text or ""):
+        path = match.group(1).strip("`'\".,:;)")
+        if path and not path.startswith(("http://", "https://")):
+            paths.add(path)
+    return sorted(paths)
+
+
+def _extract_line_bound(text: str) -> int | None:
+    match = LINE_BOUND_RE.search(text or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _extract_exact_markdown_snippet(text: str) -> list[str]:
+    if "exactly" not in (text or "").lower():
+        return []
+    lines = (text or "").splitlines()
+    start: int | None = None
+    for idx, line in enumerate(lines):
+        if line.lstrip().startswith("#"):
+            start = idx
+            break
+    if start is None:
+        return []
+    snippet: list[str] = []
+    for line in lines[start:]:
+        lowered = line.strip().lower()
+        if snippet and (
+            lowered.startswith("do not ")
+            or lowered.startswith("keep ")
+            or lowered.startswith("only ")
+        ):
+            break
+        snippet.append(line.rstrip())
+    return [line for line in snippet if line.strip()]
+
+
+def _parse_numstat(numstat: str) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for line in (numstat or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        added_raw, deleted_raw, path = parts[0], parts[1], parts[-1]
+        try:
+            added = int(added_raw)
+        except ValueError:
+            added = 0
+        try:
+            deleted = int(deleted_raw)
+        except ValueError:
+            deleted = 0
+        files.append({"path": path, "added": added, "deleted": deleted})
+    return files
+
+
+def _tracked_line_count(workspace_root: Path, rel_path: str) -> int | None:
+    result = subprocess.run(
+        ["git", "show", f"HEAD:{rel_path}"],
+        cwd=workspace_root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        return None
+    return len(result.stdout.splitlines())
+
+
+def _worktree_line_count(workspace_root: Path, rel_path: str) -> int | None:
+    path = workspace_root / rel_path
+    try:
+        return len(path.read_text(encoding="utf-8").splitlines())
+    except Exception:
+        return None
+
+
+def _evaluate_diff_guard(goal: str, workspace_root: Path, git_after: dict[str, str]) -> dict[str, Any]:
+    changed = _parse_numstat(git_after.get("numstat", ""))
+    changed_files = [entry["path"] for entry in changed]
+    added = sum(int(entry["added"]) for entry in changed)
+    deleted = sum(int(entry["deleted"]) for entry in changed)
+    requested_paths = _extract_requested_paths(goal)
+    requested_set = set(requested_paths)
+    changed_set = set(changed_files)
+    full_rewrite_intent = bool(FULL_REWRITE_INTENT_RE.search(goal or ""))
+    line_bound = _extract_line_bound(goal)
+    exact_snippet_lines = _extract_exact_markdown_snippet(goal)
+    lower_goal = (goal or "").lower()
+    docs_only = "docs-only" in lower_goal or "do not modify code" in lower_goal
+    code_extensions = {
+        ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".kt",
+        ".c", ".cc", ".cpp", ".h", ".hpp", ".sh", ".rb", ".php",
+    }
+
+    reasons: list[str] = []
+    destructive_rewrite_detected = False
+
+    if requested_set:
+        extra = sorted(changed_set - requested_set)
+        if extra:
+            reasons.append(f"requested_paths_mismatch:{','.join(extra)}")
+
+    if docs_only:
+        code_changed = sorted(
+            path for path in changed_files if Path(path).suffix.lower() in code_extensions
+        )
+        if code_changed:
+            reasons.append(f"docs_only_code_files_changed:{','.join(code_changed)}")
+
+    if line_bound is not None:
+        changed_lines = added + deleted
+        allowed_lines = max(line_bound * 3, line_bound + 20)
+        if changed_lines > allowed_lines and not full_rewrite_intent:
+            reasons.append(
+                f"line_bound_exceeded:{changed_lines}>{allowed_lines} "
+                f"(requested under {line_bound} lines)"
+            )
+
+    if exact_snippet_lines and changed_files:
+        changed_text_parts: list[str] = []
+        for path in changed_files:
+            try:
+                changed_text_parts.append((workspace_root / path).read_text(encoding="utf-8"))
+            except Exception:
+                continue
+        changed_text = "\n".join(changed_text_parts)
+        missing_exact_lines = [
+            line for line in exact_snippet_lines
+            if line.strip() and line not in changed_text
+        ]
+        if missing_exact_lines:
+            preview = " | ".join(line[:80] for line in missing_exact_lines[:3])
+            reasons.append(f"exact_text_missing:{preview}")
+
+    for entry in changed:
+        path = str(entry["path"])
+        file_added = int(entry["added"])
+        file_deleted = int(entry["deleted"])
+        before_lines = _tracked_line_count(workspace_root, path)
+        after_lines = _worktree_line_count(workspace_root, path)
+        existing_tracked_file = before_lines is not None
+
+        if not existing_tracked_file or full_rewrite_intent:
+            continue
+        if file_deleted > 20:
+            destructive_rewrite_detected = True
+            reasons.append(f"large_deletion:{path}:{file_deleted}>20")
+        if file_deleted > max(file_added * 2, 5):
+            destructive_rewrite_detected = True
+            reasons.append(f"deletion_ratio:{path}:{file_deleted}>{file_added}*2")
+        if before_lines and after_lines is not None and after_lines < before_lines * 0.70:
+            destructive_rewrite_detected = True
+            reasons.append(f"file_shrink:{path}:{before_lines}->{after_lines}")
+
+    requested_observed = not requested_set or requested_set.issubset(changed_set)
+    status = "pass" if not reasons else "fail"
+    return {
+        "status": status,
+        "reasons": reasons,
+        "changed_files": changed_files,
+        "added_lines": added,
+        "deleted_lines": deleted,
+        "destructive_rewrite_detected": destructive_rewrite_detected,
+        "requested_paths": requested_paths,
+        "requested_paths_observed": requested_observed,
     }
 
 
@@ -613,6 +801,10 @@ def _mark_plan_failed_for_verifier(plan: Any, reason: str) -> None:
             st.status = "failed"
             st.error = reason
             return
+
+
+def _plan_execute_noninteractive(no_follow_up: Any, approve_plan: Any) -> bool:
+    return bool(no_follow_up or approve_plan or not sys.stdin.isatty())
 
 
 def _interactive_confirm(command: str, reason: str) -> str:
@@ -1330,18 +1522,20 @@ def cmd_agent(
                 # Handle planner questions
                 if plan.questions:
                     print(f"\n[plan-execute] The planner has questions:\n")
-                    answers = []
                     for i, q in enumerate(plan.questions, 1):
                         print(f"  {i}. {q}")
                     print()
-                    try:
-                        user_answers = input("Your answers (or 'skip' to plan without answering): ").strip()
-                    except (EOFError, KeyboardInterrupt):
-                        return 1
-                    if user_answers.lower() != "skip":
-                        task_with_answers = f"{goal}\n\nUser answers to planner questions:\n{user_answers}"
-                        continue
-                    # skip: proceed with current plan
+                    if _plan_execute_noninteractive(no_follow_up, approve_plan):
+                        print("[plan-execute] Noninteractive mode enabled; skipping clarification questions.")
+                    else:
+                        try:
+                            user_answers = input("Your answers (or 'skip' to plan without answering): ").strip()
+                        except (EOFError, KeyboardInterrupt):
+                            return 1
+                        if user_answers.lower() != "skip":
+                            task_with_answers = f"{goal}\n\nUser answers to planner questions:\n{user_answers}"
+                            continue
+                        # skip: proceed with current plan
 
                 # Save plan to ecosystem plans folder
                 slug = "-".join(goal.lower().split()[:6])
@@ -1425,11 +1619,23 @@ def cmd_agent(
         )
 
         print("[plan-execute] Executing subtasks...")
-        plan = executor.execute_plan(plan)
+        plan = executor.execute_plan(plan, task_context=goal)
         git_after = _git_probe(workspace_root)
-        diff_changed = git_before != git_after
-        has_after_diff = bool(git_after.get("status") or git_after.get("diff"))
+        diff_changed = git_before.get("diff") != git_after.get("diff")
+        has_after_diff = bool(git_after.get("numstat") or git_after.get("diff"))
         failed_tool_calls, failed_write_tool_calls = _tool_failure_counts(telemetry)
+        diff_guard = {
+            "status": "not_applicable",
+            "reasons": [],
+            "changed_files": [],
+            "added_lines": 0,
+            "deleted_lines": 0,
+            "destructive_rewrite_detected": False,
+            "requested_paths": [],
+            "requested_paths_observed": True,
+        }
+        if mutation_intent and has_after_diff:
+            diff_guard = _evaluate_diff_guard(goal, workspace_root, git_after)
 
         verifier_failed = False
         if failed_tool_calls:
@@ -1443,6 +1649,13 @@ def cmd_agent(
             _mark_plan_failed_for_verifier(
                 plan,
                 "Verifier failed: mutation-intent plan produced no target repository diff.",
+            )
+        if mutation_intent and diff_guard["status"] == "fail":
+            verifier_failed = True
+            reasons = ", ".join(diff_guard["reasons"]) or "unknown"
+            _mark_plan_failed_for_verifier(
+                plan,
+                f"Verifier failed: diff guard rejected target diff ({reasons}).",
             )
 
         # Summary
@@ -1459,7 +1672,16 @@ def cmd_agent(
             f"failed_write_tool_calls={failed_write_tool_calls}, "
             f"mutation_intent={str(mutation_intent).lower()}, "
             f"target_diff_changed={str(diff_changed).lower()}, "
-            f"target_has_diff={str(has_after_diff).lower()}"
+            f"target_has_diff={str(has_after_diff).lower()}, "
+            f"changed_files={','.join(diff_guard['changed_files']) or '-'}, "
+            f"diff_added_lines={diff_guard['added_lines']}, "
+            f"diff_deleted_lines={diff_guard['deleted_lines']}, "
+            f"diff_guard_status={diff_guard['status']}, "
+            f"diff_guard_reasons={';'.join(diff_guard['reasons']) or '-'}, "
+            f"destructive_rewrite_detected="
+            f"{str(diff_guard['destructive_rewrite_detected']).lower()}, "
+            f"requested_paths_observed="
+            f"{str(diff_guard['requested_paths_observed']).lower()}"
         )
         print(plan.summary())
         if verifier_failed:

@@ -124,6 +124,7 @@ class SubtaskExecutor:
         self,
         plan: ExecutionPlan,
         max_iterations_per_subtask: int = 20,
+        task_context: Optional[str] = None,
     ) -> ExecutionPlan:
         """Execute all subtasks in an ExecutionPlan sequentially.
 
@@ -132,6 +133,8 @@ class SubtaskExecutor:
         Args:
             plan: The execution plan to run.
             max_iterations_per_subtask: Max iterations for each subtask's agent loop.
+            task_context: Original top-level task text to preserve exact user
+                instructions and quoted content for workers.
 
         Returns:
             The plan with all subtasks updated.
@@ -155,9 +158,14 @@ class SubtaskExecutor:
 
             # Execute sequentially (could be parallelized for independent subtasks)
             for subtask in batch:
+                plan_context_parts: list[str] = []
+                if task_context:
+                    plan_context_parts.append(f"Original user task:\n{task_context}")
+                if plan.analysis:
+                    plan_context_parts.append(f"Plan analysis:\n{plan.analysis}")
                 self.execute(
                     subtask,
-                    plan_context=plan.analysis,
+                    plan_context="\n\n".join(plan_context_parts) if plan_context_parts else None,
                     max_iterations=max_iterations_per_subtask,
                 )
 

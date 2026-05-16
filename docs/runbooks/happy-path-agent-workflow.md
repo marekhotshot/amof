@@ -282,11 +282,14 @@ That default runner can use `Read`, `Write`, `StrReplace`, `Glob`, `LS`, and
 `ReadLints`; it does not include `Shell`, `Delete`, or `GitCheckpoint`.
 For adopted repos, write-class tools are confined to the adopted repo root.
 With `--provider openrouter`, AMOF uses OpenRouter-compatible defaults
-(`anthropic/claude-sonnet-4.5` for planning and `openai/gpt-4o-mini` for the
-worker/default model) unless you pass explicit model flags.
+(`anthropic/claude-sonnet-4.5` for planning and the worker/default model) unless
+you pass explicit model flags.
 Plan execution verifies tool and repository outcomes after the worker runs. A
 mutation-intent plan is not considered successful if write-class tools fail or
-if no target repository diff appears after claimed edits.
+if no target repository diff appears after claimed edits. Bounded execution also
+checks diff quality: large destructive rewrites, unexpected files, code changes
+for docs-only tasks, and missing exact requested text fail the run instead of
+being reported as success.
 `--no-follow-up` only skips the post-run menu; it does not approve execution.
 For unattended disposable-repo smoke tests, pass `--approve-plan` after you are
 comfortable with the generated plan behavior.
@@ -354,6 +357,12 @@ git commit -m "feat: add name argument"
 
 Use autonomous execution only when you have intentionally configured provider,
 guardrail, and runner settings for your repo.
+
+### Manual review before commit
+
+Bounded worker execution produces a reviewable git diff. Before committing,
+inspect git status, review the diff, and run the relevant tests. AMOF must not
+auto-commit or push these changes.
 
 ## Validate Changes
 

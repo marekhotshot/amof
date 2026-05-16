@@ -22,7 +22,7 @@ from amof.orchestrator.llm.base import ProviderError
 from amof.orchestrator.planner import TaskPlanner
 from amof.orchestrator.runners import PUBLIC_DEFAULT_RUNNERS_CONFIG, RunnerFactory
 from amof.orchestrator.trust_boundary import create_trust_state
-from amof.orchestrator.tools.base import GuardrailConfig, Guardrails, create_default_registry
+from amof.orchestrator.tools.base import GuardrailConfig, Guardrails, ToolCall, create_default_registry
 
 
 @contextmanager
@@ -124,6 +124,26 @@ class _FakeInteractiveAgent:
     def run(self, goal: str) -> str:
         self.run_calls += 1
         return "should not run"
+
+
+class _RecordingRunnerFactory:
+    runner_names = ["code"]
+
+    def __init__(self) -> None:
+        self.contexts: list[str] = []
+
+    def run_runner(self, name, task, context=None, parent_telemetry=None):
+        from amof.orchestrator.runners import RunnerResult
+        from amof.orchestrator.telemetry import SessionTelemetry
+
+        self.contexts.append(context or "")
+        return RunnerResult(
+            runner_name=name,
+            success=True,
+            response="ok",
+            stop_reason="completed",
+            telemetry=SessionTelemetry(),
+        )
 
 
 class _ProviderErrorPlannerLLM:
@@ -279,11 +299,25 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertEqual(planner_model, "anthropic/claude-sonnet-4.5")
         self.assertNotEqual(planner_model, "claude-opus-4-6")
 
+    def test_openrouter_default_worker_model_uses_bounded_quality_model(self) -> None:
+        worker_model = agent_cmd._default_worker_model("openrouter", None, None)
+
+        self.assertEqual(worker_model, "anthropic/claude-sonnet-4.5")
+        self.assertNotEqual(worker_model, "openai/gpt-4o-mini")
+
     def test_explicit_planner_model_wins(self) -> None:
         self.assertEqual(
             agent_cmd._default_planner_model("openrouter", "anthropic/claude-sonnet-4.5"),
             "anthropic/claude-sonnet-4.5",
         )
+
+    def test_plan_execute_no_follow_up_is_noninteractive_for_clarifications(self) -> None:
+        with patch("sys.stdin.isatty", return_value=True):
+            self.assertTrue(agent_cmd._plan_execute_noninteractive(True, False))
+            self.assertTrue(agent_cmd._plan_execute_noninteractive(False, True))
+            self.assertFalse(agent_cmd._plan_execute_noninteractive(False, False))
+        with patch("sys.stdin.isatty", return_value=False):
+            self.assertTrue(agent_cmd._plan_execute_noninteractive(False, False))
 
     def test_provider_400_planning_error_is_not_schema_retried(self) -> None:
         planner_llm = _ProviderErrorPlannerLLM()
@@ -307,6 +341,272 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         trust_state = create_trust_state("Add only this function to app.py")
 
         self.assertIn("write", trust_state.trusted_intent_caps)
+        self.assertFalse(trust_state.full_rewrite_authorized)
+
+    def test_explicit_full_rewrite_intent_is_tracked(self) -> None:
+        trust_state = create_trust_state("Rewrite the entire file README.md from scratch")
+
+        self.assertIn("write", trust_state.trusted_intent_caps)
+        self.assertTrue(trust_state.full_rewrite_authorized)
+
+    def test_write_new_file_allowed_but_existing_file_blocked_for_add_intent(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-write-existing-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            (repo / "README.md").write_text("old\n", encoding="utf-8")
+            guardrails = Guardrails(
+                config=GuardrailConfig.public_defaults(),
+                writable_roots=[repo],
+            )
+            trust_state = create_trust_state("Add a section to README.md")
+            registry = create_default_registry(
+                guardrails=guardrails,
+                role="worker",
+                workspace_root=repo,
+                trust_state=trust_state,
+            )
+
+            with _cwd(repo):
+                new_result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="Write",
+                        arguments={"path": "NEW.md", "contents": "new\n"},
+                    )
+                )
+                existing_result = registry.execute(
+                    ToolCall(
+                        id="2",
+                        name="Write",
+                        arguments={"path": "README.md", "contents": "replacement\n"},
+                    )
+                )
+
+        self.assertTrue(new_result.success, new_result.error)
+        self.assertFalse(existing_result.success)
+        self.assertIn("Write cannot overwrite an existing file", existing_result.error or "")
+
+    def test_write_existing_file_allowed_for_explicit_full_rewrite_intent(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-write-full-rewrite-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            (repo / "README.md").write_text("old\n", encoding="utf-8")
+            guardrails = Guardrails(
+                config=GuardrailConfig.public_defaults(),
+                writable_roots=[repo],
+            )
+            trust_state = create_trust_state("Overwrite the whole file README.md")
+            registry = create_default_registry(
+                guardrails=guardrails,
+                role="worker",
+                workspace_root=repo,
+                trust_state=trust_state,
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="Write",
+                        arguments={"path": "README.md", "contents": "replacement\n"},
+                    )
+                )
+            contents = (repo / "README.md").read_text(encoding="utf-8")
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(contents, "replacement\n")
+
+    def test_str_replace_existing_file_allowed_inside_adopted_repo(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            (repo / "README.md").write_text("old\n", encoding="utf-8")
+            guardrails = Guardrails(
+                config=GuardrailConfig.public_defaults(),
+                writable_roots=[repo],
+            )
+            registry = create_default_registry(
+                guardrails=guardrails,
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={"path": "README.md", "old_string": "old\n", "new_string": "old\nnew\n"},
+                    )
+                )
+            contents = (repo / "README.md").read_text(encoding="utf-8")
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(contents, "old\nnew\n")
+
+    def test_write_outside_adopted_repo_remains_blocked(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-write-outside-") as td:
+            root = Path(td)
+            repo = root / "repo"
+            repo.mkdir()
+            outside = root / "outside.md"
+            guardrails = Guardrails(
+                config=GuardrailConfig.public_defaults(),
+                writable_roots=[repo],
+            )
+            registry = create_default_registry(
+                guardrails=guardrails,
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a file"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="Write",
+                        arguments={"path": str(outside), "contents": "outside\n"},
+                    )
+                )
+
+        self.assertFalse(result.success)
+        self.assertIn("outside writable roots", result.error or "")
+
+    def test_diff_guard_rejects_destructive_docs_rewrite(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-diff-rewrite-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            doc = repo / "docs" / "runbooks" / "happy-path-agent-workflow.md"
+            doc.parent.mkdir(parents=True)
+            doc.write_text("\n".join(f"line {i}" for i in range(1, 101)) + "\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add docs"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            doc.write_text("short replacement\n", encoding="utf-8")
+
+            guard = agent_cmd._evaluate_diff_guard(
+                "In docs/runbooks/happy-path-agent-workflow.md, add a docs-only section under 12 lines. Do not modify code.",
+                repo,
+                agent_cmd._git_probe(repo),
+            )
+
+        self.assertEqual(guard["status"], "fail")
+        self.assertTrue(guard["destructive_rewrite_detected"])
+        self.assertIn("docs/runbooks/happy-path-agent-workflow.md", guard["changed_files"])
+
+    def test_diff_guard_allows_bounded_docs_insertion(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-diff-insert-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            doc = repo / "docs" / "runbooks" / "happy-path-agent-workflow.md"
+            doc.parent.mkdir(parents=True)
+            doc.write_text("before\n## Bounded Worker Execution\nold\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add docs"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            doc.write_text("before\n## Bounded Worker Execution\nold\n\n### Manual review\n\nReview diff.\n", encoding="utf-8")
+
+            guard = agent_cmd._evaluate_diff_guard(
+                "In docs/runbooks/happy-path-agent-workflow.md, add a docs-only section under 12 lines. Do not modify code.",
+                repo,
+                agent_cmd._git_probe(repo),
+            )
+
+        self.assertEqual(guard["status"], "pass", guard["reasons"])
+        self.assertEqual(guard["added_lines"], 4)
+        self.assertEqual(guard["deleted_lines"], 0)
+
+    def test_diff_guard_rejects_missing_exact_requested_section(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-diff-exact-missing-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            doc = repo / "docs" / "runbooks" / "happy-path-agent-workflow.md"
+            doc.parent.mkdir(parents=True)
+            doc.write_text("before\n## Bounded Worker Execution\nold\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add docs"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            doc.write_text(
+                "before\n## Bounded Worker Execution\nold\n\n"
+                "### Manual Review Before Merge\n\nReview the generated diff.\n",
+                encoding="utf-8",
+            )
+
+            guard = agent_cmd._evaluate_diff_guard(
+                "In docs/runbooks/happy-path-agent-workflow.md, add exactly this short section:\n\n"
+                "### Manual review before commit\n\n"
+                "Bounded worker execution produces a reviewable git diff.\n\n"
+                "Do not modify code. Keep the change under 12 lines.",
+                repo,
+                agent_cmd._git_probe(repo),
+            )
+
+        self.assertEqual(guard["status"], "fail")
+        self.assertTrue(any(reason.startswith("exact_text_missing") for reason in guard["reasons"]))
+
+    def test_diff_guard_allows_exact_requested_section(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-diff-exact-pass-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            doc = repo / "docs" / "runbooks" / "happy-path-agent-workflow.md"
+            doc.parent.mkdir(parents=True)
+            doc.write_text("before\n## Bounded Worker Execution\nold\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add docs"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            doc.write_text(
+                "before\n## Bounded Worker Execution\nold\n\n"
+                "### Manual review before commit\n\n"
+                "Bounded worker execution produces a reviewable git diff.\n",
+                encoding="utf-8",
+            )
+
+            guard = agent_cmd._evaluate_diff_guard(
+                "In docs/runbooks/happy-path-agent-workflow.md, add exactly this short section:\n\n"
+                "### Manual review before commit\n\n"
+                "Bounded worker execution produces a reviewable git diff.\n\n"
+                "Do not modify code. Keep the change under 12 lines.",
+                repo,
+                agent_cmd._git_probe(repo),
+            )
+
+        self.assertEqual(guard["status"], "pass", guard["reasons"])
+
+    def test_diff_guard_rejects_unrelated_requested_path_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-diff-unrelated-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            (repo / "app.py").write_text("print('old')\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            (repo / "app.py").write_text("print('changed')\n", encoding="utf-8")
+
+            guard = agent_cmd._evaluate_diff_guard(
+                "In docs/runbooks/happy-path-agent-workflow.md, add a docs-only section under 12 lines. Do not modify code.",
+                repo,
+                agent_cmd._git_probe(repo),
+            )
+
+        self.assertEqual(guard["status"], "fail")
+        self.assertFalse(guard["requested_paths_observed"])
+        self.assertTrue(any(reason.startswith("requested_paths_mismatch") for reason in guard["reasons"]))
+
+    def test_pycache_untracked_noise_does_not_count_as_target_diff(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-diff-pycache-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            pycache = repo / "__pycache__"
+            pycache.mkdir()
+            (pycache / "app.cpython-311.pyc").write_bytes(b"noise")
+            probe = agent_cmd._git_probe(repo)
+
+        self.assertEqual(probe["numstat"], "")
+        self.assertEqual(probe["diff"], "")
+
+    def test_requested_path_extraction_includes_bare_filenames(self) -> None:
+        paths = agent_cmd._extract_requested_paths(
+            "Add farewell(name) to app.py and a matching test in tests/test_app.py."
+        )
+
+        self.assertEqual(paths, ["app.py", "tests/test_app.py"])
 
     def test_runner_failed_write_tool_fails_result(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-runner-failed-write-") as td:
@@ -560,6 +860,27 @@ Add a function.
             agent_cmd._validate_runner_factory_for_plan(None, plan),
             "No runner factory available for plan execution. Expected runner: code.",
         )
+
+    def test_subtask_executor_passes_original_goal_to_runner_context(self) -> None:
+        from amof.orchestrator.executor import SubtaskExecutor
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        factory = _RecordingRunnerFactory()
+        plan = ExecutionPlan(
+            analysis="insert exact text",
+            subtasks=[Subtask(id="1", title="Edit docs", description="Edit docs", runner="code")],
+            execution_order=["1"],
+        )
+
+        SubtaskExecutor(runner_factory=factory).execute_plan(
+            plan,
+            task_context="### Manual review before commit\n\nUse this exact text.",
+        )
+
+        self.assertTrue(factory.contexts)
+        self.assertIn("Original user task", factory.contexts[0])
+        self.assertIn("### Manual review before commit", factory.contexts[0])
+        self.assertIn("Plan analysis", factory.contexts[0])
 
     def test_adopted_guardrails_confine_writes_to_repo_root(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-write-root-") as td:

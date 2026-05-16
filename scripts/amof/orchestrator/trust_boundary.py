@@ -22,7 +22,7 @@ _READ_TOOL_NAMES = {"Read", "Grep", "Glob", "LS", "ReadLints", "MemorySearch"}
 _WRITE_TOOL_NAMES = {"Write", "StrReplace", "Delete", "GitCheckpoint"}
 
 _WRITE_INTENT_RE = re.compile(
-    r"\b(add|append|change|edit|fix|update|patch|refactor|write|create|delete|modify|implement|restore|rewire)\b",
+    r"\b(add|append|change|edit|fix|update|patch|refactor|write|rewrite|overwrite|regenerate|create|delete|modify|implement|restore|rewire)\b",
     re.IGNORECASE,
 )
 _NETWORK_INTENT_RE = re.compile(
@@ -31,6 +31,11 @@ _NETWORK_INTENT_RE = re.compile(
 )
 _SECRET_INTENT_RE = re.compile(
     r"\b(secret|credential|api[_ -]?key|token|password|env(?:ironment)? variable|secretref|secret ref|rotate key|provider key)\b",
+    re.IGNORECASE,
+)
+_FULL_REWRITE_INTENT_RE = re.compile(
+    r"\b(rewrite|replace|overwrite|regenerate)\b.{0,40}\b(entire|whole|file|from scratch)\b|"
+    r"\b(entire|whole)\b.{0,40}\b(file)\b",
     re.IGNORECASE,
 )
 
@@ -73,6 +78,7 @@ _SECRET_TOKEN_RE = re.compile(r"(api[_-]?key|token|secret|password)", re.IGNOREC
 @dataclass
 class TrustState:
     trusted_intent_caps: Set[Capability]
+    full_rewrite_authorized: bool = False
     untrusted_context_present: bool = False
     untrusted_sources: List[str] = field(default_factory=list)
 
@@ -114,7 +120,10 @@ def derive_trusted_intent_caps(user_prompt: str) -> Set[Capability]:
 
 
 def create_trust_state(user_prompt: str) -> TrustState:
-    return TrustState(trusted_intent_caps=derive_trusted_intent_caps(user_prompt))
+    return TrustState(
+        trusted_intent_caps=derive_trusted_intent_caps(user_prompt),
+        full_rewrite_authorized=bool(_FULL_REWRITE_INTENT_RE.search(user_prompt or "")),
+    )
 
 
 def classify_tool_capabilities(tool_name: str, tool_args: Dict[str, Any]) -> Set[Capability]:

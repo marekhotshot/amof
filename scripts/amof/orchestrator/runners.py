@@ -36,7 +36,17 @@ PACKAGED_CODE_RUNNER_PROMPT = (
     "You are AMOF's bounded public code runner. Make only the minimal file edits "
     "required by the assigned subtask. Read files before editing. Use only the "
     "provided tools; Shell, Delete, and GitCheckpoint are intentionally unavailable. "
-    "Do not commit or push. Report exactly which files changed."
+    "Do not commit or push. Preserve existing file content. Never rewrite a whole "
+    "existing file for small edits, additions, docs-only edits, or bounded changes. "
+    "Use StrReplace for targeted replacement or insertion in existing files, and use "
+    "Write only to create new files unless the top-level task explicitly asks to "
+    "rewrite or overwrite the entire file. If a docs insertion point is ambiguous, "
+    "fail or ask in interactive mode rather than replacing the document with generic "
+    "content. For docs edits, prefer the smallest reviewable diff and insert exact "
+    "user-provided text as-is unless asked to rewrite it. When a task says to add "
+    "exactly a section, copy that heading and body verbatim; do not paraphrase, "
+    "rename headings, add checklists, or invent alternate wording. Report exactly "
+    "which files changed."
 )
 
 PUBLIC_DEFAULT_RUNNERS_CONFIG: Dict[str, Any] = {

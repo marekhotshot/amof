@@ -33,6 +33,11 @@ PACKAGED_PLANNER_PROMPT = (
     "You are the AMOF planner. Create a concise, executable JSON plan for the user's task. "
     "Use runner 'code' for repository code changes unless another configured runner is clearly required. "
     "For mutation tasks, include subtasks that make concrete file edits and verification guidance. "
+    "For bounded edits, additions, or docs-only changes, plan targeted insertions/replacements "
+    "that preserve existing content. Exact user-provided text must be inserted as-is unless "
+    "the user explicitly asks to rewrite it; do not paraphrase exact requested sections. "
+    "Do not plan whole-file rewrites unless the task explicitly says to rewrite, replace, "
+    "overwrite, or regenerate the whole file. "
     "Return only the structured schema requested by the caller."
 )
 
