@@ -233,7 +233,17 @@ def _secret_exposure_report(*, canonical_amof: Path) -> dict[str, Any]:
     }
 
 
-def _app_data_report(*, workspace: Path, canonical_amof: Path) -> dict[str, Any]:
+def _source_workspace_roots(*, layout_mode: str, workspace: Path, canonical_amof: Path) -> list[Path]:
+    if layout_mode in {"split_workspace", "standalone_repo"}:
+        return [workspace.resolve(strict=False), canonical_amof.resolve(strict=False)]
+    if layout_mode == "installed_cli":
+        workspace_top = _git_toplevel(workspace)
+        if workspace_top is not None:
+            return [workspace_top.resolve(strict=False)]
+    return []
+
+
+def _app_data_report(*, layout_mode: str, workspace: Path, canonical_amof: Path) -> dict[str, Any]:
     ensure_app_roots()
     ensure_default_context_config()
     roots = get_app_paths()
@@ -253,7 +263,11 @@ def _app_data_report(*, workspace: Path, canonical_amof: Path) -> dict[str, Any]
         "tmp_dir": _directory_status(tmp_dir()),
         "provider_profiles_dir": _directory_status(provider_profiles_dir()),
     }
-    forbidden_roots = [workspace.resolve(strict=False), canonical_amof.resolve(strict=False)]
+    forbidden_roots = _source_workspace_roots(
+        layout_mode=layout_mode,
+        workspace=workspace,
+        canonical_amof=canonical_amof,
+    )
     for entry in runtime_dirs.values():
         entry_path = Path(entry["path"])
         entry["inside_source_workspace"] = any(_is_relative_to(entry_path, parent) for parent in forbidden_roots)
@@ -378,7 +392,12 @@ def topology_report(
         "canonical_ui": _git_summary(canonical_ui),
         "gmd_app": _git_summary(gmd_app),
     }
-    app_data = _app_data_report(workspace=workspace, canonical_amof=canonical_amof)
+    source_workspace_roots = _source_workspace_roots(
+        layout_mode=layout_mode,
+        workspace=workspace,
+        canonical_amof=canonical_amof,
+    )
+    app_data = _app_data_report(layout_mode=layout_mode, workspace=workspace, canonical_amof=canonical_amof)
     contracts = _contracts_report(canonical_amof, contract_support_mode=contract_support_mode)
     toolchain = _toolchain_report()
     contexts = load_contexts()
@@ -445,6 +464,7 @@ def topology_report(
         "canonical_amof_code_path": str(canonical_amof),
         "canonical_ui_path": str(canonical_ui),
         "root_workspace_role": root_workspace_role,
+        "source_workspace_roots": [str(path) for path in source_workspace_roots],
         "contract_support_mode": contract_support_mode,
         "runtime_import_source": resolved_import_origin,
         "runtime_import_is_canonical": import_is_canonical,

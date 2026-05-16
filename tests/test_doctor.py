@@ -9,6 +9,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from amof.commands.bootstrap import build_bootstrap_contract
 from amof.commands.doctor import topology_report
 
 
@@ -163,6 +164,104 @@ class DoctorLayoutTests(unittest.TestCase):
         self.assertFalse(report["surfaces"]["canonical_amof"]["git"])
         self.assertFalse(any("required contract missing" in item for item in report["failures"]))
         self.assertNotEqual(report["verdict"], "FAIL")
+
+    def test_installed_cli_generic_root_does_not_treat_home_app_data_as_source(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-doctor-installed-root-") as td:
+            temp_root = Path(td)
+            generic_root = temp_root / "generic-root"
+            runtime_root = temp_root / "site-packages" / "amof"
+            generic_root.mkdir(parents=True, exist_ok=True)
+            runtime_root.mkdir(parents=True, exist_ok=True)
+            (runtime_root / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+
+            with (
+                patch.dict("os.environ", {"AMOF_HOME": str(generic_root / "root" / ".local" / "amof")}, clear=False),
+                patch("amof.commands.doctor._runtime_package_root", return_value=runtime_root),
+            ):
+                report = topology_report(
+                    start_path=generic_root,
+                    import_origin=str(runtime_root / "__init__.py"),
+                    path_entries=[str(runtime_root.parent)],
+                )
+
+        self.assertEqual(report["layout_mode"], "installed_cli")
+        self.assertEqual(report["source_workspace_roots"], [])
+        self.assertFalse(report["app_data"]["roots"]["config_root"]["inside_source_workspace"])
+        self.assertFalse(any("source workspace" in item for item in report["failures"]))
+        self.assertNotEqual(report["verdict"], "FAIL")
+
+        payload = build_bootstrap_contract(report, output_path=Path(td) / "contract.json")
+        self.assertNotEqual(payload["bootstrap_status"], "BLOCKED")
+        self.assertTrue(payload["director_prerequisites"]["runtime_roots_outside_source_workspaces"])
+
+    def test_installed_cli_home_directory_does_not_treat_app_data_as_source(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-doctor-installed-home-") as td:
+            temp_root = Path(td)
+            home_dir = temp_root / "home" / "amof-user"
+            runtime_root = temp_root / "site-packages" / "amof"
+            home_dir.mkdir(parents=True, exist_ok=True)
+            runtime_root.mkdir(parents=True, exist_ok=True)
+            (runtime_root / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+
+            with (
+                patch.dict("os.environ", {"AMOF_HOME": str(home_dir / ".local" / "share" / "amof")}, clear=False),
+                patch("amof.commands.doctor._runtime_package_root", return_value=runtime_root),
+            ):
+                report = topology_report(
+                    start_path=home_dir,
+                    import_origin=str(runtime_root / "__init__.py"),
+                    path_entries=[str(runtime_root.parent)],
+                )
+
+        self.assertEqual(report["layout_mode"], "installed_cli")
+        self.assertEqual(report["source_workspace_roots"], [])
+        self.assertFalse(report["app_data"]["roots"]["data_root"]["inside_source_workspace"])
+        self.assertFalse(any("source workspace" in item for item in report["failures"]))
+        self.assertNotEqual(report["verdict"], "FAIL")
+
+    def test_installed_cli_external_git_repo_preserves_source_workspace_guard(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-doctor-installed-git-") as td:
+            temp_root = Path(td)
+            repo = temp_root / "target-repo"
+            runtime_root = temp_root / "site-packages" / "amof"
+            runtime_root.mkdir(parents=True, exist_ok=True)
+            (runtime_root / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+            _init_git_repo(repo)
+
+            with (
+                patch.dict("os.environ", {"AMOF_HOME": str(repo / ".amof-home")}, clear=False),
+                patch("amof.commands.doctor._runtime_package_root", return_value=runtime_root),
+            ):
+                report = topology_report(
+                    start_path=repo,
+                    import_origin=str(runtime_root / "__init__.py"),
+                    path_entries=[str(runtime_root.parent)],
+                )
+
+        self.assertEqual(report["layout_mode"], "installed_cli")
+        self.assertEqual(report["source_workspace_roots"], [str(repo)])
+        self.assertTrue(report["app_data"]["roots"]["config_root"]["inside_source_workspace"])
+        self.assertEqual(report["verdict"], "FAIL")
+
+    def test_source_checkout_still_blocks_app_data_inside_checkout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-doctor-source-guard-") as td:
+            temp_root = Path(td)
+            repo = temp_root / "repo"
+            (repo / "scripts" / "amof").mkdir(parents=True, exist_ok=True)
+            (repo / "scripts" / "amof" / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+            _seed_required_contracts(repo)
+            _init_git_repo(repo)
+
+            with patch.dict("os.environ", {"AMOF_HOME": str(repo / ".amof-home")}, clear=False):
+                report = topology_report(
+                    start_path=repo,
+                    import_origin=str(repo / "scripts" / "amof" / "__init__.py"),
+                    path_entries=[str(repo / "scripts")],
+                )
+
+        self.assertEqual(report["layout_mode"], "standalone_repo")
+        self.assertTrue(report["app_data"]["roots"]["config_root"]["inside_source_workspace"])
+        self.assertEqual(report["verdict"], "FAIL")
 
 
 if __name__ == "__main__":

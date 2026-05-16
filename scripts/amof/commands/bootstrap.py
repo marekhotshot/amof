@@ -306,12 +306,17 @@ def build_bootstrap_contract(
     if artifact_paths:
         normalized_artifact_paths.update(artifact_paths)
     forbidden_roots = []
-    for path in (
-        report.get("workspace_root"),
-        report.get("canonical_amof_code_path"),
-        report.get("canonical_ui_path"),
-        report.get("surfaces", {}).get("gmd_app", {}).get("path"),
-    ):
+    source_workspace_roots = report.get("source_workspace_roots")
+    if isinstance(source_workspace_roots, list):
+        source_root_candidates = source_workspace_roots
+    else:
+        source_root_candidates = [
+            report.get("workspace_root"),
+            report.get("canonical_amof_code_path"),
+            report.get("canonical_ui_path"),
+            report.get("surfaces", {}).get("gmd_app", {}).get("path"),
+        ]
+    for path in source_root_candidates:
         normalized = str(path or "").strip()
         if normalized and normalized not in forbidden_roots:
             forbidden_roots.append(normalized)
