@@ -79,7 +79,8 @@ def cmd_check(manifest: Dict[str, Any]) -> int:
     print("AMOF Environment Check")
     print("=" * 50)
     
-    all_ok = True
+    required_ok = True
+    optional_warning_count = 0
     
     # Required tools
     print("\n📦 Required Tools:")
@@ -94,7 +95,7 @@ def cmd_check(manifest: Dict[str, Any]) -> int:
         color_version = version if found else f"MISSING - {description}"
         print(f"  {status} {tool:<12} {color_version}")
         if not found:
-            all_ok = False
+            required_ok = False
     
     # Optional tools
     print("\n📦 Optional Tools:")
@@ -117,17 +118,17 @@ def cmd_check(manifest: Dict[str, Any]) -> int:
     git_issues = check_git_config()
     if git_issues:
         for issue in git_issues:
-            print(f"  ✗ {issue}")
-            all_ok = False
+            print(f"  ○ {issue} (optional for public install/basic checks)")
+            optional_warning_count += 1
     else:
         print("  ✓ Git user configured")
     
     # SSH key
     print("\n🔑 SSH Key:")
     ssh_ok, ssh_status = check_ssh_key()
-    print(f"  {'✓' if ssh_ok else '✗'} {ssh_status}")
+    print(f"  {'✓' if ssh_ok else '○'} {ssh_status}")
     if not ssh_ok:
-        all_ok = False
+        optional_warning_count += 1
     
     # Environment file
     print("\n📄 Environment:")
@@ -144,10 +145,15 @@ def cmd_check(manifest: Dict[str, Any]) -> int:
     
     # Summary
     print("\n" + "=" * 50)
-    if all_ok:
+    if not required_ok:
+        print("❌ Required prerequisites missing. Fix the issues above.")
+        return 1
+    if optional_warning_count:
+        print("✅ Required prerequisites satisfied with optional warnings.")
+        return 0
+    if required_ok:
         print("✅ All prerequisites satisfied!")
         return 0
-    else:
-        print("❌ Some prerequisites missing. Fix the issues above.")
-        return 1
+    print("❌ Required prerequisites missing. Fix the issues above.")
+    return 1
 

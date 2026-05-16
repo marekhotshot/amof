@@ -62,7 +62,34 @@ What is intentionally not included on this canonical main:
 - infrastructure, runtime adapters, and embedded workspace trees
 - demo UIs, cloud/prod deployment stacks, and runtime operator surfaces
 
-## Quick Start From Fresh Clone
+## Quick Install
+
+```bash
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.0.1"
+```
+
+This is the recommended public install path for end users. It installs the
+`amof` CLI from the public GitHub tag without requiring a manual AMOF source
+checkout.
+
+## Try AMOF In Another Repo
+
+```bash
+cd /path/to/your/repo
+amof check
+amof doctor
+amof bootstrap contract
+amof bootstrap bundle
+```
+
+`amof check` validates the required public prerequisites first. In a fresh user
+environment it may still report optional warnings for Git identity, SSH keys,
+or provider setup depending on the workflows you plan to use. Those warnings do
+not block basic public install, `doctor`, or bootstrap evidence commands.
+
+## Install From Source
+
+Use this path when developing or contributing to AMOF itself:
 
 ```bash
 git clone https://github.com/marekhotshot/amof.git
@@ -72,16 +99,18 @@ cd amof
 
 ## Expected Validation Commands
 
-After install, run the canonical checks:
+After a public tool install, run the canonical checks:
 
 ```bash
-./.venv/bin/amof --help
-./.venv/bin/python -m amof --help
-./.venv/bin/amof paths --json
-./.venv/bin/amof doctor --json
-./.venv/bin/amof bootstrap contract --json
-./.venv/bin/amof bootstrap bundle --json
+amof --help
+amof paths --json
+amof doctor --json
+amof bootstrap contract --json
+amof bootstrap bundle --json
 ```
+
+For source-checkout development installs, use the equivalent `./.venv/bin/amof`
+and `./.venv/bin/python -m amof` commands from the AMOF repo root.
 
 In a brand-new isolated AMOF home, `amof doctor` and the bootstrap commands may
 report a non-blocking `WARN` when no provider profile references are configured

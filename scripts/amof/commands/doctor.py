@@ -78,6 +78,11 @@ def _run(args: List[str], cwd: Optional[Path] = None) -> str:
     return result.stdout.strip()
 
 
+def _is_git_failure_output(output: str) -> bool:
+    normalized = str(output or "").strip().lower()
+    return normalized.startswith("<") or normalized.startswith("fatal:")
+
+
 def _command_probe(label: str, argv: list[str], *, required: bool) -> dict[str, Any]:
     resolved = shutil.which(argv[0]) if argv else None
     result = {
@@ -106,7 +111,7 @@ def _git_summary(path: Path) -> Dict[str, Any]:
     if not exists:
         return out
     top = _run(["git", "rev-parse", "--show-toplevel"], cwd=path)
-    if top.startswith("<"):
+    if _is_git_failure_output(top) or not top:
         out.update({"git": False, "error": top})
         return out
     status_lines = [line for line in _run(["git", "status", "--short"], cwd=path).splitlines() if line.strip()]
@@ -125,7 +130,7 @@ def _git_summary(path: Path) -> Dict[str, Any]:
 
 def _git_toplevel(path: Path) -> Path | None:
     top = _run(["git", "rev-parse", "--show-toplevel"], cwd=path)
-    if top.startswith("<") or not top:
+    if _is_git_failure_output(top) or not top:
         return None
     return Path(top).resolve()
 
@@ -187,13 +192,15 @@ def _toolchain_report() -> dict[str, dict[str, Any]]:
     return report
 
 
-def _contracts_report(canonical_amof: Path) -> dict[str, Any]:
+def _contracts_report(canonical_amof: Path, *, contract_support_mode: str) -> dict[str, Any]:
     entries: dict[str, Any] = {}
+    packaged_runtime = contract_support_mode == "packaged_runtime"
     for relative_path in REQUIRED_CONTRACT_FILES:
         target = canonical_amof / relative_path
         entries[relative_path] = {
             "path": str(target),
             "exists": target.exists(),
+            "available_via_runtime": packaged_runtime,
         }
     return entries
 
@@ -270,6 +277,10 @@ def _is_standalone_repo_root(path: Path) -> bool:
     return (path / "scripts" / "amof").is_dir()
 
 
+def _runtime_package_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
 def _detect_layout(start_path: Path | None = None) -> tuple[str, Path]:
     here = (start_path or Path.cwd()).resolve()
     seen: set[Path] = set()
@@ -288,12 +299,15 @@ def _detect_layout(start_path: Path | None = None) -> tuple[str, Path]:
     if standalone_root is not None:
         return "standalone_repo", standalone_root
 
-    script_repo = _git_toplevel(Path(__file__).resolve().parent)
+    runtime_root = _runtime_package_root()
+    script_repo = _git_toplevel(runtime_root)
     if script_repo is not None:
         if _is_split_workspace_root(script_repo):
             return "split_workspace", script_repo
         if _is_standalone_repo_root(script_repo):
             return "standalone_repo", script_repo
+    if runtime_root.is_dir():
+        return "installed_cli", here
     return "standalone_repo", here
 
 
@@ -330,14 +344,25 @@ def topology_report(
         canonical_ui = canonical_amof / "apps" / "amof-ui"
         gmd_app = workspace / "repos" / "gmd-app"
         root_workspace_role = "wrapper/config/audit surface only; not canonical AMOF implementation"
+        contract_support_mode = "source_tree"
+    elif layout_mode == "installed_cli":
+        canonical_amof = _runtime_package_root()
+        canonical_ui = canonical_amof / "apps" / "amof-ui"
+        gmd_app = workspace.parent / "gmd-app"
+        root_workspace_role = "external working repo; installed package provides the AMOF runtime"
+        contract_support_mode = "packaged_runtime"
     else:
         canonical_amof = workspace
         canonical_ui = workspace / "apps" / "amof-ui"
         gmd_app = workspace.parent / "gmd-app"
         root_workspace_role = "standalone repo root is the canonical AMOF implementation"
+        contract_support_mode = "source_tree"
     canonical_scripts = canonical_amof / "scripts"
     resolved_import_origin = import_origin or _import_origin()
-    import_is_canonical = resolved_import_origin.startswith(str(canonical_scripts))
+    if layout_mode == "installed_cli":
+        import_is_canonical = resolved_import_origin.startswith(str(canonical_amof))
+    else:
+        import_is_canonical = resolved_import_origin.startswith(str(canonical_scripts))
     root_before_canonical = (
         layout_mode == "split_workspace"
         and _runtime_path_contains_root_before_canonical(
@@ -354,7 +379,7 @@ def topology_report(
         "gmd_app": _git_summary(gmd_app),
     }
     app_data = _app_data_report(workspace=workspace, canonical_amof=canonical_amof)
-    contracts = _contracts_report(canonical_amof)
+    contracts = _contracts_report(canonical_amof, contract_support_mode=contract_support_mode)
     toolchain = _toolchain_report()
     contexts = load_contexts()
     current_context = get_current_context_name()
@@ -365,8 +390,9 @@ def topology_report(
     warnings: List[str] = []
     failures: List[str] = []
 
+    canonical_runtime_root = canonical_amof if layout_mode == "installed_cli" else canonical_scripts
     if not import_is_canonical:
-        failures.append(f"amof import resolves outside canonical {canonical_scripts}: {resolved_import_origin}")
+        failures.append(f"amof import resolves outside canonical {canonical_runtime_root}: {resolved_import_origin}")
     if root_before_canonical:
         failures.append("root scripts/ appears before repos/amof/scripts on sys.path")
     seen_warning_paths: set[str] = set()
@@ -391,7 +417,7 @@ def topology_report(
     if not config_file_status["exists"]:
         failures.append(f"global config file is missing: {config_file_status['path']}")
     for relative_path, contract_status in contracts.items():
-        if not contract_status["exists"]:
+        if not contract_status["exists"] and not contract_status.get("available_via_runtime", False):
             failures.append(f"required contract missing: {relative_path}")
     for label, probe in toolchain.items():
         if probe["required"] and not probe["available"]:
@@ -419,6 +445,7 @@ def topology_report(
         "canonical_amof_code_path": str(canonical_amof),
         "canonical_ui_path": str(canonical_ui),
         "root_workspace_role": root_workspace_role,
+        "contract_support_mode": contract_support_mode,
         "runtime_import_source": resolved_import_origin,
         "runtime_import_is_canonical": import_is_canonical,
         "root_scripts_before_canonical": root_before_canonical,

@@ -192,7 +192,11 @@ def _doctor_gates(report: dict[str, Any]) -> list[dict[str, Any]]:
         and not bool(item.get("inside_source_workspace", False))
         for item in root_entries.values()
     )
-    required_contracts_ok = all(bool(item.get("exists", False)) for item in contracts.values())
+    required_contracts_ok = all(
+        bool(item.get("exists", False)) or bool(item.get("available_via_runtime", False))
+        for item in contracts.values()
+    )
+    contract_support_mode = str(report.get("contract_support_mode") or "source_tree")
     required_toolchain_ok = all(
         bool(item.get("available", False)) and not bool(item.get("error"))
         for item in required_tools.values()
@@ -214,7 +218,11 @@ def _doctor_gates(report: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "name": "canonical_import_resolution",
             "status": _gate_status(passed=bool(report.get("runtime_import_is_canonical", False))),
-            "summary": "Runtime import must resolve under the canonical AMOF scripts path.",
+            "summary": (
+                "Runtime import must resolve under the canonical AMOF runtime path."
+                if contract_support_mode == "packaged_runtime"
+                else "Runtime import must resolve under the canonical AMOF scripts path."
+            ),
             "evidence": str(report.get("runtime_import_source") or ""),
         },
         {
@@ -232,7 +240,11 @@ def _doctor_gates(report: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "name": "required_contracts_available",
             "status": _gate_status(passed=required_contracts_ok),
-            "summary": "Bootstrap and Director contract schemas must be present in the canonical repo.",
+            "summary": (
+                "Bootstrap and Director contract definitions must be available from the packaged runtime or canonical repo."
+                if contract_support_mode == "packaged_runtime"
+                else "Bootstrap and Director contract schemas must be present in the canonical repo."
+            ),
             "evidence": ", ".join(sorted(contracts.keys())),
         },
         {
@@ -352,7 +364,10 @@ def build_bootstrap_contract(
         },
         "director_prerequisites": {
             "cli_import_is_canonical": bool(report.get("runtime_import_is_canonical", False)),
-            "required_contracts_available": all(bool(item.get("exists", False)) for item in report.get("contracts", {}).values()),
+            "required_contracts_available": all(
+                bool(item.get("exists", False)) or bool(item.get("available_via_runtime", False))
+                for item in report.get("contracts", {}).values()
+            ),
             "isolated_workspace_base_dir": runtime_roots["workspaces_dir"]["path"],
             "materialized_runs_dir": runtime_roots["materialized_runs_dir"]["path"],
             "artifact_directory": runtime_roots["evidence_dir"]["path"],

@@ -136,6 +136,34 @@ class DoctorLayoutTests(unittest.TestCase):
         self.assertFalse(report["runtime_import_is_canonical"])
         self.assertTrue(any("outside canonical" in item for item in report["failures"]))
 
+    def test_installed_cli_external_repo_reports_packaged_runtime(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-doctor-installed-cli-") as td:
+            temp_root = Path(td)
+            repo = temp_root / "target-repo"
+            runtime_root = temp_root / "site-packages" / "amof"
+            runtime_root.mkdir(parents=True, exist_ok=True)
+            (runtime_root / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+            _init_git_repo(repo)
+
+            with (
+                patch.dict("os.environ", {"AMOF_HOME": str(temp_root / ".amof-home")}, clear=False),
+                patch("amof.commands.doctor._runtime_package_root", return_value=runtime_root),
+            ):
+                report = topology_report(
+                    start_path=repo,
+                    import_origin=str(runtime_root / "__init__.py"),
+                    path_entries=[str(runtime_root.parent)],
+                )
+
+        self.assertEqual(report["layout_mode"], "installed_cli")
+        self.assertEqual(report["workspace_root"], str(repo))
+        self.assertEqual(report["canonical_amof_code_path"], str(runtime_root))
+        self.assertEqual(report["contract_support_mode"], "packaged_runtime")
+        self.assertTrue(report["runtime_import_is_canonical"])
+        self.assertFalse(report["surfaces"]["canonical_amof"]["git"])
+        self.assertFalse(any("required contract missing" in item for item in report["failures"]))
+        self.assertNotEqual(report["verdict"], "FAIL")
+
 
 if __name__ == "__main__":
     unittest.main()
