@@ -8,6 +8,19 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.1.1] - 2026-05-16
+
+### Added
+
+- Added `amof update` for clean public CLI updates.
+- Added `amof update --check` to report the current version and latest stable public tag without modifying the install.
+- Added a pipx-aware update path that runs `pipx install --force` for pipx-managed AMOF installs.
+
+### Fixed
+
+- Fixed `amof uninstall` for pipx-managed installs so it uses `pipx uninstall amof` instead of half-uninstalling the package from inside the pipx venv.
+- Source checkout updates now refuse self-update and point users to `git fetch`/checkout or `./scripts/install-amof.sh`.
+
 ## [2.1.0] - 2026-05-16
 
 ### Added

@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v2.1.0-0A7FFF.svg" alt="release v2.1.0" />
+  <img src="https://img.shields.io/badge/release-v2.1.1-0A7FFF.svg" alt="release v2.1.1" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
@@ -71,7 +71,7 @@ What is intentionally not included on this canonical main:
 ## Quick Install
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.1.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.1.1"
 ```
 
 This is the recommended public install path for end users. It installs the
@@ -91,7 +91,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v2.1.0
+amof update --version v2.1.1
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -134,7 +134,7 @@ Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.1.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.1.1"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
