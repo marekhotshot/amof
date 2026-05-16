@@ -8,6 +8,28 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.2.0] - 2026-05-16
+
+### Added
+
+- Added `amof setup provider` for guided public provider profile setup.
+- Added provider profile templates for OpenRouter, local Qwen/Ollama-compatible endpoints, OpenAI, Anthropic, xAI, and Runpod.
+- Added app-data provider profile writes under the AMOF provider profiles config directory.
+- Added provider profile activation into the current context `provider_profile_refs`.
+- Added a no-secret provider setup model that records environment variable names and redacted metadata instead of raw API keys.
+
+### Changed
+
+- Updated happy-path documentation to include provider setup before live agent planning.
+- Doctor and bootstrap evidence can surface activated provider profile refs without performing live provider checks.
+
+### Validation
+
+- Verified setup provider list/template/dry-run/write/activate flows.
+- Verified doctor/bootstrap visibility for an activated profile.
+- Verified setup performs no live provider call.
+- Verified unit tests.
+
 ## [2.1.1] - 2026-05-16
 
 ### Added
