@@ -1,4 +1,4 @@
-"""AMOF - Agentic Multirepo Operating Framework.
+"""AMOF - Agentic Operations Fabric.
 
 A CLI tool for managing multi-repository workspaces with AI agent support.
 """

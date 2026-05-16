@@ -282,7 +282,7 @@ def cmd_help(topic: Optional[str] = None) -> int:
 
     # General overview
     print("""
-  AMOF — Agentic Multirepo Operating Framework
+  AMOF — Agentic Operations Fabric
 
   Usage: amof [options] <command> [args]
 

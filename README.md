@@ -1,16 +1,44 @@
-# AMOF
+<p align="center">
+  <img src="docs/assets/amof-logo.svg" alt="AMOF logo" width="140" />
+</p>
+
+<h1 align="center">AMOF</h1>
+
+<p align="center"><strong>Agentic Operations Fabric</strong></p>
+
+<p align="center">Public installable CLI for governed agentic operations, bootstrap validation, and repository hygiene.</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
+  <img src="https://img.shields.io/badge/release-v2.0.1-0A7FFF.svg" alt="release v2.0.1" />
+  <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
+</p>
 
 AMOF is currently published on canonical `main` as a governed bootstrap and
 contract-first CLI source tree.
 
-This reduced main is intentionally narrow. It keeps the source, contracts,
-install paths, and focused docs needed to:
+## What AMOF Does
 
-- install the CLI from a fresh clone
-- verify the checkout with `amof doctor`
-- emit governed bootstrap evidence with `amof bootstrap contract`
-- emit a receipt bundle with `amof bootstrap bundle`
-- resolve AMOF app-data roots with XDG defaults or `AMOF_HOME`
+AMOF is a local-first CLI for turning a repository or workspace into a
+governed agentic operations surface. It validates prerequisites, exposes
+bootstrap contracts, produces evidence bundles, and keeps automation
+boundaries explicit before an orchestrator or agent acts on a codebase.
+
+## What AMOF Does Not Do
+
+The public repo does not ship private deployment topology, live runtime
+operators, kubeconfigs, customer environments, or internal cloud workflows.
+Those belong outside the public product tree.
+
+## Public Surface
+
+This public `main` intentionally keeps a narrow, installable surface:
+
+- `./scripts/install-amof.sh`
+- `amof check`
+- `amof doctor`
+- `amof bootstrap contract`
+- `amof bootstrap bundle`
 
 ## Current Scope
 
@@ -34,13 +62,15 @@ What is intentionally not included on this canonical main:
 - infrastructure, runtime adapters, and embedded workspace trees
 - demo UIs, cloud/prod deployment stacks, and runtime operator surfaces
 
-## Bootstrap
+## Quick Start From Fresh Clone
 
 ```bash
 git clone https://github.com/marekhotshot/amof.git
 cd amof
 ./scripts/install-amof.sh
 ```
+
+## Expected Validation Commands
 
 After install, run the canonical checks:
 
@@ -85,3 +115,7 @@ The retained operator docs for this slice are:
 `CHANGELOG.md` records release and reduction history for this repo. The current
 top entry should be read as the authoritative statement of what canonical
 `main` contains.
+
+## License
+
+AMOF is licensed under the Apache License 2.0. See `LICENSE`.

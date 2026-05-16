@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         prog="amof",
-        description="AMOF - Agentic Multirepo Operating Framework",
+        description="AMOF - Agentic Operations Fabric",
         epilog="Examples:\n"
                "  amof -e aws-boilerplate install      Bootstrap ecosystem workspace\n"
                "  amof -e aws-boilerplate spin deploy Deploy infrastructure\n"
