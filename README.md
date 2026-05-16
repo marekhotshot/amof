@@ -89,13 +89,24 @@ not block basic public install, `doctor`, or bootstrap evidence commands.
 
 ## Install From Source
 
-Use this path when developing or contributing to AMOF itself:
+Use this path when developing, testing, or contributing to AMOF itself. It does
+not require GitHub write credentials for the default public install path:
 
 ```bash
 git clone https://github.com/marekhotshot/amof.git
 cd amof
 ./scripts/install-amof.sh
 ```
+
+Maintainers who need to verify `promote-main` readiness can opt in to the
+GitHub auth dry-run:
+
+```bash
+./scripts/install-amof.sh --check-promote-auth
+```
+
+That maintainer-only check may require a non-interactive GitHub credential. It
+is not required for normal public install or CLI validation.
 
 ## Expected Validation Commands
 
