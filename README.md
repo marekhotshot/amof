@@ -14,8 +14,9 @@
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
-AMOF is currently published on canonical `main` as a governed bootstrap and
-contract-first CLI source tree.
+AMOF v2.3.0 is published on canonical `main` as a public installable CLI for
+repository adoption, bootstrap validation, provider setup, read-only planning,
+and bounded worker execution.
 
 ## What AMOF Does
 
@@ -32,7 +33,7 @@ Those belong outside the public product tree.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable surface:
+This public `main` intentionally keeps a narrow, installable v2.3.0 surface:
 
 - `./scripts/install-amof.sh`
 - `amof check`
@@ -44,15 +45,15 @@ This public `main` intentionally keeps a narrow, installable surface:
 - `amof bootstrap contract`
 - `amof bootstrap bundle`
 
-## Current Scope
+## Released Public CLI Surface
 
-What works on this reduced main:
+What works in v2.3.0:
 
 - `./scripts/install-amof.sh`
 - `./scripts/install-local.sh`
 - `./install.sh`
 - `amof --help`
-- `python -m amof --help`
+- `pipx runpip amof show amof` for installed package metadata
 - `amof update --check`
 - `amof update`
 - `amof check`
@@ -82,6 +83,16 @@ pipx install "git+https://github.com/marekhotshot/amof.git@v2.3.0"
 This is the recommended public install path for end users. It installs the
 `amof` CLI from the public GitHub tag without requiring a manual AMOF source
 checkout.
+
+After a `pipx install`, use the `amof` command installed by pipx:
+
+```bash
+amof --version
+pipx runpip amof show amof
+```
+
+System `python -m amof` is not the public pipx contract because the system
+interpreter is outside the pipx-managed AMOF virtualenv.
 
 ## Update AMOF
 
@@ -252,7 +263,9 @@ is not required for normal public install or CLI validation.
 After a public tool install, run the canonical checks:
 
 ```bash
+amof --version
 amof --help
+pipx runpip amof show amof
 amof paths --json
 amof doctor --json
 amof bootstrap contract --json
@@ -274,7 +287,7 @@ that directory as a flat app-data root.
 
 ## Documentation
 
-The retained operator docs for this slice are:
+Additional public docs retained in this repo include:
 
 - `docs/operations/corp-laptop-bootstrap.md`
 - `docs/adr/AMOF-198-app-data-context-scope.md`
@@ -282,12 +295,13 @@ The retained operator docs for this slice are:
 - `contracts/README.md`
 - `contracts/INDEX.md`
 
-## Plan State
+## Release State
 
-- UP10 governed workstation bootstrap is complete and remains the baseline for
-  this reduced main.
-- UP11 runtime-observer work has not started here beyond the contract-first
-  source reduction needed to make canonical `main` truthful.
+- `v2.3.0` is the current public release.
+- Public install and no-key adoption smoke passed from the GitHub tag.
+- Bounded worker execution is public/demoable, but output must be reviewed as a
+  Git diff before commit.
+- AMOF does not auto-commit or push bounded worker changes.
 
 ## Change History
 
