@@ -272,6 +272,7 @@ class Guardrails:
         self,
         no_touch_paths: Optional[List[str]] = None,
         readonly_repos: Optional[Dict[str, Path]] = None,
+        writable_roots: Optional[List[Path]] = None,
         mode: str = "build",
         command_allowlist: Optional[List[str]] = None,
         unattended: bool = False,
@@ -281,6 +282,7 @@ class Guardrails:
     ):
         self.no_touch_paths = no_touch_paths or []
         self.readonly_repos = readonly_repos or {}
+        self.writable_roots = [Path(root).resolve() for root in (writable_roots or [])]
         self.mode = mode
         self.command_allowlist = command_allowlist
         self.unattended = unattended
@@ -340,14 +342,36 @@ class Guardrails:
                 self.hard_blocks += 1
                 return f"BLOCKED: Path '{path}' has protected extension '{ext}'"
 
-        # 5. Manifest: no_touch_paths
+        abs_path = Path(path).resolve()
+
+        # 5. Public adopted-repo boundary: writes stay inside declared roots.
+        if self.writable_roots:
+            try:
+                if not any(abs_path.is_relative_to(root) for root in self.writable_roots):
+                    self.manifest_blocks += 1
+                    roots = ", ".join(str(root) for root in self.writable_roots)
+                    return f"Path '{path}' is outside writable roots: {roots}"
+            except AttributeError:
+                inside_root = False
+                for root in self.writable_roots:
+                    try:
+                        abs_path.relative_to(root)
+                        inside_root = True
+                        break
+                    except ValueError:
+                        continue
+                if not inside_root:
+                    self.manifest_blocks += 1
+                    roots = ", ".join(str(root) for root in self.writable_roots)
+                    return f"Path '{path}' is outside writable roots: {roots}"
+
+        # 6. Manifest: no_touch_paths
         for pattern in self.no_touch_paths:
             if fnmatch(path, pattern) or fnmatch(path, f"**/{pattern}"):
                 self.manifest_blocks += 1
                 return f"Path '{path}' matches no_touch_path pattern '{pattern}'"
 
-        # 6. Manifest: readonly repos
-        abs_path = Path(path).resolve()
+        # 7. Manifest: readonly repos
         for repo_name, repo_path in self.readonly_repos.items():
             try:
                 abs_path.relative_to(repo_path.resolve())

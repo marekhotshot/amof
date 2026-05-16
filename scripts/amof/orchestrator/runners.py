@@ -32,6 +32,24 @@ from .telemetry import SessionTelemetry
 from .tools.base import Guardrails, Tool, ToolRegistry
 
 logger = logging.getLogger(__name__)
+PACKAGED_CODE_RUNNER_PROMPT = (
+    "You are AMOF's bounded public code runner. Make only the minimal file edits "
+    "required by the assigned subtask. Read files before editing. Use only the "
+    "provided tools; Shell, Delete, and GitCheckpoint are intentionally unavailable. "
+    "Do not commit or push. Report exactly which files changed."
+)
+
+PUBLIC_DEFAULT_RUNNERS_CONFIG: Dict[str, Any] = {
+    "runners": {
+        "code": {
+            "prompt": "__packaged__/runners/code.md",
+            "tools": ["Read", "Write", "StrReplace", "Glob", "LS", "ReadLints"],
+            "description": "Safe public code-edit runner without shell, delete, checkpoint, or git push tools.",
+            "default_tier": "standard",
+            "max_iterations": 20,
+        },
+    },
+}
 
 
 @dataclass
@@ -67,6 +85,8 @@ class RunnerResult:
     stop_reason: str
     telemetry: SessionTelemetry
     checkpoint_count: int = 0  # for code runner
+    failed_tool_calls: int = 0
+    failed_write_tool_calls: int = 0
 
 
 class RunnerFactory:
@@ -142,6 +162,7 @@ class RunnerFactory:
         cascade: Optional[List[str]] = None,
         inference_authority: Optional[Any] = None,
         runner_local_clients: Optional[Dict[str, LLMClient]] = None,
+        default_config: Optional[Dict[str, Any]] = None,
     ) -> RunnerFactory:
         """Load runner definitions from a YAML config file.
 
@@ -155,12 +176,17 @@ class RunnerFactory:
         if config_path.is_file():
             with open(config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
-            for name, rdata in data.get("runners", {}).items():
-                if isinstance(rdata, dict):
-                    runners[name] = RunnerConfig.from_dict(name, rdata)
-                    logger.debug("Loaded runner config: %s", name)
+        elif default_config is not None:
+            data = default_config
+            logger.info("Runners config not found at %s; using packaged public defaults.", config_path)
         else:
+            data = {}
             logger.warning("Runners config not found: %s", config_path)
+
+        for name, rdata in data.get("runners", {}).items():
+            if isinstance(rdata, dict):
+                runners[name] = RunnerConfig.from_dict(name, rdata)
+                logger.debug("Loaded runner config: %s", name)
 
         return cls(
             runners=runners,
@@ -215,16 +241,19 @@ class RunnerFactory:
         config = self._runners[name]
 
         # 1. Load runner system prompt
-        prompt_name = config.prompt_path.replace("prompts/", "").replace(".md", "")
-        try:
-            system_prompt = load_prompt(
-                prompt_name,
-                prompts_dir=self._workspace_root / "prompts",
-                fallback=f"You are the {name} runner agent. Execute the task given to you.",
-            )
-        except Exception as e:
-            logger.warning("Failed to load runner prompt %s: %s", prompt_name, e)
-            system_prompt = f"You are the {name} runner agent. Execute the task given to you."
+        if config.prompt_path == "__packaged__/runners/code.md":
+            system_prompt = PACKAGED_CODE_RUNNER_PROMPT
+        else:
+            prompt_name = config.prompt_path.replace("prompts/", "").replace(".md", "")
+            try:
+                system_prompt = load_prompt(
+                    prompt_name,
+                    prompts_dir=self._workspace_root / "prompts",
+                    fallback=f"You are the {name} runner agent. Execute the task given to you.",
+                )
+            except Exception as e:
+                logger.warning("Failed to load runner prompt %s: %s", prompt_name, e)
+                system_prompt = f"You are the {name} runner agent. Execute the task given to you."
 
         # 2. Build filtered tool registry
         filtered_registry = self._build_filtered_registry(
@@ -339,13 +368,26 @@ class RunnerFactory:
                 checkpoint_count = tool.checkpoint_count
                 break
 
+        failed_tool_calls = sum(metrics.failures for metrics in telemetry.tool_metrics.values())
+        failed_write_tool_calls = sum(
+            metrics.failures
+            for tool_name, metrics in telemetry.tool_metrics.items()
+            if tool_name in {"Write", "StrReplace", "Delete"}
+        )
+        runner_success = agent.stop_reason == "completed" and failed_tool_calls == 0
+        stop_reason = agent.stop_reason
+        if agent.stop_reason == "completed" and failed_tool_calls:
+            stop_reason = "tool_failed"
+
         return RunnerResult(
             runner_name=name,
-            success=agent.stop_reason == "completed",
+            success=runner_success,
             response=response,
-            stop_reason=agent.stop_reason,
+            stop_reason=stop_reason,
             telemetry=telemetry,
             checkpoint_count=checkpoint_count,
+            failed_tool_calls=failed_tool_calls,
+            failed_write_tool_calls=failed_write_tool_calls,
         )
 
     def _build_filtered_registry(

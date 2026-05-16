@@ -570,7 +570,15 @@ def parse_args() -> argparse.Namespace:
         "--no-follow-up",
         action="store_true",
         default=None,
-        help="Skip the post-run interactive menu (for CI/scripted usage)",
+        help="Skip the post-run interactive menu; does not skip --plan-execute approval",
+    )
+    agent_parser.add_argument(
+        "--approve-plan",
+        "--yes",
+        dest="approve_plan",
+        action="store_true",
+        default=None,
+        help="Approve a generated --plan-execute plan non-interactively",
     )
     agent_parser.add_argument(
         "--continue-budget",

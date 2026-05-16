@@ -18,7 +18,11 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from amof.commands import agent_cmd
-from amof.orchestrator.tools.base import GuardrailConfig, Guardrails
+from amof.orchestrator.llm.base import ProviderError
+from amof.orchestrator.planner import TaskPlanner
+from amof.orchestrator.runners import PUBLIC_DEFAULT_RUNNERS_CONFIG, RunnerFactory
+from amof.orchestrator.trust_boundary import create_trust_state
+from amof.orchestrator.tools.base import GuardrailConfig, Guardrails, create_default_registry
 
 
 @contextmanager
@@ -60,15 +64,82 @@ def _init_git_repo(path: Path) -> None:
 
 
 class _FakeAgent:
+    instances = []
     stop_reason = "completed"
 
     def __init__(self, *args, **kwargs) -> None:
         self.llm = kwargs.get("llm") or (args[0] if args else None)
         self.model_router = kwargs.get("model_router")
         self.tools = kwargs.get("tools")
+        self.__class__.instances.append(self)
 
     def run(self, goal: str) -> str:
         return "fake agent response"
+
+
+class _FakeFailingWriteAgent(_FakeAgent):
+    stop_reason = "completed"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.telemetry = kwargs.get("telemetry")
+
+    def run(self, goal: str) -> str:
+        self.telemetry.record_tool_call("Write", False, 1)
+        return "claimed success after failed write"
+
+
+class _FakeNoDiffAgent(_FakeAgent):
+    stop_reason = "completed"
+
+    def run(self, goal: str) -> str:
+        return "claimed success without changing files"
+
+
+class _FakeMutatingAgent(_FakeAgent):
+    stop_reason = "completed"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.telemetry = kwargs.get("telemetry")
+
+    def run(self, goal: str) -> str:
+        app = Path.cwd() / "app.py"
+        app.write_text(
+            app.read_text(encoding="utf-8")
+            + "\n\ndef farewell(name: str) -> str:\n    return f'Goodbye, {name}.'\n",
+            encoding="utf-8",
+        )
+        self.telemetry.record_tool_call("Write", True, 1)
+        return "changed app.py"
+
+
+class _FakeInteractiveAgent:
+    def __init__(self) -> None:
+        self.run_calls = 0
+        self.llm = type("LLM", (), {"model_name": lambda self: "fake-model"})()
+        self.model_router = None
+        self.tools = type("Tools", (), {"get": lambda self, name: None})()
+
+    def run(self, goal: str) -> str:
+        self.run_calls += 1
+        return "should not run"
+
+
+class _ProviderErrorPlannerLLM:
+    calls = 0
+
+    def chat_structured(self, **kwargs):
+        self.calls += 1
+        raise ProviderError(
+            provider="openrouter",
+            message="invalid model id",
+            status_code=400,
+            original=ValueError("invalid model id"),
+        )
+
+    def model_name(self) -> str:
+        return "openrouter/invalid"
 
 
 class AgentRuntimeProfileTests(unittest.TestCase):
@@ -107,7 +178,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             }
             env = {
                 "AMOF_HOME": str(amof_home),
-                "OPENROUTER_API_KEY": "fake-openrouter-key",
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
             }
             with patch.dict(os.environ, env, clear=False):
                 with _cwd(repo):
@@ -156,7 +227,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             }
             env = {
                 "AMOF_HOME": str(amof_home),
-                "OPENROUTER_API_KEY": "fake-openrouter-key",
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
             }
             with patch.dict(os.environ, env, clear=False):
                 with _cwd(repo):
@@ -201,6 +272,342 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         guardrails = Guardrails(mode="plan", config=cfg)
         self.assertEqual(guardrails.check_write("README.md"), "Write operations are blocked in PLAN mode")
         self.assertEqual(guardrails.check_shell("git status"), "Shell operations are blocked in PLAN mode")
+
+    def test_openrouter_default_planner_model_is_provider_compatible(self) -> None:
+        planner_model = agent_cmd._default_planner_model("openrouter", None)
+
+        self.assertEqual(planner_model, "anthropic/claude-sonnet-4.5")
+        self.assertNotEqual(planner_model, "claude-opus-4-6")
+
+    def test_explicit_planner_model_wins(self) -> None:
+        self.assertEqual(
+            agent_cmd._default_planner_model("openrouter", "anthropic/claude-sonnet-4.5"),
+            "anthropic/claude-sonnet-4.5",
+        )
+
+    def test_provider_400_planning_error_is_not_schema_retried(self) -> None:
+        planner_llm = _ProviderErrorPlannerLLM()
+        planner = TaskPlanner(planner_llm=planner_llm, workspace_root=ROOT)
+
+        with self.assertRaises(ProviderError):
+            planner.plan("Inspect", "README only")
+
+        self.assertEqual(planner_llm.calls, 1)
+
+    def test_public_default_runner_config_is_bounded(self) -> None:
+        code_runner = PUBLIC_DEFAULT_RUNNERS_CONFIG["runners"]["code"]
+        tools = set(code_runner["tools"])
+
+        self.assertTrue({"Read", "Write", "StrReplace", "Glob", "LS", "ReadLints"} <= tools)
+        self.assertNotIn("Shell", tools)
+        self.assertNotIn("Delete", tools)
+        self.assertNotIn("GitCheckpoint", tools)
+
+    def test_add_intent_authorizes_write_capability(self) -> None:
+        trust_state = create_trust_state("Add only this function to app.py")
+
+        self.assertIn("write", trust_state.trusted_intent_caps)
+
+    def test_runner_failed_write_tool_fails_result(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-failed-write-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            guardrails = Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo])
+            parent_tools = create_default_registry(guardrails=guardrails, role="worker", workspace_root=repo)
+            factory = RunnerFactory.from_config(
+                config_path=Path(td) / "missing-runners.yaml",
+                model_clients={"standard": object()},
+                parent_tools=parent_tools,
+                guardrails=guardrails,
+                workspace_root=repo,
+                default_config=PUBLIC_DEFAULT_RUNNERS_CONFIG,
+            )
+            with _cwd(repo):
+                with patch("amof.orchestrator.runners.Agent", _FakeFailingWriteAgent):
+                    result = factory.run_runner("code", "Write a file")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.stop_reason, "tool_failed")
+        self.assertEqual(result.failed_tool_calls, 1)
+        self.assertEqual(result.failed_write_tool_calls, 1)
+
+    def test_adopted_plan_execute_uses_packaged_runner_defaults(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-runner-default-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Use the public default code runner.
+
+---
+
+## Tasks
+
+- [ ] 1. **Inspect the repo without committing** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
+            _FakeAgent.instances.clear()
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeAgent):
+                        with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Inspect this repo",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+            git_status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            events_text = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in (amof_home / "share" / "runs").glob("*/events.jsonl")
+            )
+            journals_text = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in (amof_home / "share" / "journals" / "demo-repo").glob("*.md")
+            )
+
+        self.assertEqual(result, 0, stderr.getvalue())
+        self.assertTrue(_FakeAgent.instances)
+        runner_tools = set(_FakeAgent.instances[-1].tools.list_tools())
+        self.assertTrue({"Read", "Write", "StrReplace"} <= runner_tools)
+        self.assertNotIn("Shell", runner_tools)
+        self.assertNotIn("Delete", runner_tools)
+        self.assertNotIn("GitCheckpoint", runner_tools)
+        self.assertEqual(git_status.stdout.strip(), "")
+        self.assertFalse((repo / ".amof").exists())
+        self.assertFalse((repo / "ecosystems").exists())
+        self.assertFalse((repo / "context").exists())
+        self.assertNotIn("unit-test-provider-value", events_text)
+        self.assertNotIn("unit-test-provider-value", journals_text)
+
+    def test_mutation_intent_plan_with_no_diff_fails_execution(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-no-diff-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Add a function.
+
+---
+
+## Tasks
+
+- [ ] 1. **Add farewell function** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeNoDiffAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Add a farewell function",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+            git_status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertEqual(git_status.stdout.strip(), "")
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+        self.assertIn("target_has_diff=false", stdout.getvalue())
+
+    def test_successful_worker_mutation_creates_diff_without_source_noise(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-mutation-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            (repo / "app.py").write_text("def greet(name: str) -> str:\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Add a function.
+
+---
+
+## Tasks
+
+- [ ] 1. **Add farewell function** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeMutatingAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Add a farewell function",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+            git_status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            diff = subprocess.run(
+                ["git", "diff", "--", "app.py"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            journal_files = list((amof_home / "share" / "journals" / "demo-repo").glob("*.md"))
+            event_files = list((amof_home / "share" / "runs").glob("*/events.jsonl"))
+
+        self.assertEqual(result, 0, stderr.getvalue())
+        self.assertIn("app.py", git_status.stdout)
+        self.assertIn("def farewell", diff)
+        self.assertIn("1/1 completed, 0 failed", stdout.getvalue())
+        self.assertIn("target_has_diff=true", stdout.getvalue())
+        self.assertFalse((repo / ".amof").exists())
+        self.assertFalse((repo / "ecosystems").exists())
+        self.assertFalse((repo / "context").exists())
+        self.assertTrue(journal_files)
+        self.assertTrue(event_files)
+
+    def test_plan_execute_missing_runner_factory_fails_clearly_before_execution(self) -> None:
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        plan = ExecutionPlan(
+            analysis="needs code runner",
+            subtasks=[Subtask(id="1", title="Edit", description="Edit", runner="code")],
+            execution_order=["1"],
+        )
+
+        self.assertEqual(
+            agent_cmd._validate_runner_factory_for_plan(None, plan),
+            "No runner factory available for plan execution. Expected runner: code.",
+        )
+
+    def test_adopted_guardrails_confine_writes_to_repo_root(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-write-root-") as td:
+            repo = Path(td) / "repo"
+            outside = Path(td) / "outside.txt"
+            repo.mkdir()
+            guardrails = Guardrails(
+                mode="build",
+                config=GuardrailConfig.public_defaults(),
+                writable_roots=[repo],
+            )
+
+            self.assertIsNone(guardrails.check_write(str(repo / "app.py")))
+            self.assertIn("outside writable roots", guardrails.check_write(str(outside)))
+
+    def test_interactive_exit_alias_exits_without_llm_task(self) -> None:
+        from amof.orchestrator.events import EventLog
+        from amof.orchestrator.session import Session
+        from amof.orchestrator.telemetry import SessionTelemetry
+
+        with tempfile.TemporaryDirectory(prefix="amof-interactive-exit-") as td:
+            temp = Path(td)
+            repo = temp / "repo"
+            repo.mkdir()
+            fake_agent = _FakeInteractiveAgent()
+            manifest = {"ecosystem": "demo-repo", "manifest_source": "appdata"}
+            env = {"AMOF_HOME": str(temp / "amof-home")}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("builtins.input", return_value="exit"):
+                        result = agent_cmd._run_interactive_shell(
+                            agent=fake_agent,
+                            planner_llm=object(),
+                            planner_model_id="fake-planner",
+                            runner_factory=None,
+                            session=Session(mode="build"),
+                            telemetry=SessionTelemetry(),
+                            events=EventLog(),
+                            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+                            workspace_root=repo,
+                            manifest=manifest,
+                            codebase_context="",
+                            guardrail_info=None,
+                            verbose=False,
+                        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(fake_agent.run_calls, 0)
 
 
 if __name__ == "__main__":

@@ -443,6 +443,7 @@ def main() -> None:
             plan_file=getattr(args, "plan_file", None),
             no_follow_up=getattr(args, "no_follow_up", None),
             continue_budget=getattr(args, "continue_budget", None),
+            approve_plan=getattr(args, "approve_plan", None),
         ))
 
     if args.command == "director-action":

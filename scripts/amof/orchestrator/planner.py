@@ -25,10 +25,16 @@ from typing import Any, Dict, List, Optional
 from pydantic import ValidationError
 
 from .agent_models import PlannerOutputModel
-from .llm.base import LLMClient
+from .llm.base import LLMClient, ProviderError
 
 logger = logging.getLogger(__name__)
 MAX_STRUCTURED_RETRIES = 3
+PACKAGED_PLANNER_PROMPT = (
+    "You are the AMOF planner. Create a concise, executable JSON plan for the user's task. "
+    "Use runner 'code' for repository code changes unless another configured runner is clearly required. "
+    "For mutation tasks, include subtasks that make concrete file edits and verification guidance. "
+    "Return only the structured schema requested by the caller."
+)
 
 
 @dataclass
@@ -339,17 +345,13 @@ class TaskPlanner:
         self._workspace_root = workspace_root or Path.cwd()
         self._last_thinking: Optional[str] = None  # thinking from last plan() call
 
-        # Load planner system prompt
-        prompt_path = planner_prompt_path or (self._workspace_root / "prompts" / "planner.md")
-        if prompt_path.exists():
+        # Load explicit planner prompt only when one is provided. Public defaults
+        # use the packaged prompt instead of probing the target repo.
+        prompt_path = planner_prompt_path
+        if prompt_path and prompt_path.exists():
             self._system_prompt = prompt_path.read_text(encoding="utf-8")
         else:
-            logger.warning("Planner prompt not found at %s, using minimal prompt", prompt_path)
-            self._system_prompt = (
-                "You are a task planner. Break down the task into subtasks. "
-                "Respond with a JSON object containing 'analysis', 'subtasks', "
-                "'execution_order', 'risks', and 'verification'."
-            )
+            self._system_prompt = PACKAGED_PLANNER_PROMPT
 
     @property
     def last_thinking(self) -> Optional[str]:
@@ -506,6 +508,8 @@ class TaskPlanner:
                 if hasattr(self._llm, 'record_failure'):
                     self._llm.record_failure()
                 continue
+            except ProviderError:
+                raise
             except Exception as e:
                 last_error = f"{type(e).__name__}: {e}"
                 logger.warning("Planner structured request failed (attempt %d): %s", attempt, e)

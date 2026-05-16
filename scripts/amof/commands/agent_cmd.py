@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -41,6 +42,28 @@ DEFAULT_TIERS = {
     "standard": "claude-sonnet-4-5",
     "strong":   "claude-opus-4-6",
 }
+PROVIDER_DEFAULT_MODELS = {
+    "anthropic": {
+        "worker": "claude-3-5-sonnet-latest",
+        "planner": DEFAULT_TIERS["strong"],
+    },
+    "openai": {
+        "worker": "gpt-4o",
+        "planner": "gpt-4o",
+    },
+    "openrouter": {
+        "worker": "openai/gpt-4o-mini",
+        "planner": "anthropic/claude-sonnet-4.5",
+    },
+    "bedrock": {
+        "worker": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "planner": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    },
+}
+MUTATION_INTENT_RE = re.compile(
+    r"\b(add|write|create|edit|modify|update|patch|replace|delete|remove|refactor|implement|fix|change)\b",
+    re.IGNORECASE,
+)
 
 
 def _legacy_agent_dir(workspace_root: Path) -> Path:
@@ -489,6 +512,109 @@ def _profile_base_url(profile: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _default_worker_model(provider: str, model: str | None, profile_default_model: str | None) -> str:
+    """Resolve the default worker/orchestrator model for a provider."""
+    if model:
+        return model
+    if profile_default_model:
+        return profile_default_model
+    if provider == "openai":
+        return os.environ.get("AMOF_OPENAI_MODEL", PROVIDER_DEFAULT_MODELS["openai"]["worker"])
+    if provider == "openrouter":
+        return os.environ.get(
+            "AMOF_OPENROUTER_MODEL",
+            os.environ.get("AMOF_OPENAI_MODEL", PROVIDER_DEFAULT_MODELS["openrouter"]["worker"]),
+        )
+    if provider == "bedrock":
+        return os.environ.get(
+            "AMOF_BEDROCK_STANDARD_MODEL_ID",
+            PROVIDER_DEFAULT_MODELS["bedrock"]["worker"],
+        )
+    return os.environ.get("AMOF_ANTHROPIC_MODEL", PROVIDER_DEFAULT_MODELS["anthropic"]["worker"])
+
+
+def _default_planner_model(provider: str, planner_model: str | None) -> str:
+    """Resolve a provider-compatible default planner model.
+
+    Explicit CLI/env planner selections win. Defaults must be valid for the
+    selected provider; OpenRouter cannot use Anthropic-native aliases directly.
+    """
+    if planner_model:
+        return planner_model
+    env_model = os.environ.get("AMOF_PLANNER_MODEL")
+    if env_model:
+        return env_model
+    return PROVIDER_DEFAULT_MODELS.get(provider, PROVIDER_DEFAULT_MODELS["anthropic"])["planner"]
+
+
+def _validate_runner_factory_for_plan(runner_factory: Any, plan: Any) -> str | None:
+    expected = sorted({str(st.runner or "code") for st in getattr(plan, "subtasks", [])})
+    if not expected:
+        return None
+    if runner_factory is None:
+        return f"No runner factory available for plan execution. Expected runner: {expected[0]}."
+    available = set(getattr(runner_factory, "runner_names", []))
+    missing = [runner for runner in expected if runner not in available]
+    if missing:
+        return (
+            f"No runner factory available for plan execution. Expected runner: {missing[0]}."
+        )
+    return None
+
+
+def _plan_has_mutation_intent(goal: str, plan: Any) -> bool:
+    if MUTATION_INTENT_RE.search(goal or ""):
+        return True
+    parts: list[str] = []
+    for st in getattr(plan, "subtasks", []) or []:
+        parts.extend([str(getattr(st, "title", "") or ""), str(getattr(st, "description", "") or "")])
+    return MUTATION_INTENT_RE.search("\n".join(parts)) is not None
+
+
+def _git_probe(workspace_root: Path) -> dict[str, str]:
+    def _run(args: list[str]) -> str:
+        result = subprocess.run(
+            args,
+            cwd=workspace_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return (result.stdout + result.stderr).strip()
+        return result.stdout.strip()
+
+    return {
+        "status": _run(["git", "status", "--short"]),
+        "diff": _run(["git", "diff", "--"]),
+    }
+
+
+def _tool_failure_counts(telemetry: Any) -> tuple[int, int]:
+    total = 0
+    write_class = 0
+    for tool_name, metrics in getattr(telemetry, "tool_metrics", {}).items():
+        failures = int(getattr(metrics, "failures", 0) or 0)
+        total += failures
+        leaf_name = str(tool_name).split(":")[-1]
+        if leaf_name in {"Write", "StrReplace", "Delete"}:
+            write_class += failures
+    return total, write_class
+
+
+def _mark_plan_failed_for_verifier(plan: Any, reason: str) -> None:
+    for st in getattr(plan, "subtasks", []) or []:
+        if st.status == "completed":
+            st.status = "failed"
+            st.error = reason
+            return
+    for st in getattr(plan, "subtasks", []) or []:
+        if st.status in {"pending", "running", "skipped"}:
+            st.status = "failed"
+            st.error = reason
+            return
+
+
 def _interactive_confirm(command: str, reason: str) -> str:
     """Prompt user for confirmation when a sensitive/dangerous command is detected.
 
@@ -556,6 +682,7 @@ def cmd_agent(
     plan_file: Optional[str] = None,
     no_follow_up: Optional[bool] = None,
     continue_budget: Optional[float] = None,
+    approve_plan: Optional[bool] = None,
 ) -> int:
     """Run the AMOF coding agent.
 
@@ -597,6 +724,8 @@ def cmd_agent(
         plan_execute = False
     if no_follow_up is None:
         no_follow_up = False
+    if approve_plan is None:
+        approve_plan = False
     if continue_budget is None:
         continue_budget = 1.0
 
@@ -744,12 +873,14 @@ def cmd_agent(
     for r in manifest.get("repos", []):
         if r.get("readonly"):
             readonly_repos[r["name"]] = Path(r["path"])
+    writable_roots = [workspace_root] if _is_appdata_adopted_manifest(manifest) else []
 
     guardrail_config = GuardrailConfig.load(_agent_rules_path(workspace_root, "guardrails.yaml"))
 
     guardrails = Guardrails(
         no_touch_paths=no_touch,
         readonly_repos=readonly_repos,
+        writable_roots=writable_roots,
         mode=mode,
         config=guardrail_config,
         confirm_fn=_interactive_confirm,
@@ -772,20 +903,7 @@ def cmd_agent(
 
     # Default model depends on provider
     profile_default_model = _profile_model(provider_profile) if not explicit_provider else None
-    if provider == "openai":
-        default_model = model or profile_default_model or os.environ.get("AMOF_OPENAI_MODEL", "gpt-4o")
-    elif provider == "openrouter":
-        default_model = model or profile_default_model or os.environ.get(
-            "AMOF_OPENROUTER_MODEL",
-            os.environ.get("AMOF_OPENAI_MODEL", "openrouter/openai/gpt-4o-mini"),
-        )
-    elif provider == "bedrock":
-        default_model = model or os.environ.get(
-            "AMOF_BEDROCK_STANDARD_MODEL_ID",
-            "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
-        )
-    else:
-        default_model = model or profile_default_model or os.environ.get("AMOF_ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
+    default_model = _default_worker_model(provider, model, profile_default_model)
 
     primary_llm = _make_client(default_model)
 
@@ -904,7 +1022,7 @@ def cmd_agent(
 
     from ..orchestrator.trust_boundary import create_trust_state
 
-    trust_state = create_trust_state(goal) if goal.strip() else None
+    trust_state = create_trust_state(goal or "") if (goal or "").strip() else None
 
     # ---- Runner factory + tool registry ----
     runner_factory = None
@@ -913,9 +1031,10 @@ def cmd_agent(
     runner_cost_fraction = float(cfg.get("runner_cost_fraction", 0.3))
     runner_max_cost = (max_cost or 5.0) * runner_cost_fraction
 
-    if runners_config_path.exists():
+    should_load_runners = runners_config_path.exists() or bool(plan_execute)
+    if should_load_runners:
         try:
-            from ..orchestrator.runners import RunnerFactory
+            from ..orchestrator.runners import PUBLIC_DEFAULT_RUNNERS_CONFIG, RunnerFactory
             # Build worker tool registry first (without delegate), then create factory
             _base_tools = create_default_registry(
                 guardrails=guardrails,
@@ -937,6 +1056,7 @@ def cmd_agent(
                 max_cost_per_runner=runner_max_cost,
                 verbose=verbose,
                 cascade=worker_cascade if model_ladder else None,
+                default_config=PUBLIC_DEFAULT_RUNNERS_CONFIG if not runners_config_path.exists() else None,
             )
             if verbose:
                 sys.stderr.write(
@@ -1121,11 +1241,10 @@ def cmd_agent(
     if plan_execute and goal:
         from ..orchestrator.planner import TaskPlanner, ExecutionPlan
         from ..orchestrator.executor import SubtaskExecutor
+        from ..orchestrator.llm.base import ProviderError
 
-        # Determine planner model (defaults to strong tier)
-        planner_model_id = planner_model or os.environ.get(
-            "AMOF_PLANNER_MODEL", DEFAULT_TIERS.get("strong", "claude-opus-4-6")
-        )
+        # Determine planner model (provider-aware default; explicit flag/env wins).
+        planner_model_id = _default_planner_model(provider, planner_model)
         planner_llm = _make_client(planner_model_id)
 
         if verbose:
@@ -1180,6 +1299,9 @@ def cmd_agent(
                             guardrail_info=guardrail_info,
                         )
                         break  # success
+                    except ProviderError as e:
+                        sys.stderr.write(f"[plan-execute] Planning provider error: {e}\n")
+                        return 1
                     except Exception as e:
                         if attempt < max_plan_retries:
                             sys.stderr.write(
@@ -1237,11 +1359,21 @@ def cmd_agent(
                     print(f"\nRisks: {', '.join(plan.risks)}")
                 print()
 
-                # Interactive approval
-                try:
-                    choice = input("[a]pprove  [e]dit  [r]eject  > ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
+                runner_error = _validate_runner_factory_for_plan(runner_factory, plan)
+                if runner_error:
+                    sys.stderr.write(f"[plan-execute] {runner_error}\n")
                     return 1
+
+                # Interactive approval. --no-follow-up only skips the post-run
+                # menu; it does not approve execution. Use --approve-plan for CI.
+                if approve_plan:
+                    choice = "approve"
+                    print("[plan-execute] Plan approved via --approve-plan.")
+                else:
+                    try:
+                        choice = input("[a]pprove  [e]dit  [r]eject  > ").strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        return 1
 
                 if choice in ("a", "approve", ""):
                     # Re-read plan file in case user edited it
@@ -1266,6 +1398,11 @@ def cmd_agent(
                     print(f"Unknown choice: {choice}")
                     continue
 
+        runner_error = _validate_runner_factory_for_plan(runner_factory, plan)
+        if runner_error:
+            sys.stderr.write(f"[plan-execute] {runner_error}\n")
+            return 1
+
         # Record planning cost in telemetry
         if plan.planning_cost > 0:
             from ..orchestrator.llm.base import Usage
@@ -1277,6 +1414,9 @@ def cmd_agent(
             )
             telemetry.record_from_usage(planner_usage, tier="strong")
 
+        mutation_intent = _plan_has_mutation_intent(goal, plan)
+        git_before = _git_probe(workspace_root)
+
         # Phase 2: Execute
         executor = SubtaskExecutor(
             runner_factory=runner_factory,
@@ -1286,11 +1426,47 @@ def cmd_agent(
 
         print("[plan-execute] Executing subtasks...")
         plan = executor.execute_plan(plan)
+        git_after = _git_probe(workspace_root)
+        diff_changed = git_before != git_after
+        has_after_diff = bool(git_after.get("status") or git_after.get("diff"))
+        failed_tool_calls, failed_write_tool_calls = _tool_failure_counts(telemetry)
+
+        verifier_failed = False
+        if failed_tool_calls:
+            verifier_failed = True
+            _mark_plan_failed_for_verifier(
+                plan,
+                f"Verifier failed: {failed_tool_calls} tool call(s) failed.",
+            )
+        if mutation_intent and (not diff_changed or not has_after_diff):
+            verifier_failed = True
+            _mark_plan_failed_for_verifier(
+                plan,
+                "Verifier failed: mutation-intent plan produced no target repository diff.",
+            )
 
         # Summary
         completed = sum(1 for st in plan.subtasks if st.status == "completed")
-        print(f"\n[plan-execute] Execution complete: {completed}/{len(plan.subtasks)} tasks done")
+        failed = sum(1 for st in plan.subtasks if st.status == "failed")
+        skipped = sum(1 for st in plan.subtasks if st.status == "skipped")
+        print(
+            f"\n[plan-execute] Execution complete: "
+            f"{completed}/{len(plan.subtasks)} completed, {failed} failed, {skipped} skipped"
+        )
+        print(
+            "[plan-execute] Verification: "
+            f"failed_tool_calls={failed_tool_calls}, "
+            f"failed_write_tool_calls={failed_write_tool_calls}, "
+            f"mutation_intent={str(mutation_intent).lower()}, "
+            f"target_diff_changed={str(diff_changed).lower()}, "
+            f"target_has_diff={str(has_after_diff).lower()}"
+        )
         print(plan.summary())
+        if verifier_failed:
+            try:
+                plan.save_as_markdown(plan.file_path, session_id=session.id)  # type: ignore[arg-type]
+            except Exception:
+                pass
 
         # Save session and generate journal
         events.session_end(telemetry.to_dict())
@@ -1356,9 +1532,7 @@ def cmd_agent(
         from ..orchestrator.planner import TaskPlanner, ExecutionPlan
         from ..orchestrator.executor import SubtaskExecutor
 
-        planner_model_id = planner_model or os.environ.get(
-            "AMOF_PLANNER_MODEL", DEFAULT_TIERS.get("strong", "claude-opus-4-6")
-        )
+        planner_model_id = _default_planner_model(provider, planner_model)
         planner_llm = _make_client(planner_model_id)
 
         codebase_context = context_builder.build(mode="plan")
@@ -1792,6 +1966,8 @@ def _run_interactive_shell(
 
             if not line:
                 continue
+            if line.lower() in ("exit", "quit", "q"):
+                break
 
             # Multi-line: trailing backslash
             while line.endswith("\\"):
@@ -1804,6 +1980,8 @@ def _run_interactive_shell(
             line = line.strip()
             if not line:
                 continue
+            if line.lower() in ("exit", "quit", "q"):
+                break
 
             # ── Slash commands ───────────────────────────────
             if line.startswith("/"):

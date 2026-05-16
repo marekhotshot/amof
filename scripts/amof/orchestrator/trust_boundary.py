@@ -22,7 +22,7 @@ _READ_TOOL_NAMES = {"Read", "Grep", "Glob", "LS", "ReadLints", "MemorySearch"}
 _WRITE_TOOL_NAMES = {"Write", "StrReplace", "Delete", "GitCheckpoint"}
 
 _WRITE_INTENT_RE = re.compile(
-    r"\b(edit|fix|update|patch|refactor|write|create|delete|modify|implement|restore|rewire)\b",
+    r"\b(add|append|change|edit|fix|update|patch|refactor|write|create|delete|modify|implement|restore|rewire)\b",
     re.IGNORECASE,
 )
 _NETWORK_INTENT_RE = re.compile(

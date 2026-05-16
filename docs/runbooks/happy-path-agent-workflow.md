@@ -5,7 +5,7 @@ repository without learning AMOF internals first.
 
 It covers:
 
-- installing AMOF v2.2.0
+- installing AMOF v2.2.1
 - adopting an existing Git repo into AMOF app-data
 - creating a work ticket if the current command supports your repo layout
 - running a safe agent plan
@@ -15,9 +15,10 @@ It covers:
 - closing the ticket or work item if the current command supports your repo
   layout
 
-The supported v2.2.0 happy path is adoption plus safe planning without passing
-`-e/--ecosystem`. Full one-click agent execution and adopted-repo ticket
-lifecycle polish are still evolving.
+The supported v2.2.1 happy path is adoption plus safe planning without passing
+`-e/--ecosystem`. AMOF-238 adds a bounded public worker default for
+`--plan-execute`, but live worker execution should be treated as a smoke-tested
+slice, not a blanket autonomous-coding guarantee.
 
 ## Prerequisites
 
@@ -42,10 +43,10 @@ Do not paste real keys into terminal transcripts, bug reports, or public docs.
 
 ## Install AMOF
 
-Install the public v2.2.0 release:
+Install the public v2.2.1 release:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.2.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.2.1"
 ```
 
 Verify the CLI:
@@ -59,7 +60,7 @@ amof doctor
 Expected:
 
 ```text
-AMOF v2.2.0
+AMOF v2.2.1
 ```
 
 `amof check` should pass required prerequisites. `amof doctor` may report
@@ -212,7 +213,7 @@ Expected without provider configuration, after activating OpenRouter:
 ```
 
 The exact provider message depends on the provider you activate or select. The
-important v2.2.0 behavior is that the command should not fail with:
+important v2.2.1 behavior is that the command should not fail with:
 
 ```text
 --ecosystem/-e is required
@@ -238,6 +239,81 @@ What happens:
 - `--no-follow-up` skips the interactive post-run menu for copy/paste runs.
 - With a valid provider key and dependencies, the agent can produce a plan.
 
+## AMOF-238 Public Agent Tiers
+
+These tiers describe the current public surface after AMOF v2.2.1 validation.
+
+Read-only public planning is the recommended demo path:
+
+```bash
+amof init --adopt .
+amof setup provider openrouter --name openrouter-default --activate
+export OPENROUTER_API_KEY="<redacted>"
+amof agent --provider openrouter --plan "Inspect this repo and propose one safe improvement" --no-follow-up
+```
+
+Expected behavior:
+
+- The adopted repo stays clean.
+- Journals and event logs go to AMOF app-data.
+- No `.amof`, `ecosystems`, or `context` directory is written into the target
+  repo by default.
+
+Interactive chat is demoable for help and read-only prompts, but it still needs
+a live provider key before the shell opens:
+
+```bash
+amof agent --provider openrouter
+/help
+/quit
+```
+
+For a read-only live prompt:
+
+```bash
+amof agent --provider openrouter
+Inspect this repo at a high level. Do not modify files.
+/quit
+```
+
+Worker execution is bounded but should be introduced honestly. `--plan-execute`
+now has a packaged public `code` runner default when no `runners.yaml` exists.
+That default runner can use `Read`, `Write`, `StrReplace`, `Glob`, `LS`, and
+`ReadLints`; it does not include `Shell`, `Delete`, or `GitCheckpoint`.
+For adopted repos, write-class tools are confined to the adopted repo root.
+With `--provider openrouter`, AMOF uses OpenRouter-compatible defaults
+(`anthropic/claude-sonnet-4.5` for planning and `openai/gpt-4o-mini` for the
+worker/default model) unless you pass explicit model flags.
+Plan execution verifies tool and repository outcomes after the worker runs. A
+mutation-intent plan is not considered successful if write-class tools fail or
+if no target repository diff appears after claimed edits.
+`--no-follow-up` only skips the post-run menu; it does not approve execution.
+For unattended disposable-repo smoke tests, pass `--approve-plan` after you are
+comfortable with the generated plan behavior.
+
+Use a disposable repo for worker demos. Run this from an interactive terminal
+and approve the generated plan only after reviewing it:
+
+```bash
+amof agent --provider openrouter --plan-execute \
+  "Add a small pure function farewell(name) and a matching unit test. Do not commit." \
+  --no-follow-up
+```
+
+Non-interactive approval for CI or a disposable smoke:
+
+```bash
+amof agent --provider openrouter --plan-execute \
+  "Add a small pure function farewell(name) and a matching unit test. Do not commit." \
+  --approve-plan \
+  --no-follow-up
+```
+
+Do not claim live worker success until a provider-key smoke has passed in that
+disposable repo and `git status --short` shows only the intentional app/test
+diffs. A truthful failed execution is still useful evidence, but it is not a
+worker execution demo.
+
 ## Execute Or Hand Back
 
 The public `amof agent --help` includes:
@@ -249,11 +325,13 @@ amof agent --planner-model <model>
 ```
 
 Current limitation: full autonomous execution is experimental for public
-adopted repos. Worker delegation depends on provider configuration and optional
-runner configuration such as `runners.yaml`; v2.2.0 does not ship a default
-`runners.yaml` in the public repo.
+adopted repos. AMOF-238 provides a narrow built-in `code` runner default for
+`--plan-execute`; broader worker delegation still depends on provider
+configuration and optional runner configuration such as `runners.yaml`.
 
-Recommended v2.2.0 path: hand back to a human worker.
+Recommended default path: use `--plan` for public planning and hand back to a
+human worker unless you are intentionally validating `--plan-execute` in a
+disposable repo.
 
 ```bash
 git diff --stat
@@ -421,14 +499,15 @@ AMOF_HAPPY_PATH_ADOPTION_SMOKE_PASS
 
 ## Current Limitations
 
-- Full autonomous `--plan-execute` may require provider, guardrail, and runner
-  configuration; public v2.2.0 does not ship default runner config.
+- Full autonomous `--plan-execute` still requires a live provider key and a
+  disposable-repo smoke before demo claims. The built-in public runner is
+  intentionally narrow and shell-free.
 - `amof ticket start`, `amof ticket end`, `amof archive`, and `amof push` are
   still workspace-oriented; adopted-repo lifecycle support is not fully polished.
 - `amof promote-main` is for AMOF-controlled promotion workflows unless you have
   explicitly modeled and validated your repo in that flow.
-- Public v2.2.0 adoption removes `-e` friction for planning. It does not yet
-  provide full one-click agent execution.
+- Public v2.2.1 adoption removes `-e` friction for planning. AMOF-238 adds a
+  bounded worker default, but not full one-click autonomous execution.
 
 ## Next Roadmap
 
