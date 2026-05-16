@@ -99,6 +99,25 @@ def parse_args() -> argparse.Namespace:
         help="Add as readonly (no feature branch created)",
     )
 
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Initialize AMOF metadata for an existing repository",
+    )
+    init_parser.add_argument(
+        "--adopt",
+        metavar="PATH",
+        help="Adopt an existing git repository into AMOF app-data",
+    )
+    init_parser.add_argument(
+        "--name",
+        help="Ecosystem name to store for the adopted repository",
+    )
+    init_parser.add_argument(
+        "--write-local",
+        action="store_true",
+        help="Reserved for future local repo metadata writes; app-data is used by default",
+    )
+
     # Repo management command
     repo_parser = subparsers.add_parser(
         "repo",

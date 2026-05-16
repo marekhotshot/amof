@@ -84,23 +84,32 @@ def manifest_is_retired(manifest: Dict[str, Any]) -> bool:
 def list_available_ecosystems(*, base: Optional[str] = None, include_retired: bool = False) -> List[str]:
     """Return ecosystem names that exist under ecosystems/."""
     ecosystems_dir = get_ecosystems_dir(base)
-    if not ecosystems_dir.exists():
-        return []
-
     ecosystems: List[str] = []
-    for eco_dir in ecosystems_dir.iterdir():
-        manifest_path = eco_dir / "ecosystem.yaml"
-        if not eco_dir.is_dir() or not manifest_path.exists():
-            continue
-        try:
-            manifest = read_manifest_file(manifest_path)
-        except Exception:
-            # Keep invalid manifests visible instead of silently hiding them.
-            ecosystems.append(eco_dir.name)
-            continue
-        if include_retired or not manifest_is_retired(manifest):
-            ecosystems.append(eco_dir.name)
-    return sorted(ecosystems)
+    if not ecosystems_dir.exists():
+        pass
+    else:
+        for eco_dir in ecosystems_dir.iterdir():
+            manifest_path = eco_dir / "ecosystem.yaml"
+            if not eco_dir.is_dir() or not manifest_path.exists():
+                continue
+            try:
+                manifest = read_manifest_file(manifest_path)
+            except Exception:
+                # Keep invalid manifests visible instead of silently hiding them.
+                ecosystems.append(eco_dir.name)
+                continue
+            if include_retired or not manifest_is_retired(manifest):
+                ecosystems.append(eco_dir.name)
+    try:
+        from .app_config import get_adopted_ecosystem_manifest, list_adopted_ecosystems
+
+        for name in list_adopted_ecosystems():
+            manifest = get_adopted_ecosystem_manifest(name) or {}
+            if include_retired or not manifest_is_retired(manifest):
+                ecosystems.append(name)
+    except Exception:
+        pass
+    return sorted(set(ecosystems))
 
 
 def parse_scalar(value: str) -> Any:
@@ -396,6 +405,24 @@ def load_manifest(ecosystem: Optional[str] = None, validate: bool = True) -> Dic
         path = get_manifest_path(ecosystem)
     
     if not path.exists():
+        manifest = None
+        if ecosystem:
+            try:
+                from .app_config import get_adopted_ecosystem_manifest
+
+                manifest = get_adopted_ecosystem_manifest(ecosystem)
+            except Exception:
+                manifest = None
+        if manifest is not None:
+            if validate:
+                errors = validate_manifest(manifest)
+                if errors:
+                    sys.stderr.write(f"\n✗ App-data manifest validation failed for ecosystem '{ecosystem}'\n\n")
+                    for error in errors:
+                        sys.stderr.write(f"  {error}\n")
+                    sys.stderr.write(f"\n✓ Re-run: amof init --adopt . --name {ecosystem}\n")
+                    sys.exit(1)
+            return manifest
         if ecosystem:
             sys.stderr.write(f"\n✗ Ecosystem '{ecosystem}' not found at {path}\n\n")
             available = []
@@ -405,11 +432,17 @@ def load_manifest(ecosystem: Optional[str] = None, validate: bool = True) -> Dic
                     eco.name for eco in ecosystems_dir.iterdir()
                     if eco.is_dir() and (eco / "ecosystem.yaml").exists()
                 ]
+            try:
+                from .app_config import list_adopted_ecosystems
+
+                available.extend(list_adopted_ecosystems())
+            except Exception:
+                pass
             if available:
                 sys.stderr.write("Available ecosystems:\n")
-                for name in sorted(available):
+                for name in sorted(set(available)):
                     sys.stderr.write(f"  • {name}\n")
-                sys.stderr.write(f"\nUsage: amof -e {available[0]} <command>\n")
+                sys.stderr.write(f"\nUsage: amof -e {sorted(set(available))[0]} <command>\n")
             else:
                 sys.stderr.write("No ecosystems found. Create one with:\n")
                 sys.stderr.write(f"  amof ecosystem create {ecosystem}\n")

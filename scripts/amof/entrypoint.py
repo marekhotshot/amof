@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from importlib import import_module
+from pathlib import Path
 
 from amof.cli import parse_args
 from amof.state import get_state
@@ -31,6 +32,7 @@ NO_ECOSYSTEM_COMMANDS = {
     "shell",
     "preview",
     "help",
+    "init",
     "eval",
     "workspace",
     "server",
@@ -59,6 +61,67 @@ def _is_operational_context_command(args) -> bool:
     return action in {"current", "list", "show", "use", "add", "prompt", "banner"}
 
 
+def _current_git_root() -> Path | None:
+    try:
+        from amof.utils import get_git_toplevel
+
+        root = get_git_toplevel()
+    except Exception:
+        return None
+    if not root:
+        return None
+    return Path(root).resolve(strict=False)
+
+
+def _resolve_adopted_repo_ecosystem() -> str | None:
+    git_root = _current_git_root()
+    if git_root is None:
+        return None
+    try:
+        from amof.app_config import get_repo_binding_for_git_root
+
+        binding = get_repo_binding_for_git_root(git_root)
+    except Exception:
+        return None
+    if not binding:
+        return None
+    ecosystem = str(binding.get("ecosystem") or "").strip()
+    return ecosystem or None
+
+
+def _resolve_default_ecosystem_from_cwd_config() -> str | None:
+    agent_config = Path(".amof/agent.yaml")
+    if not agent_config.exists():
+        return None
+    for line in agent_config.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("default_ecosystem:"):
+            val = line.split(":", 1)[1].strip()
+            if " #" in val:
+                val = val[:val.index(" #")].rstrip()
+            if val:
+                return val
+    return None
+
+
+def _write_ecosystem_resolution_failure() -> None:
+    sys.stderr.write("Error: no ecosystem resolved for this AMOF command.\n")
+    git_root = _current_git_root()
+    if git_root is not None:
+        sys.stderr.write(f"Detected git root: {git_root}\n")
+        sys.stderr.write("Run: amof init --adopt .\n")
+    else:
+        sys.stderr.write("Run from a git checkout and then: amof init --adopt .\n")
+    sys.stderr.write("Usage: amof -e <ecosystem> <command>\n\n")
+
+    ecosystems_dir = Path("ecosystems")
+    if ecosystems_dir.exists():
+        sys.stderr.write("Available ecosystems:\n")
+        for eco in ecosystems_dir.iterdir():
+            if eco.is_dir() and (eco / "ecosystem.yaml").exists():
+                sys.stderr.write(f"  - {eco.name}\n")
+
+
 def _lazy_command(module_name: str, attr_name: str):
     def _runner(*args, **kwargs):
         module = import_module(f"amof.commands.{module_name}")
@@ -73,6 +136,7 @@ cmd_status = _lazy_command("status", "cmd_status")
 cmd_context = _lazy_command("context", "cmd_context")
 cmd_operational_context = _lazy_command("operational_context", "cmd_operational_context")
 cmd_add_repo = _lazy_command("repo", "cmd_add_repo")
+cmd_init = _lazy_command("init", "cmd_init")
 cmd_repo_promote = _lazy_command("repo", "cmd_repo_promote")
 cmd_repo_cleanup = _lazy_command("repo", "cmd_repo_cleanup")
 cmd_install = _lazy_command("install", "cmd_install")
@@ -160,6 +224,8 @@ def main() -> None:
             sys.exit(generated_build_main(gb_argv))
         if args.command == "help":
             sys.exit(cmd_help(getattr(args, "topic", None)))
+        if args.command == "init":
+            sys.exit(cmd_init(args))
         if args.command == "troubleshoot":
             manifest = load_manifest(ecosystem) if ecosystem else {"repos": []}
             sys.exit(cmd_troubleshoot(manifest))
@@ -293,6 +359,9 @@ def main() -> None:
                 sys.exit(1)
 
     if not ecosystem:
+        ecosystem = _resolve_adopted_repo_ecosystem()
+
+    if not ecosystem:
         state = get_state()
         if state and state.get("ecosystem"):
             ecosystem = state["ecosystem"]
@@ -308,31 +377,10 @@ def main() -> None:
             ecosystem = get_ecosystem_from_branch()
 
         if not ecosystem:
-            from pathlib import Path
-
-            agent_config = Path(".amof/agent.yaml")
-            if agent_config.exists():
-                for line in agent_config.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if line.startswith("default_ecosystem:"):
-                        val = line.split(":", 1)[1].strip()
-                        if " #" in val:
-                            val = val[:val.index(" #")].rstrip()
-                        if val:
-                            ecosystem = val
-                            break
+            ecosystem = _resolve_default_ecosystem_from_cwd_config()
 
         if not ecosystem:
-            sys.stderr.write("Error: --ecosystem/-e is required\n")
-            sys.stderr.write("Usage: amof -e <ecosystem> <command>\n\n")
-            from pathlib import Path
-
-            ecosystems_dir = Path("ecosystems")
-            if ecosystems_dir.exists():
-                sys.stderr.write("Available ecosystems:\n")
-                for eco in ecosystems_dir.iterdir():
-                    if eco.is_dir() and (eco / "ecosystem.yaml").exists():
-                        sys.stderr.write(f"  - {eco.name}\n")
+            _write_ecosystem_resolution_failure()
             sys.exit(1)
 
     manifest = load_manifest(ecosystem)

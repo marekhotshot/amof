@@ -35,6 +35,7 @@ _COMMAND_EXPORTS: dict[str, tuple[str, str]] = {
     "cmd_ecosystem": ("ecosystem", "cmd_ecosystem"),
     "cmd_actor": ("actor", "cmd_actor"),
     "cmd_add_repo": ("repo", "cmd_add_repo"),
+    "cmd_init": ("init", "cmd_init"),
     "cmd_repo_promote": ("repo", "cmd_repo_promote"),
     "cmd_repo_cleanup": ("repo", "cmd_repo_cleanup"),
     "cmd_check": ("check", "cmd_check"),

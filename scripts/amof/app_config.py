@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -281,19 +282,34 @@ def add_named_context(name: str, overrides: dict[str, Any] | None = None) -> dic
     return payload
 
 
-def load_workspace_registry() -> dict[str, Any]:
-    payload = _load_yaml(workspaces_registry_file(), default={"workspaces": {}})
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _normalized_registry_payload(payload: dict[str, Any]) -> dict[str, Any]:
     workspaces = payload.get("workspaces")
     if not isinstance(workspaces, dict):
         workspaces = {}
-    return {"workspaces": workspaces}
+    repo_bindings = payload.get("repo_bindings")
+    if not isinstance(repo_bindings, dict):
+        repo_bindings = {}
+    adopted_ecosystems = payload.get("adopted_ecosystems")
+    if not isinstance(adopted_ecosystems, dict):
+        adopted_ecosystems = {}
+    return {
+        "workspaces": workspaces,
+        "repo_bindings": repo_bindings,
+        "adopted_ecosystems": adopted_ecosystems,
+    }
+
+
+def load_workspace_registry() -> dict[str, Any]:
+    payload = _load_yaml(workspaces_registry_file(), default={"workspaces": {}})
+    return _normalized_registry_payload(payload)
 
 
 def save_workspace_registry(payload: dict[str, Any]) -> Path:
-    workspaces = payload.get("workspaces")
-    if not isinstance(workspaces, dict):
-        workspaces = {}
-    return _write_yaml(workspaces_registry_file(), {"workspaces": workspaces})
+    return _write_yaml(workspaces_registry_file(), _normalized_registry_payload(payload))
 
 
 def register_workspace(name: str, path: str, *, default_ref: str | None = None) -> dict[str, Any]:
@@ -313,6 +329,87 @@ def register_workspace(name: str, path: str, *, default_ref: str | None = None) 
     registry["workspaces"][normalized_name] = entry
     save_workspace_registry(registry)
     return entry
+
+
+def build_adopted_ecosystem_manifest(
+    *,
+    ecosystem: str,
+    repo_name: str,
+    git_root: str | Path,
+    default_ref: str | None = None,
+) -> dict[str, Any]:
+    normalized_ref = str(default_ref or "main").strip() or "main"
+    root = str(Path(git_root).expanduser().resolve(strict=False))
+    return {
+        "ecosystem": ecosystem,
+        "name": ecosystem,
+        "description": f"App-data adopted repository: {repo_name}",
+        "manifest_source": "appdata",
+        "repos": [
+            {
+                "name": repo_name,
+                "url": f"local://{root}",
+                "path": root,
+                "branch": normalized_ref,
+                "readonly": False,
+            }
+        ],
+    }
+
+
+def adopt_repo_binding(
+    *,
+    git_root: str | Path,
+    ecosystem: str,
+    repo_name: str,
+    default_ref: str | None = None,
+) -> dict[str, Any]:
+    normalized_ecosystem = str(ecosystem or "").strip()
+    normalized_repo_name = str(repo_name or "").strip()
+    normalized_ref = str(default_ref or "main").strip() or "main"
+    root = str(Path(git_root).expanduser().resolve(strict=False))
+    if not normalized_ecosystem:
+        raise ValueError("ecosystem name is required")
+    if not normalized_repo_name:
+        raise ValueError("repo name is required")
+    registry = load_workspace_registry()
+    now = _utc_timestamp()
+    previous = registry["repo_bindings"].get(root)
+    created_at = previous.get("created_at") if isinstance(previous, dict) else None
+    entry = {
+        "git_root": root,
+        "ecosystem": normalized_ecosystem,
+        "repo_name": normalized_repo_name,
+        "default_ref": normalized_ref,
+        "manifest_source": "appdata",
+        "created_at": created_at or now,
+        "updated_at": now,
+    }
+    registry["repo_bindings"][root] = entry
+    registry["adopted_ecosystems"][normalized_ecosystem] = build_adopted_ecosystem_manifest(
+        ecosystem=normalized_ecosystem,
+        repo_name=normalized_repo_name,
+        git_root=root,
+        default_ref=normalized_ref,
+    )
+    save_workspace_registry(registry)
+    return entry
+
+
+def get_repo_binding_for_git_root(git_root: str | Path) -> dict[str, Any] | None:
+    root = str(Path(git_root).expanduser().resolve(strict=False))
+    entry = load_workspace_registry()["repo_bindings"].get(root)
+    return deepcopy(entry) if isinstance(entry, dict) else None
+
+
+def get_adopted_ecosystem_manifest(ecosystem: str) -> dict[str, Any] | None:
+    normalized = str(ecosystem or "").strip()
+    manifest = load_workspace_registry()["adopted_ecosystems"].get(normalized)
+    return deepcopy(manifest) if isinstance(manifest, dict) else None
+
+
+def list_adopted_ecosystems() -> list[str]:
+    return sorted(str(name) for name in load_workspace_registry()["adopted_ecosystems"])
 
 
 def get_registered_workspace(name: str) -> dict[str, Any]:
@@ -335,10 +432,15 @@ __all__ = [
     "ensure_default_context_config",
     "get_context",
     "get_current_context_name",
+    "get_adopted_ecosystem_manifest",
     "get_registered_workspace",
+    "get_repo_binding_for_git_root",
+    "list_adopted_ecosystems",
     "load_contexts",
     "load_global_config",
     "load_workspace_registry",
+    "adopt_repo_binding",
+    "build_adopted_ecosystem_manifest",
     "register_workspace",
     "save_contexts",
     "save_global_config",

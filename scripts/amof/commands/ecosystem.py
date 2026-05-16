@@ -71,12 +71,7 @@ components: {{}}
 def cmd_ecosystem_list() -> int:
     """List available ecosystems (folders with ecosystem.yaml)."""
     ecosystems_dir = Path("ecosystems")
-    
-    if not ecosystems_dir.exists():
-        print("No ecosystems found.")
-        print("Create ecosystem folder: ecosystems/<name>/ecosystem.yaml")
-        return 0
-    
+
     from amof.manifest import list_available_ecosystems
 
     ecosystems = list_available_ecosystems()
