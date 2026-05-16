@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v2.0.1-0A7FFF.svg" alt="release v2.0.1" />
+  <img src="https://img.shields.io/badge/release-v2.1.0-0A7FFF.svg" alt="release v2.1.0" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
@@ -37,6 +37,8 @@ This public `main` intentionally keeps a narrow, installable surface:
 - `./scripts/install-amof.sh`
 - `amof check`
 - `amof doctor`
+- `amof init --adopt .`
+- `amof agent --plan "Inspect this repo"`
 - `amof bootstrap contract`
 - `amof bootstrap bundle`
 
@@ -52,6 +54,8 @@ What works on this reduced main:
 - `amof check`
 - `amof paths --json`
 - `amof doctor --json`
+- `amof init --adopt .`
+- `amof agent --plan "Inspect this repo"`
 - `amof bootstrap contract --json`
 - `amof bootstrap bundle --json`
 
@@ -65,7 +69,7 @@ What is intentionally not included on this canonical main:
 ## Quick Install
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.0.1"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.1.0"
 ```
 
 This is the recommended public install path for end users. It installs the
@@ -86,6 +90,26 @@ amof bootstrap bundle
 environment it may still report optional warnings for Git identity, SSH keys,
 or provider setup depending on the workflows you plan to use. Those warnings do
 not block basic public install, `doctor`, or bootstrap evidence commands.
+
+## Adopt A Repo For Agent Planning
+
+Use this path when you want AMOF to remember an existing Git repository without
+manually creating an ecosystem manifest or passing `-e` on every agent command:
+
+```bash
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.1.0"
+cd /path/to/my-repo
+git init  # only needed if this is not already a Git repo
+amof init --adopt .
+amof doctor
+amof agent --plan "Inspect this repo"
+```
+
+Adoption stores a repo binding and minimal single-repo manifest in AMOF app-data.
+It does not write files into the target repo by default. Live LLM planning or
+execution still requires provider configuration; without provider keys, the
+agent should reach the provider setup/key validation message rather than fail on
+missing `--ecosystem/-e`.
 
 ## Install From Source
 

@@ -8,6 +8,25 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.1.0] - 2026-05-16
+
+### Added
+
+- Added `amof init --adopt .` for adopting an existing Git repository into AMOF app-data.
+- Added app-data repo adoption bindings and minimal app-data manifests for single-repo public onboarding.
+- Added no-`-e` agent planning resolution from an adopted repo, so `amof agent --plan "Inspect this repo"` can resolve the ecosystem without manual `--ecosystem` input.
+
+### Changed
+
+- Improved arbitrary-repo failure guidance to show the detected Git root and suggest `amof init --adopt .`.
+- Kept default adoption non-invasive: app-data is updated, and the target repository is not written to unless a future explicit local-write flow is implemented.
+- Agent runs from adopted repos now reach provider validation instead of failing first on ecosystem resolution.
+
+### Notes
+
+- `2.0.1` remains the clean public baseline and install release.
+- This release does not add full guided provider setup or guarantee live LLM planning/execution without provider configuration.
+
 ## [2.0.1] - 2026-05-16
 
 ### Added
