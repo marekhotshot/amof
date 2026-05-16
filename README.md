@@ -143,14 +143,14 @@ amof init --adopt .
 amof doctor
 amof setup provider openrouter --name openrouter-default --activate
 export OPENROUTER_API_KEY="<redacted>"
-amof agent --provider openrouter --plan "Inspect this repo" --no-follow-up
+amof agent --plan "Inspect this repo" --no-follow-up
 ```
 
 Adoption stores a repo binding and minimal single-repo manifest in AMOF app-data.
-It does not write files into the target repo by default. Live LLM planning or
-execution still requires provider configuration; without provider keys, the
-agent should reach the provider setup/key validation message rather than fail on
-missing `--ecosystem/-e`.
+It does not write files, journals, or guardrail config into the target repo by
+default. Live LLM planning or execution still requires provider configuration;
+without provider keys, the agent should reach the provider setup/key validation
+message rather than fail on missing `--ecosystem/-e`.
 
 ## Configure A Provider Profile
 
@@ -162,8 +162,15 @@ environment variables to be set in your shell.
 OpenRouter:
 
 ```bash
-export OPENROUTER_API_KEY="<redacted>"
 amof setup provider openrouter --name openrouter-default --activate
+export OPENROUTER_API_KEY="<redacted>"
+amof agent --plan "Inspect this repo" --no-follow-up
+```
+
+An explicit provider flag still wins over an activated profile:
+
+```bash
+amof agent --provider openrouter --plan "Inspect this repo" --no-follow-up
 ```
 
 Local Qwen/Ollama-compatible endpoint:
@@ -183,9 +190,19 @@ export RUNPOD_OPENAI_BASE_URL="<redacted>"
 amof setup provider runpod --name runpod-heavy --activate
 ```
 
-For scripts or CI, add `--yes` to skip the confirmation prompt. The xAI profile
-template is available for planning/bootstrap records, but current live execution
-may require provider resolver support before xAI can be used directly.
+For scripts or CI, add `--yes` to skip the confirmation prompt. Do not put an
+OpenRouter key into `ANTHROPIC_API_KEY`; provider setup stores environment
+variable references and metadata only, and live calls still require the matching
+environment variable to be exported. The xAI profile template is available for
+planning/bootstrap records, but current live execution may require provider
+resolver support before xAI can be used directly.
+
+Vector memory is optional. For pipx installs that need it, inject it into the
+AMOF app environment instead of the target repo:
+
+```bash
+pipx inject amof chromadb pysqlite3-binary
+```
 
 ## Install From Source
 

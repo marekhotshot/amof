@@ -58,6 +58,7 @@ class OpenAIClient(LLMClient):
         self,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        base_url: Optional[str] = None,
         max_retries: int = MAX_RETRIES,
         reasoning_effort: Optional[str] = None,
     ):
@@ -74,8 +75,9 @@ class OpenAIClient(LLMClient):
         self._model = canonical_model_name(self._raw_model)
         key_env = "OPENROUTER_API_KEY" if self._provider == "openrouter" else "OPENAI_API_KEY"
         self._api_key = api_key or os.environ.get(key_env, "")
-        self._base_url = (
-            os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        self._base_url = base_url or (
+            os.environ.get("OPENROUTER_OPENAI_BASE_URL")
+            or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
             if self._provider == "openrouter"
             else None
         )

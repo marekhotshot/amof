@@ -131,6 +131,163 @@ class RepoAdoptionTests(unittest.TestCase):
         self.assertNotIn("no ecosystem resolved", result.stderr)
         self.assertNotIn("--ecosystem/-e is required", result.stderr)
 
+    def test_active_openrouter_profile_drives_agent_default_provider(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-adopt-provider-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / ".amof-home"
+            _init_git_repo(repo)
+            init_result = _run_amof(repo, amof_home, "init", "--adopt", ".")
+            self.assertEqual(init_result.returncode, 0, init_result.stderr)
+            setup_result = _run_amof(
+                repo,
+                amof_home,
+                "setup",
+                "provider",
+                "openrouter",
+                "--name",
+                "openrouter-default",
+                "--activate",
+                "--yes",
+            )
+            self.assertEqual(setup_result.returncode, 0, setup_result.stderr)
+
+            result = _run_amof(repo, amof_home, "agent", "--plan", "Inspect", "--no-follow-up")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("[agent] OPENROUTER_API_KEY not set.", result.stderr)
+        self.assertNotIn("ANTHROPIC_API_KEY", result.stderr)
+        self.assertNotIn("--ecosystem/-e is required", result.stderr)
+
+    def test_explicit_provider_overrides_active_provider_profile(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-adopt-provider-override-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / ".amof-home"
+            _init_git_repo(repo)
+            self.assertEqual(_run_amof(repo, amof_home, "init", "--adopt", ".").returncode, 0)
+            self.assertEqual(
+                _run_amof(
+                    repo,
+                    amof_home,
+                    "setup",
+                    "provider",
+                    "openrouter",
+                    "--name",
+                    "openrouter-default",
+                    "--activate",
+                    "--yes",
+                ).returncode,
+                0,
+            )
+
+            result = _run_amof(
+                repo,
+                amof_home,
+                "agent",
+                "--provider",
+                "anthropic",
+                "--plan",
+                "Inspect",
+                "--no-follow-up",
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("[agent] ANTHROPIC_API_KEY not set.", result.stderr)
+        self.assertNotIn("OPENROUTER_API_KEY not set", result.stderr)
+
+    def test_multiple_active_provider_profiles_require_explicit_provider(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-adopt-provider-multiple-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / ".amof-home"
+            _init_git_repo(repo)
+            self.assertEqual(_run_amof(repo, amof_home, "init", "--adopt", ".").returncode, 0)
+            for provider_name, profile_name in (("openrouter", "openrouter-default"), ("openai", "openai-default")):
+                result = _run_amof(
+                    repo,
+                    amof_home,
+                    "setup",
+                    "provider",
+                    provider_name,
+                    "--name",
+                    profile_name,
+                    "--activate",
+                    "--yes",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            result = _run_amof(repo, amof_home, "agent", "--plan", "Inspect", "--no-follow-up")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Multiple active provider profiles configured", result.stderr)
+
+    def test_unsupported_active_provider_profile_fails_clearly(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-adopt-provider-xai-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / ".amof-home"
+            _init_git_repo(repo)
+            self.assertEqual(_run_amof(repo, amof_home, "init", "--adopt", ".").returncode, 0)
+            setup_result = _run_amof(
+                repo,
+                amof_home,
+                "setup",
+                "provider",
+                "xai",
+                "--name",
+                "xai-default",
+                "--activate",
+                "--yes",
+            )
+            self.assertEqual(setup_result.returncode, 0, setup_result.stderr)
+
+            result = _run_amof(repo, amof_home, "agent", "--plan", "Inspect", "--no-follow-up")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "Provider profile xai-default uses provider xai, but this provider is not supported by amof agent CLI yet.",
+            result.stderr,
+        )
+
+    def test_adopt_setup_and_agent_provider_validation_keep_repo_clean(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-adopt-clean-agent-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / ".amof-home"
+            _init_git_repo(repo)
+            self.assertEqual(_run_amof(repo, amof_home, "init", "--adopt", ".").returncode, 0)
+            self.assertEqual(
+                _run_amof(
+                    repo,
+                    amof_home,
+                    "setup",
+                    "provider",
+                    "openrouter",
+                    "--name",
+                    "openrouter-default",
+                    "--activate",
+                    "--yes",
+                ).returncode,
+                0,
+            )
+            result = _run_amof(repo, amof_home, "agent", "--plan", "Inspect", "--no-follow-up")
+            git_status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(git_status.stdout.strip(), "")
+        self.assertFalse((repo / "ecosystems").exists())
+        self.assertFalse((repo / ".amof").exists())
+        self.assertFalse((repo / "context").exists())
+        self.assertNotIn("NO protections", result.stderr)
+        self.assertNotIn("Vector memory unavailable", result.stderr)
+
     def test_explicit_ecosystem_overrides_adopted_binding(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-adopt-explicit-") as td:
             temp = Path(td)

@@ -32,8 +32,8 @@ class VectorStore:
     def __init__(self, persist_directory: Optional[Path] = None):
         if chromadb is None:
             raise ImportError(
-                "chromadb is not installed. Run 'pip install chromadb' or "
-                "add it to requirements.txt to use VectorStore."
+                "chromadb is not installed. Vector memory is optional. "
+                "For pipx installs, run: pipx inject amof chromadb pysqlite3-binary."
             )
             
         self.persist_directory = persist_directory or vector_store_dir()

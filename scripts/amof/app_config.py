@@ -15,6 +15,7 @@ from .app_paths import (
     ensure_app_roots,
     ensure_parent_dir,
     get_app_paths,
+    provider_profiles_dir,
     workspaces_registry_file,
 )
 
@@ -176,6 +177,32 @@ def activate_provider_profile_ref(profile_name: str, *, context_name: str | None
     credentials["provider_profile_refs"] = provider_refs
     upsert_context(target_context, context_payload)
     return deepcopy(context_payload)
+
+
+def get_provider_profile_refs(*, context_name: str | None = None) -> list[str]:
+    target_context = str(context_name or get_current_context_name() or "local").strip() or "local"
+    context_payload = get_context(target_context)
+    credentials = context_payload.get("credentials")
+    if not isinstance(credentials, dict):
+        return []
+    refs = credentials.get("provider_profile_refs")
+    if not isinstance(refs, list):
+        return []
+    return [str(item).strip() for item in refs if str(item).strip()]
+
+
+def load_provider_profile(profile_name: str) -> dict[str, Any]:
+    normalized = str(profile_name or "").strip()
+    if not normalized:
+        raise ValueError("provider profile name is required")
+    path = provider_profiles_dir() / f"{normalized}.yaml"
+    if not path.exists():
+        raise FileNotFoundError(f"provider profile not found: {path}")
+    payload = _load_yaml(path, default={})
+    if not payload:
+        raise ValueError(f"provider profile is empty or invalid: {normalized}")
+    payload.setdefault("name", normalized)
+    return deepcopy(payload)
 
 
 def _normalize_optional_string(value: Any) -> str | None:
@@ -453,8 +480,10 @@ __all__ = [
     "get_context",
     "get_current_context_name",
     "get_adopted_ecosystem_manifest",
+    "get_provider_profile_refs",
     "get_registered_workspace",
     "get_repo_binding_for_git_root",
+    "load_provider_profile",
     "list_adopted_ecosystems",
     "load_contexts",
     "load_global_config",

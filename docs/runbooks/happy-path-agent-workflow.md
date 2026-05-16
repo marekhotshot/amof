@@ -5,7 +5,7 @@ repository without learning AMOF internals first.
 
 It covers:
 
-- installing AMOF v2.1.0
+- installing AMOF v2.2.0
 - adopting an existing Git repo into AMOF app-data
 - creating a work ticket if the current command supports your repo layout
 - running a safe agent plan
@@ -15,7 +15,7 @@ It covers:
 - closing the ticket or work item if the current command supports your repo
   layout
 
-The supported v2.1.0 happy path is adoption plus safe planning without passing
+The supported v2.2.0 happy path is adoption plus safe planning without passing
 `-e/--ecosystem`. Full one-click agent execution and adopted-repo ticket
 lifecycle polish are still evolving.
 
@@ -42,10 +42,10 @@ Do not paste real keys into terminal transcripts, bug reports, or public docs.
 
 ## Install AMOF
 
-Install the public v2.1.0 release:
+Install the public v2.2.0 release:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.1.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.2.0"
 ```
 
 Verify the CLI:
@@ -59,7 +59,7 @@ amof doctor
 Expected:
 
 ```text
-AMOF v2.1.0
+AMOF v2.2.0
 ```
 
 `amof check` should pass required prerequisites. `amof doctor` may report
@@ -121,8 +121,8 @@ amof setup provider --list
 OpenRouter:
 
 ```bash
-export OPENROUTER_API_KEY="<redacted>"
 amof setup provider openrouter --name openrouter-default --activate
+export OPENROUTER_API_KEY="<redacted>"
 ```
 
 Local Qwen/Ollama-compatible endpoint:
@@ -144,9 +144,18 @@ amof setup provider runpod --name runpod-heavy --activate
 
 For scripted runs, add `--yes` to skip the confirmation prompt. For
 adoption-only smoke tests, leave keys unset. The correct failure is provider
-validation, not ecosystem resolution. The xAI template is available for
-planning/bootstrap records, but current live execution may require provider
-resolver support before xAI can be used directly.
+validation, not ecosystem resolution. Do not put an OpenRouter key into
+`ANTHROPIC_API_KEY`; provider setup stores environment variable references and
+metadata only, and live calls still require the matching environment variable to
+be exported. The xAI template is available for planning/bootstrap records, but
+current live execution may require provider resolver support before xAI can be
+used directly.
+
+Vector memory is optional. For pipx installs that need it:
+
+```bash
+pipx inject amof chromadb pysqlite3-binary
+```
 
 ## Start A Ticket Or Work Item
 
@@ -163,7 +172,7 @@ The visible syntax is:
 amof ticket start <ticket-id>
 ```
 
-Current limitation: in v2.1.0, `amof ticket start` is still workspace-state
+Current limitation: in v2.2.0, `amof ticket start` is still workspace-state
 oriented. In an app-data adopted repo, it can report:
 
 ```text
@@ -196,14 +205,14 @@ unset ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY
 amof agent --plan "Inspect this repo and propose a minimal improvement" --no-follow-up
 ```
 
-Expected without provider configuration:
+Expected without provider configuration, after activating OpenRouter:
 
 ```text
-[agent] ANTHROPIC_API_KEY not set.
+[agent] OPENROUTER_API_KEY not set.
 ```
 
-The exact provider message depends on the provider you select. The important
-v2.1.0 behavior is that the command should not fail with:
+The exact provider message depends on the provider you activate or select. The
+important v2.2.0 behavior is that the command should not fail with:
 
 ```text
 --ecosystem/-e is required
@@ -213,7 +222,13 @@ Provider-enabled OpenRouter example:
 
 ```bash
 export OPENROUTER_API_KEY="<redacted>"
-amof agent --provider openrouter --plan "Add a --name argument, preserve default behavior, update tests and README" --no-follow-up
+amof agent --plan "Add a --name argument, preserve default behavior, update tests and README" --no-follow-up
+```
+
+Use an explicit provider when you want to override the activated profile:
+
+```bash
+amof agent --provider openrouter --plan "Inspect this repo" --no-follow-up
 ```
 
 What happens:
@@ -235,10 +250,10 @@ amof agent --planner-model <model>
 
 Current limitation: full autonomous execution is experimental for public
 adopted repos. Worker delegation depends on provider configuration and optional
-runner configuration such as `runners.yaml`; v2.1.0 does not ship a default
+runner configuration such as `runners.yaml`; v2.2.0 does not ship a default
 `runners.yaml` in the public repo.
 
-Recommended v2.1.0 path: hand back to a human worker.
+Recommended v2.2.0 path: hand back to a human worker.
 
 ```bash
 git diff --stat
@@ -286,7 +301,7 @@ Notes:
 
 ## Promote Or Publish Changes
 
-AMOF v2.1.0 exposes:
+AMOF v2.2.0 exposes:
 
 ```bash
 amof push --help
@@ -363,6 +378,7 @@ unset ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY
 amof --version
 amof init --adopt .
 amof doctor --json >/tmp/amof-happy-path-doctor.json
+amof setup provider openrouter --name openrouter-default --activate --yes
 
 amof agent --plan "Inspect this repo" --no-follow-up > "$DEMO_ROOT/agent.txt" 2>&1 || true
 cat "$DEMO_ROOT/agent.txt"
@@ -374,6 +390,16 @@ fi
 
 if ! grep -Eq "API_KEY not set|provider|key|configuration" "$DEMO_ROOT/agent.txt"; then
   echo "FAIL: expected provider validation message was not observed"
+  exit 1
+fi
+
+if grep -q "NO protections" "$DEMO_ROOT/agent.txt"; then
+  echo "FAIL: guardrails warning is unsafe for public demos"
+  exit 1
+fi
+
+if grep -q "Vector memory unavailable" "$DEMO_ROOT/agent.txt"; then
+  echo "FAIL: optional vector memory warning should not pollute default plan output"
   exit 1
 fi
 
@@ -395,22 +421,20 @@ AMOF_HAPPY_PATH_ADOPTION_SMOKE_PASS
 
 ## Current Limitations
 
-- Guided provider setup (`amof setup provider`) is not implemented in v2.1.0.
 - Full autonomous `--plan-execute` may require provider, guardrail, and runner
-  configuration; public v2.1.0 does not ship default runner config.
+  configuration; public v2.2.0 does not ship default runner config.
 - `amof ticket start`, `amof ticket end`, `amof archive`, and `amof push` are
   still workspace-oriented; adopted-repo lifecycle support is not fully polished.
 - `amof promote-main` is for AMOF-controlled promotion workflows unless you have
   explicitly modeled and validated your repo in that flow.
-- Public v2.1.0 adoption removes `-e` friction for planning. It does not yet
+- Public v2.2.0 adoption removes `-e` friction for planning. It does not yet
   provide full one-click agent execution.
 
 ## Next Roadmap
 
 Planned improvements:
 
-- `amof setup provider`
-- default prompts, rules, and runners for public adopted repos
+- default prompts and runners for public adopted repos
 - adopted-repo ticket lifecycle polish
 - local/Ollama worker profile
 - clearer planner/worker model ladder UX

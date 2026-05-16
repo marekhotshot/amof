@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -20,6 +21,19 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..app_paths import get_app_paths, indexes_dir, runs_dir, vector_store_dir
+
+logger = logging.getLogger(__name__)
+
+AMOF_RUNTIME_DEPENDENCIES = {
+    "anthropic": "anthropic",
+    "boto3": "boto3",
+    "botocore": "botocore",
+    "openai": "openai",
+    "pydantic": "pydantic",
+    "yaml": "PyYAML",
+}
+OPTIONAL_MEMORY_DEPENDENCIES = {"chromadb", "pysqlite3"}
+SUPPORTED_PROFILE_PROVIDERS = {"anthropic", "openai", "openrouter", "bedrock"}
 
 # Default model tiers when --model-ladder is enabled
 DEFAULT_TIERS = {
@@ -90,6 +104,30 @@ def _agent_index_path(workspace_root: Path, ecosystem_name: str) -> Path:
     return indexes_dir() / _workspace_runtime_key(workspace_root) / (ecosystem_name or "default")
 
 
+def _is_amof_source_checkout(workspace_root: Path) -> bool:
+    return (workspace_root / "scripts" / "amof.py").exists() and (workspace_root / "requirements.txt").exists()
+
+
+def _is_appdata_adopted_manifest(manifest: Dict[str, Any]) -> bool:
+    return str(manifest.get("manifest_source") or "").strip() == "appdata"
+
+
+def _agent_journal_dir(manifest: Dict[str, Any], workspace_root: Path) -> Path:
+    ecosystem_name = str(manifest.get("ecosystem") or "default").strip() or "default"
+    if _is_appdata_adopted_manifest(manifest):
+        return get_app_paths().data_root / "journals" / ecosystem_name
+    from ..manifest import get_journal_dir
+
+    return get_journal_dir(ecosystem_name, base=str(workspace_root))
+
+
+def _agent_plans_dir(manifest: Dict[str, Any], workspace_root: Path) -> Path:
+    ecosystem_name = str(manifest.get("ecosystem") or "default").strip() or "default"
+    if _is_appdata_adopted_manifest(manifest):
+        return get_app_paths().data_root / "plans" / ecosystem_name
+    return workspace_root / "ecosystems" / ecosystem_name / "plans"
+
+
 def _configure_guardrails(guardrails: Any, workspace_root: Path) -> None:
     app_allowed_path = _agent_allowed_rules_path()
     guardrails._allowed_path = app_allowed_path
@@ -140,6 +178,53 @@ def _auto_load_env(env_path: Path) -> None:
         pass  # Best-effort; if .env is unreadable, error message will guide user
 
 
+def _missing_module_name(exc: BaseException) -> str:
+    name = getattr(exc, "name", None)
+    if isinstance(name, str) and name:
+        return name.split(".", 1)[0]
+    text = str(exc)
+    marker = "No module named "
+    if marker in text:
+        return text.split(marker, 1)[1].strip().strip("'\"").split(".", 1)[0]
+    return text
+
+
+def _memory_dependency_guidance() -> str:
+    return (
+        "Vector memory is optional. For pipx installs, run:\n"
+        "    pipx inject amof chromadb pysqlite3-binary\n"
+        "For source checkouts, install the optional memory dependencies from the AMOF project environment."
+    )
+
+
+def _runtime_dependency_guidance(missing: str | None = None) -> str:
+    missing_line = f"[agent] AMOF runtime dependency missing: {missing}\n" if missing else ""
+    return (
+        missing_line
+        + "[agent] This dependency belongs to AMOF, not the adopted target repo.\n"
+        "  Update or reinstall AMOF:\n"
+        "    amof update\n"
+        "  or:\n"
+        "    pipx install --force git+https://github.com/marekhotshot/amof.git@v2.2.0\n"
+    )
+
+
+def _check_amof_runtime_imports() -> tuple[list[str], list[str]]:
+    missing_core: list[str] = []
+    missing_memory: list[str] = []
+    for module_name, package_name in AMOF_RUNTIME_DEPENDENCIES.items():
+        try:
+            __import__(module_name)
+        except Exception:
+            missing_core.append(package_name)
+    for module_name in OPTIONAL_MEMORY_DEPENDENCIES:
+        try:
+            __import__(module_name)
+        except Exception:
+            missing_memory.append(module_name)
+    return missing_core, missing_memory
+
+
 def cmd_agent_install() -> int:
     """Set up the agent environment: create venv, install dependencies, verify API key.
 
@@ -150,6 +235,22 @@ def cmd_agent_install() -> int:
     venv_dir = workspace_root / ".venv"
 
     print("\n  AMOF Agent Environment Setup\n")
+
+    if not _is_amof_source_checkout(workspace_root):
+        missing_core, missing_memory = _check_amof_runtime_imports()
+        if missing_core:
+            sys.stderr.write(_runtime_dependency_guidance(", ".join(sorted(missing_core))))
+            return 1
+        print("  ✓ AMOF runtime dependencies are installed in this CLI environment.")
+        if missing_memory:
+            print("  ℹ Vector memory is optional and is not installed.")
+            print("    For pipx installs, run: pipx inject amof chromadb pysqlite3-binary")
+        print()
+        print("  Next steps:")
+        print("    amof setup provider openrouter --activate")
+        print('    export OPENROUTER_API_KEY="<redacted>"')
+        print('    amof agent --plan "Inspect this repo"')
+        return 0
 
     # Step 1: Check requirements.txt
     if not req_file.exists():
@@ -320,6 +421,74 @@ def _load_agent_config(workspace_root: Path, config_path: Optional[Path] = None)
     return config
 
 
+def _active_provider_profile() -> dict[str, Any] | None:
+    from ..app_config import get_provider_profile_refs, load_provider_profile
+
+    refs = get_provider_profile_refs()
+    if not refs:
+        return None
+    if len(refs) > 1:
+        joined = ", ".join(refs)
+        raise ValueError(
+            f"Multiple active provider profiles configured: {joined}. "
+            "Pass --provider explicitly or activate exactly one provider profile."
+        )
+
+    profile = load_provider_profile(refs[0])
+    profile_name = str(profile.get("name") or refs[0])
+    provider_name = str(profile.get("provider") or "").strip()
+    if not provider_name:
+        raise ValueError(f"Provider profile {profile_name} does not declare a provider.")
+    if provider_name == "local":
+        raise ValueError("local provider profiles are not yet supported by amof agent CLI")
+    if provider_name not in SUPPORTED_PROFILE_PROVIDERS:
+        raise ValueError(
+            f"Provider profile {profile_name} uses provider {provider_name}, "
+            "but this provider is not supported by amof agent CLI yet."
+        )
+    return profile
+
+
+def _profile_credential_env(profile: dict[str, Any] | None, key: str) -> str | None:
+    if not profile:
+        return None
+    credential_refs = profile.get("credential_refs")
+    if isinstance(credential_refs, dict):
+        value = credential_refs.get(key)
+        if value:
+            return str(value).strip()
+    value = profile.get(key)
+    if value:
+        return str(value).strip()
+    return None
+
+
+def _profile_model(profile: dict[str, Any] | None) -> str | None:
+    if not profile:
+        return None
+    model_env = str(profile.get("model_env") or "").strip()
+    if model_env and os.environ.get(model_env):
+        return str(os.environ[model_env]).strip()
+    for key in ("model", "default_model"):
+        value = profile.get(key)
+        if value:
+            return str(value).strip()
+    return None
+
+
+def _profile_base_url(profile: dict[str, Any] | None) -> str | None:
+    if not profile:
+        return None
+    base_url_env = _profile_credential_env(profile, "base_url_env")
+    if base_url_env and os.environ.get(base_url_env):
+        return str(os.environ[base_url_env]).strip()
+    for key in ("base_url", "default_base_url"):
+        value = profile.get(key)
+        if value:
+            return str(value).strip()
+    return None
+
+
 def _interactive_confirm(command: str, reason: str) -> str:
     """Prompt user for confirmation when a sensitive/dangerous command is detected.
 
@@ -401,6 +570,8 @@ def cmd_agent(
 
     # ── Load config defaults from AMOF app-data, or legacy workspace config ──
     cfg = _load_agent_config(workspace_root)
+    explicit_provider = provider is not None
+    provider_profile: dict[str, Any] | None = None
 
     # Apply config defaults where CLI args were not explicitly set (None)
     if verbose is None:
@@ -411,7 +582,15 @@ def cmd_agent(
     if model_ladder is None:
         model_ladder = cfg.get("model_ladder", False)
     if provider is None:
-        provider = str(cfg.get("default_provider", "anthropic"))
+        try:
+            provider_profile = _active_provider_profile()
+        except (FileNotFoundError, ValueError) as exc:
+            sys.stderr.write(f"[agent] {exc}\n")
+            return 1
+        if provider_profile:
+            provider = str(provider_profile.get("provider") or "").strip()
+        else:
+            provider = str(cfg.get("default_provider", "anthropic"))
     if plan_mode is None:
         plan_mode = False
     if plan_execute is None:
@@ -428,22 +607,27 @@ def cmd_agent(
 
     # Auto-load .env if API key isn't already in environment
     _auto_load_env(Path.cwd() / ".env")
+    provider_base_url = _profile_base_url(provider_profile)
 
     # Resolve API key based on provider
     if provider == "openai":
-        api_key = os.environ.get("OPENAI_API_KEY", "")
+        api_key_env = _profile_credential_env(provider_profile, "api_key_env") if not explicit_provider else None
+        api_key_env = api_key_env or "OPENAI_API_KEY"
+        api_key = os.environ.get(api_key_env, "")
         if not api_key:
             sys.stderr.write(
-                "[agent] OPENAI_API_KEY not set.\n"
-                "  Add to .env: OPENAI_API_KEY=sk-...\n"
+                f"[agent] {api_key_env} not set.\n"
+                f"  Export {api_key_env}=<provider-api-key> before running live agent calls.\n"
             )
             return 1
     elif provider == "openrouter":
-        api_key = os.environ.get("OPENROUTER_API_KEY", "")
+        api_key_env = _profile_credential_env(provider_profile, "api_key_env") if not explicit_provider else None
+        api_key_env = api_key_env or "OPENROUTER_API_KEY"
+        api_key = os.environ.get(api_key_env, "")
         if not api_key:
             sys.stderr.write(
-                "[agent] OPENROUTER_API_KEY not set.\n"
-                "  Add to .env: OPENROUTER_API_KEY=sk-or-...\n"
+                f"[agent] {api_key_env} not set.\n"
+                f"  Export {api_key_env}=<provider-api-key> before running live agent calls.\n"
             )
             return 1
     elif provider == "bedrock":
@@ -460,11 +644,13 @@ def cmd_agent(
             )
             return 1
     else:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key_env = _profile_credential_env(provider_profile, "api_key_env") if not explicit_provider else None
+        api_key_env = api_key_env or "ANTHROPIC_API_KEY"
+        api_key = os.environ.get(api_key_env, "")
         if not api_key:
             sys.stderr.write(
-                "[agent] ANTHROPIC_API_KEY not set.\n"
-                "  Add to .env: ANTHROPIC_API_KEY=sk-ant-...\n"
+                f"[agent] {api_key_env} not set.\n"
+                f"  Export {api_key_env}=<provider-api-key> before running live agent calls.\n"
             )
             return 1
 
@@ -499,6 +685,14 @@ def cmd_agent(
     except ImportError as e:
         missing = str(e)
         sys.stderr.write(f"[agent] Missing dependency: {missing}\n")
+        missing_module = _missing_module_name(e)
+        if missing_module in AMOF_RUNTIME_DEPENDENCIES or missing_module in OPTIONAL_MEMORY_DEPENDENCIES:
+            if missing_module in OPTIONAL_MEMORY_DEPENDENCIES:
+                sys.stderr.write(_memory_dependency_guidance() + "\n")
+            else:
+                package_name = AMOF_RUNTIME_DEPENDENCIES.get(missing_module, missing_module)
+                sys.stderr.write(_runtime_dependency_guidance(package_name))
+            return 1
 
         # Check if running from a venv
         venv_dir = Path.cwd() / ".venv"
@@ -513,48 +707,12 @@ def cmd_agent(
                 )
                 return 1
 
-        # Try auto-install
-        req_file = Path("requirements.txt")
-        if req_file.exists():
-            sys.stderr.write("[agent] Attempting to install dependencies...\n")
-            installed = False
-            for extra_args in [[], ["--break-system-packages"]]:
-                try:
-                    cmd = [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)] + extra_args
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                    if result.returncode == 0:
-                        sys.stderr.write("[agent] Dependencies installed. Retrying imports...\n")
-                        from ..orchestrator.llm.anthropic import AnthropicClient  # noqa: F811
-                        from ..orchestrator.tools import create_default_registry, Guardrails  # noqa: F811
-                        from ..orchestrator.agent import Agent  # noqa: F811
-                        from ..orchestrator.session import Session  # noqa: F811
-                        from ..orchestrator.telemetry import SessionTelemetry  # noqa: F811
-                        from ..orchestrator.events import EventLog  # noqa: F811
-                        from ..orchestrator.context.builder import ContextBuilder  # noqa: F811
-                        from ..orchestrator.context.summarizer import ContextSummarizer  # noqa: F811
-                        from ..orchestrator.model_router import ModelRouter  # noqa: F811
-                        installed = True
-                        break
-                except ImportError:
-                    # pip worked but import still fails
-                    sys.stderr.write("[agent] Installed but import still fails. Try: amof agent install\n")
-                    return 1
-                except Exception:
-                    continue
-            if not installed:
-                sys.stderr.write(
-                    "\n[agent] Auto-install failed. Set up the environment with:\n"
-                    "    amof agent install\n"
-                    "    source .venv/bin/activate\n"
-                    "    amof agent\n"
-                )
-                return 1
-        else:
-            sys.stderr.write(
-                "\n[agent] requirements.txt not found. Set up the environment with:\n"
-                "    amof agent install\n"
-            )
-            return 1
+        sys.stderr.write(
+            "\n[agent] Dependency import failed before the agent could start.\n"
+            "  If this is an AMOF runtime dependency, run: amof update\n"
+            "  If this belongs to the target project, install that project dependency in the target environment.\n"
+        )
+        return 1
 
     # Provider-specific client factory
     def _make_client(mdl: str) -> Any:
@@ -562,13 +720,13 @@ def cmd_agent(
         # Check if the model string is openrouter/ style
         if mdl.startswith("openrouter/"):
             from ..orchestrator.llm.openai_client import OpenAIClient
-            return OpenAIClient(api_key=os.environ.get("OPENROUTER_API_KEY", ""), model=mdl)
+            return OpenAIClient(api_key=api_key, model=mdl, base_url=provider_base_url)
         
         if provider in ("openai", "openrouter"):
             from ..orchestrator.llm.openai_client import OpenAIClient
             if provider == "openrouter" and not mdl.startswith("openrouter/"):
                 mdl = f"openrouter/{mdl}"
-            return OpenAIClient(api_key=api_key, model=mdl)
+            return OpenAIClient(api_key=api_key, model=mdl, base_url=provider_base_url)
         if provider == "bedrock":
             from ..orchestrator.llm.bedrock_anthropic import BedrockAnthropicClient
 
@@ -613,10 +771,11 @@ def cmd_agent(
     context_summarizer = None
 
     # Default model depends on provider
+    profile_default_model = _profile_model(provider_profile) if not explicit_provider else None
     if provider == "openai":
-        default_model = model or os.environ.get("AMOF_OPENAI_MODEL", "gpt-4o")
+        default_model = model or profile_default_model or os.environ.get("AMOF_OPENAI_MODEL", "gpt-4o")
     elif provider == "openrouter":
-        default_model = model or os.environ.get(
+        default_model = model or profile_default_model or os.environ.get(
             "AMOF_OPENROUTER_MODEL",
             os.environ.get("AMOF_OPENAI_MODEL", "openrouter/openai/gpt-4o-mini"),
         )
@@ -626,7 +785,7 @@ def cmd_agent(
             "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
         )
     else:
-        default_model = model or "claude-3-5-sonnet-latest"
+        default_model = model or profile_default_model or os.environ.get("AMOF_ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
 
     primary_llm = _make_client(default_model)
 
@@ -790,13 +949,22 @@ def cmd_agent(
     # ---- Vector Memory Setup ----
     vector_store = None
     ecosystem_name = manifest.get("ecosystem", "")
+    memory_explicitly_enabled = bool(
+        cfg.get("vector_memory")
+        or cfg.get("memory_enabled")
+        or (isinstance(cfg.get("memory"), dict) and cfg["memory"].get("enabled"))
+    )
     try:
         from ..orchestrator.memory import VectorStore
         vector_store = VectorStore(persist_directory=_agent_vector_store_path(workspace_root))
         if verbose:
             sys.stderr.write("[agent] Vector memory initialized.\n")
     except Exception as e:
-        sys.stderr.write(f"[agent] Vector memory unavailable (non-fatal): {e}\n")
+        if verbose or memory_explicitly_enabled:
+            sys.stderr.write(
+                f"[agent] Vector memory unavailable (non-fatal): {e}\n"
+                f"{_memory_dependency_guidance()}\n"
+            )
 
     # Create full tool registry (with DelegateTool if factory available)
     summarizer_llm = model_clients.get("fast") if model_ladder else None
@@ -967,8 +1135,7 @@ def cmd_agent(
 
         # Check if we're resuming from a plan file
         plan = None
-        eco_name = manifest.get("ecosystem", "default")
-        plans_dir = workspace_root / "ecosystems" / eco_name / "plans"
+        plans_dir = _agent_plans_dir(manifest, workspace_root)
 
         if plan_file:
             plan_path = Path(plan_file)
@@ -1282,9 +1449,8 @@ def _generate_journal(session, goal, stop_reason, telemetry, events, manifest, w
     """Generate auto-journal entry after a run."""
     try:
         from ..orchestrator.journal import generate_entry
-        from ..manifest import get_journal_dir
         eco_name = manifest.get("ecosystem", "default")
-        journal_dir = get_journal_dir(eco_name, base=str(workspace_root))
+        journal_dir = _agent_journal_dir(manifest, workspace_root)
         entry_path = generate_entry(
             session_id=session.id,
             goal=goal,
@@ -1613,8 +1779,7 @@ def _run_interactive_shell(
         workspace_root=workspace_root,
     )
 
-    eco_name = manifest.get("ecosystem", "default")
-    plans_dir = workspace_root / "ecosystems" / eco_name / "plans"
+    plans_dir = _agent_plans_dir(manifest, workspace_root)
 
     try:
         while True:

@@ -38,6 +38,50 @@ logger = logging.getLogger(__name__)
 # Default path for guardrails config (relative to workspace root)
 _DEFAULT_RULES_PATH = ".amof/rules/guardrails.yaml"
 _DEFAULT_ALLOWED_PATH = ".amof/rules/allowed.yaml"
+_PUBLIC_DEFAULT_PROTECTED_PATHS = [
+    ".git/**",
+    "**/.git/**",
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    "**/*id_rsa*",
+    "**/*id_ed25519*",
+    "**/*private_key*",
+    "**/*credentials*",
+]
+_PUBLIC_DEFAULT_PROTECTED_FRAGMENTS = [
+    "/.git/",
+    "/.ssh/",
+    "/.gnupg/",
+    "BEGIN PRIVATE KEY",
+]
+_PUBLIC_DEFAULT_PROTECTED_BASENAMES = [
+    ".env",
+    ".env.*",
+    "credentials.json",
+    "service-account.json",
+]
+_PUBLIC_DEFAULT_BLOCKED_COMMANDS = [
+    "git push",
+    "push --force",
+    "rm -rf /",
+    "curl | sh",
+    "wget | sh",
+]
+_PUBLIC_DEFAULT_DANGEROUS_PATTERNS = [
+    "rm -rf",
+    "sudo ",
+    "chmod -R 777",
+    "chown -R",
+]
+_PUBLIC_DEFAULT_SENSITIVE_COMMANDS = [
+    "git push",
+    "git tag",
+    "docker push",
+    "kubectl delete",
+    "terraform apply",
+]
 
 
 @dataclass
@@ -108,6 +152,17 @@ class GuardrailConfig:
         self.sensitive_commands: List[str] = []
 
     @classmethod
+    def public_defaults(cls) -> "GuardrailConfig":
+        cfg = cls()
+        cfg.protected_paths = list(_PUBLIC_DEFAULT_PROTECTED_PATHS)
+        cfg.protected_fragments = list(_PUBLIC_DEFAULT_PROTECTED_FRAGMENTS)
+        cfg.protected_basenames = list(_PUBLIC_DEFAULT_PROTECTED_BASENAMES)
+        cfg.blocked_commands = list(_PUBLIC_DEFAULT_BLOCKED_COMMANDS)
+        cfg.dangerous_patterns = list(_PUBLIC_DEFAULT_DANGEROUS_PATTERNS)
+        cfg.sensitive_commands = list(_PUBLIC_DEFAULT_SENSITIVE_COMMANDS)
+        return cfg
+
+    @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "GuardrailConfig":
         """Load guardrail config from YAML file.
 
@@ -116,18 +171,17 @@ class GuardrailConfig:
                          .amof/rules/guardrails.yaml relative to cwd.
 
         Returns:
-            GuardrailConfig populated from file, or empty config if file missing.
+            GuardrailConfig populated from file, or packaged public defaults if missing.
         """
         cfg = cls()
         path = config_path or (Path.cwd() / _DEFAULT_RULES_PATH)
 
         if not path.exists():
-            logger.warning(
-                "Guardrails config not found at %s — running with NO protections. "
-                "Create this file to define rules (see .amof/rules/guardrails.yaml).",
+            logger.info(
+                "Guardrails config not found at %s; using packaged public defaults.",
                 path,
             )
-            return cfg
+            return cls.public_defaults()
 
         try:
             text = path.read_text(encoding="utf-8")

@@ -3,6 +3,7 @@ from html import unescape
 from pathlib import Path
 from typing import Any, List
 
+from amof.app_paths import get_app_paths
 from amof.manifest import get_journal_dir
 
 
@@ -99,7 +100,10 @@ class ContextBuilder:
             "Use these live canonical file paths from the current checkout:",
             "",
         ]
-        canonical_journal_dir = get_journal_dir(ecosystem_name)
+        if isinstance(self.manifest, dict) and self.manifest.get("manifest_source") == "appdata":
+            canonical_journal_dir = get_app_paths().data_root / "journals" / ecosystem_name
+        else:
+            canonical_journal_dir = get_journal_dir(ecosystem_name)
         try:
             canonical_journal_display = canonical_journal_dir.relative_to(self.workspace_root).as_posix()
         except ValueError:
