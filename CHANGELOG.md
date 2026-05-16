@@ -8,6 +8,39 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.3.0] - 2026-05-17
+
+### Added
+
+- Public bounded worker execution path for adopted repositories.
+- Default public `code` runner for `amof agent --plan-execute`.
+- Truth gates for worker execution summaries, including failed tool-call accounting and mutation-intent verification.
+- Bounded diff guardrails that detect destructive rewrites, unrelated file changes, and no-diff mutation failures.
+- Dogfood proof that AMOF can operate on a disposable AMOF clone and produce a bounded documentation diff.
+
+### Changed
+
+- `amof agent --plan-execute` now produces more truthful execution summaries with completed, failed, and skipped subtask counts.
+- Public runner defaults preserve source hygiene by writing AMOF runtime artifacts to app-data instead of target repositories.
+- Planner and runner defaults are safer for public demos and bounded edits.
+- Interactive agent shell now treats `exit`, `quit`, and `q` as exit commands instead of LLM tasks.
+
+### Fixed
+
+- Failed worker tool calls no longer count as successful subtasks.
+- Mutation-intent tasks with no resulting diff are no longer reported as successful.
+- Trust-boundary write intent detection now recognizes add, append, and change requests.
+- Destructive full-file rewrites are blocked or reported instead of being accepted as successful bounded edits.
+- Noninteractive `plan-execute` flows no longer hang on planner clarification prompts.
+
+### Validation
+
+- Full unit test suite passed.
+- AMOF-238 tiny worker smoke produced a bounded `farewell()` diff in a disposable repo.
+- AMOF-239 dogfood smoke modified only `docs/runbooks/happy-path-agent-workflow.md` in a disposable AMOF clone.
+- Source pollution checks passed.
+- Secret scans passed.
+
 ## [2.2.1] - 2026-05-16
 
 ### Fixed
