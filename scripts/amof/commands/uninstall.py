@@ -6,9 +6,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .doctor import _detect_layout
+from .update import InstallInfo, detect_install_method
 
 
 def _resolve_repo_root(start_path: Path | None = None) -> Path:
@@ -44,7 +45,39 @@ def cmd_uninstall(
     *,
     repo_root: Path | None = None,
     python_executable: str | None = None,
+    install_info: InstallInfo | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    which: Callable[[str], str | None] = shutil.which,
 ) -> int:
+    info = install_info or detect_install_method()
+    yes = bool(getattr(args, "yes", False)) if args is not None else False
+    if info.method == "pipx":
+        pipx = which("pipx")
+        print("[uninstall] Detected pipx-managed AMOF install.")
+        print("[uninstall] Repo contents and AMOF app-data will be left intact.")
+        if not pipx:
+            sys.stderr.write("[uninstall] pipx is not on PATH, so AMOF will not run pip uninstall inside the venv.\n")
+            sys.stderr.write("[uninstall] Run this after pipx is available:\n")
+            sys.stderr.write("  pipx uninstall amof\n")
+            return 1
+        if not yes and not _confirm("Proceed with pipx uninstall amof?"):
+            print("[uninstall] Cancelled.")
+            return 1
+        completed = runner(
+            [pipx, "uninstall", "amof"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        output = (completed.stdout or "") + (completed.stderr or "")
+        if completed.returncode != 0:
+            sys.stderr.write(output.strip() + "\n" if output.strip() else "[uninstall] pipx uninstall failed\n")
+            return completed.returncode or 1
+        if output.strip():
+            print(output.strip())
+        print("[uninstall] AMOF CLI removed via pipx. Repo contents and AMOF app-data were left intact.")
+        return 0
+
     target_root = (repo_root or _resolve_repo_root()).resolve()
     local_venv = target_root / ".venv"
     egg_info = target_root / "scripts" / "amof.egg-info"
@@ -81,3 +114,12 @@ def cmd_uninstall(
 
     print("[uninstall] AMOF CLI removed. Repo contents were left intact.")
     return 0
+
+
+def _confirm(prompt: str) -> bool:
+    try:
+        answer = input(f"{prompt} [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer in {"y", "yes"}

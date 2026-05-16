@@ -346,10 +346,30 @@ def parse_args() -> argparse.Namespace:
     )
     paths_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
-    subparsers.add_parser(
+    update_parser = subparsers.add_parser(
+        "update",
+        help="Update AMOF from the public release tags",
+    )
+    update_parser.add_argument("--check", action="store_true", help="Check the latest available stable tag only")
+    update_parser.add_argument(
+        "--version",
+        dest="target_version",
+        help="Explicit release tag to install, for example v2.1.0",
+    )
+    update_parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    update_parser.add_argument("--dry-run", action="store_true", help="Print the update command without running it")
+    update_parser.add_argument("--verbose", action="store_true", help="Print successful installer output")
+    update_parser.add_argument(
+        "--source-url",
+        default="https://github.com/marekhotshot/amof.git",
+        help="Git repository URL to install from (default: public AMOF repository)",
+    )
+
+    uninstall_parser = subparsers.add_parser(
         "uninstall",
         help="Uninstall the locally installed AMOF CLI and remove local install artifacts",
     )
+    uninstall_parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
 
     # Generated-build command (read/proof lane; never deploys)
     generated_build_parser = subparsers.add_parser(

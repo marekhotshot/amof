@@ -51,6 +51,8 @@ What works on this reduced main:
 - `./install.sh`
 - `amof --help`
 - `python -m amof --help`
+- `amof update --check`
+- `amof update`
 - `amof check`
 - `amof paths --json`
 - `amof doctor --json`
@@ -75,6 +77,41 @@ pipx install "git+https://github.com/marekhotshot/amof.git@v2.1.0"
 This is the recommended public install path for end users. It installs the
 `amof` CLI from the public GitHub tag without requiring a manual AMOF source
 checkout.
+
+## Update AMOF
+
+For pipx installs, use AMOF's update command instead of running
+`pipx install` again by hand:
+
+```bash
+amof update --check
+amof update
+```
+
+To target a specific public release:
+
+```bash
+amof update --version v2.1.0
+```
+
+`amof update` uses `pipx install --force` for pipx-managed installs, so pipx
+does not stop with an "already installed" message.
+
+## Uninstall AMOF
+
+```bash
+amof uninstall
+```
+
+For pipx-managed installs, `amof uninstall` delegates to `pipx uninstall amof`
+so pipx metadata and shims are cleaned up together. If the AMOF command itself
+is broken, run the same cleanup directly:
+
+```bash
+pipx uninstall amof
+```
+
+Uninstalling the CLI does not delete your repositories or AMOF app-data.
 
 ## Try AMOF In Another Repo
 

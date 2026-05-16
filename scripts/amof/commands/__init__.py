@@ -57,6 +57,7 @@ _COMMAND_EXPORTS: dict[str, tuple[str, str]] = {
     "cmd_doctor": ("doctor", "cmd_doctor"),
     "cmd_bootstrap": ("bootstrap", "cmd_bootstrap"),
     "cmd_help": ("help_cmd", "cmd_help"),
+    "cmd_update": ("update", "cmd_update"),
     "cmd_uninstall": ("uninstall", "cmd_uninstall"),
     "cmd_shell": ("shell", "cmd_shell"),
 }

@@ -28,6 +28,7 @@ NO_ECOSYSTEM_COMMANDS = {
     "doctor",
     "bootstrap",
     "paths",
+    "update",
     "uninstall",
     "shell",
     "preview",
@@ -167,6 +168,7 @@ cmd_troubleshoot = _lazy_command("troubleshoot", "cmd_troubleshoot")
 cmd_doctor = _lazy_command("doctor", "cmd_doctor")
 cmd_bootstrap = _lazy_command("bootstrap", "cmd_bootstrap")
 cmd_help = _lazy_command("help_cmd", "cmd_help")
+cmd_update = _lazy_command("update", "cmd_update")
 cmd_uninstall = _lazy_command("uninstall", "cmd_uninstall")
 cmd_shell = _lazy_command("shell", "cmd_shell")
 cmd_director = _lazy_command("director", "cmd_director")
@@ -235,6 +237,8 @@ def main() -> None:
             sys.exit(cmd_bootstrap(args))
         if args.command == "paths":
             sys.exit(cmd_paths(args))
+        if args.command == "update":
+            sys.exit(cmd_update(args))
         if args.command == "uninstall":
             sys.exit(cmd_uninstall(args))
         if args.command == "shell":
