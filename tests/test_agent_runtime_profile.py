@@ -177,6 +177,29 @@ class _FakeMutatingAgent(_FakeAgent):
         return "changed app.py"
 
 
+class _FakeUnsafeStrReplaceAgent(_FakeAgent):
+    stop_reason = "completed"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.telemetry = kwargs.get("telemetry")
+
+    def run(self, goal: str) -> str:
+        result = self.tools.execute(
+            ToolCall(
+                id="unsafe",
+                name="StrReplace",
+                arguments={
+                    "path": "README.md",
+                    "old_string": "",
+                    "new_string": "bad",
+                },
+            )
+        )
+        self.telemetry.record_tool_call("StrReplace", result.success, 1)
+        return result.to_text()
+
+
 class _FakeProviderNetworkAgent(_FakeAgent):
     stop_reason = "provider_network"
 
@@ -852,6 +875,177 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertTrue(result.success, result.error)
         self.assertEqual(contents, "old\nnew\n")
 
+    def test_str_replace_empty_old_string_fails_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-empty-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("abc\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={"path": "README.md", "old_string": "", "new_string": "X"},
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_old_empty", result.error or "")
+        self.assertEqual(contents, "abc\n")
+
+    def test_str_replace_whitespace_old_string_fails_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-whitespace-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("abc\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={"path": "README.md", "old_string": " \n\t", "new_string": "X"},
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_old_whitespace", result.error or "")
+        self.assertEqual(contents, "abc\n")
+
+    def test_str_replace_not_found_fails_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-not-found-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("abc\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={"path": "README.md", "old_string": "missing", "new_string": "X"},
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_old_not_found", result.error or "")
+        self.assertEqual(contents, "abc\n")
+
+    def test_str_replace_multiple_matches_fails_without_replace_all(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-multiple-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("same\nsame\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={"path": "README.md", "old_string": "same", "new_string": "other"},
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_old_multiple", result.error or "")
+        self.assertEqual(contents, "same\nsame\n")
+
+    def test_str_replace_replace_all_is_bounded_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-all-bound-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("x\n" * 25, encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Update README.md"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={
+                            "path": "README.md",
+                            "old_string": "x",
+                            "new_string": "y",
+                            "replace_all": True,
+                        },
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_replace_all_too_many", result.error or "")
+        self.assertEqual(contents, "x\n" * 25)
+
+    def test_str_replace_replacement_growth_fails_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-growth-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("needle\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={
+                            "path": "README.md",
+                            "old_string": "needle",
+                            "new_string": "needle\n" + ("expanded\n" * 200),
+                        },
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace", result.error or "")
+        self.assertEqual(contents, "needle\n")
+
     def test_write_outside_adopted_repo_remains_blocked(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-write-outside-") as td:
             root = Path(td)
@@ -1109,6 +1303,34 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertEqual(result.failed_tool_calls, 1)
         self.assertEqual(result.failed_write_tool_calls, 1)
 
+    def test_runner_failed_strreplace_records_failed_tool_call_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-failed-strreplace-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            readme = repo / "README.md"
+            before = readme.read_text(encoding="utf-8")
+            guardrails = Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo])
+            parent_tools = create_default_registry(guardrails=guardrails, role="worker", workspace_root=repo)
+            factory = RunnerFactory.from_config(
+                config_path=Path(td) / "missing-runners.yaml",
+                model_clients={"standard": object()},
+                parent_tools=parent_tools,
+                guardrails=guardrails,
+                workspace_root=repo,
+                default_config=PUBLIC_DEFAULT_RUNNERS_CONFIG,
+            )
+            with _cwd(repo):
+                with patch("amof.orchestrator.runners.Agent", _FakeUnsafeStrReplaceAgent):
+                    result = factory.run_runner("code", "Attempt unsafe StrReplace")
+            after = readme.read_text(encoding="utf-8")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.stop_reason, "tool_failed")
+        self.assertEqual(result.failed_tool_calls, 1)
+        self.assertEqual(result.failed_write_tool_calls, 1)
+        self.assertIn("invalid_strreplace_old_empty", result.response)
+        self.assertEqual(after, before)
+
     def test_adopted_plan_execute_uses_packaged_runner_defaults(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-runner-default-") as td:
             temp = Path(td)
@@ -1296,6 +1518,67 @@ Inspect the repo.
 
         self.assertEqual(result, 1, stderr.getvalue())
         self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+
+    def test_plan_execute_unsafe_strreplace_returns_nonzero_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-unsafe-strreplace-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            before = (repo / "README.md").read_text(encoding="utf-8")
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Attempt one unsafe replacement.
+
+---
+
+## Tasks
+
+- [ ] 1. **Attempt unsafe replacement** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeUnsafeStrReplaceAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Add a section to README.md",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+            after = (repo / "README.md").read_text(encoding="utf-8")
+            git_status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertEqual(after, before)
+        self.assertEqual(git_status.stdout.strip(), "")
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+        self.assertIn("failed_tool_calls=1", stdout.getvalue())
 
     def test_plan_execute_failed_subtask_returns_nonzero(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-failed-subtask-") as td:
