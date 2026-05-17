@@ -36,6 +36,8 @@ PACKAGED_CODE_RUNNER_PROMPT = (
     "You are AMOF's bounded public code runner. Make only the minimal file edits "
     "required by the assigned subtask. Read files before editing. Use only the "
     "provided tools; Shell, Delete, and GitCheckpoint are intentionally unavailable. "
+    "If a missing read-only capability is needed, use ToolProposal with bounded "
+    "metadata; never request arbitrary shell. "
     "Do not commit or push. Preserve existing file content. Never rewrite a whole "
     "existing file for small edits, additions, docs-only edits, or bounded changes. "
     "Before editing existing files, inspect them first. Prefer InspectFiles when "
@@ -57,7 +59,7 @@ PUBLIC_DEFAULT_RUNNERS_CONFIG: Dict[str, Any] = {
     "runners": {
         "code": {
             "prompt": "__packaged__/runners/code.md",
-            "tools": ["Read", "InspectFiles", "Write", "StrReplace", "InsertAfter", "Glob", "LS", "ReadLints"],
+            "tools": ["Read", "InspectFiles", "ToolProposal", "Write", "StrReplace", "InsertAfter", "Glob", "LS", "ReadLints"],
             "description": "Safe public code-edit runner without shell, delete, checkpoint, or git push tools.",
             "default_tier": "standard",
             "max_iterations": 20,

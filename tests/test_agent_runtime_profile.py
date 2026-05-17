@@ -1133,6 +1133,97 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertEqual(summary["tools"]["runner:code:InspectFiles"]["calls"], 1)
         self.assertEqual(summary["inspected_files"]["files"], ["app.py", "tests/test_app.py"])
 
+    def test_tool_proposal_read_only_executes_from_appdata_with_evidence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-tool-proposal-safe-") as td:
+            root = Path(td)
+            repo = root / "repo"
+            _init_git_repo(repo)
+            target = repo / "app.py"
+            target.write_text("def greet():\n    return 'hello'\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            amof_home = root / "amof-home"
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Inspect files using a safe proposal"),
+            )
+
+            with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}):
+                with _cwd(repo):
+                    result = registry.execute(
+                        ToolCall(
+                            id="proposal",
+                            name="ToolProposal",
+                            arguments={
+                                "purpose": "Count lines in app.py",
+                                "mutation_intent": False,
+                                "allowed_paths": ["app.py"],
+                                "allow_network": False,
+                                "timeout_seconds": 5,
+                                "inputs": ["app.py"],
+                                "outputs": ["stdout line count"],
+                                "rollback": "No rollback needed for read-only inspection.",
+                                "script": "python3 - <<'PY'\nfrom pathlib import Path\nprint(len(Path('app.py').read_text().splitlines()))\nPY\n",
+                            },
+                        )
+                    )
+                status = subprocess.run(["git", "status", "--short"], cwd=repo, check=True, capture_output=True, text=True)
+                script_path = Path(result.metadata["script_path"])
+                script_exists = script_path.is_file()
+                script_in_appdata = str(script_path).startswith(str(amof_home))
+
+            self.assertTrue(result.success, result.error)
+            self.assertIn("rc=0", result.output)
+            self.assertIn("stdout:", result.output)
+            self.assertEqual(status.stdout, "")
+            self.assertEqual(result.metadata["rc"], 0)
+            self.assertIn("script_hash", result.metadata)
+            self.assertTrue(script_exists)
+            self.assertTrue(script_in_appdata)
+
+    def test_tool_proposal_rejects_unsafe_commands_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-tool-proposal-unsafe-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            amof_home = Path(td) / "amof-home"
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Inspect files using a safe proposal"),
+            )
+
+            with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}):
+                with _cwd(repo):
+                    result = registry.execute(
+                        ToolCall(
+                            id="proposal",
+                            name="ToolProposal",
+                            arguments={
+                                "purpose": "Publish changes",
+                                "mutation_intent": False,
+                                "allowed_paths": ["."],
+                                "allow_network": False,
+                                "timeout_seconds": 5,
+                                "inputs": [],
+                                "outputs": [],
+                                "rollback": "None",
+                                "script": "git commit -am nope\ngit push origin HEAD\n",
+                            },
+                        )
+                    )
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid_tool_proposal_static_gate", result.error or "")
+        self.assertFalse((amof_home / "share" / "evidence" / "tool-proposals").exists())
+
+    def test_public_default_runner_exposes_tool_proposal_not_shell(self) -> None:
+        tools = PUBLIC_DEFAULT_RUNNERS_CONFIG["runners"]["code"]["tools"]
+        self.assertIn("ToolProposal", tools)
+        self.assertNotIn("Shell", tools)
+
     def test_str_replace_empty_old_string_fails_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-str-replace-empty-") as td:
             repo = Path(td) / "repo"

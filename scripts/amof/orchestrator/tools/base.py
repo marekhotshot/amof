@@ -966,6 +966,7 @@ def create_default_registry(
     """
     from .read import ReadTool
     from .inspect_files import InspectFilesTool
+    from .tool_proposal import ToolProposalTool
     from .write import WriteTool
     from .str_replace import StrReplaceTool
     from .insert_after import InsertAfterTool
@@ -994,7 +995,7 @@ def create_default_registry(
 
     # Worker gets execution tools
     if role in ("worker", "all"):
-        for tool_cls in [ReadTool, InspectFilesTool, WriteTool, StrReplaceTool, InsertAfterTool, DeleteTool, GrepTool, GlobTool, LSTool]:
+        for tool_cls in [ReadTool, InspectFilesTool, ToolProposalTool, WriteTool, StrReplaceTool, InsertAfterTool, DeleteTool, GrepTool, GlobTool, LSTool]:
             registry.register(tool_cls())
         registry.register(
             ShellTool(
