@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 MAX_ITERATIONS = 200
 
 # Tools that indicate exploration phase (cheap model is adequate)
-EXPLORATION_TOOLS = {"LS", "Read", "Glob", "Grep"}
+EXPLORATION_TOOLS = {"LS", "Read", "InspectFiles", "Glob", "Grep"}
 
 # Max chars of tool output to keep in session (saves context tokens).
 # Reduced to avoid 200k token limit when many tools run (e.g. grep + read_file).
@@ -763,10 +763,11 @@ class Agent:
                 duration_ms=duration_ms,
                 output_preview=result.output[:200] if result.output else None,
                 error=result.error,
+                metadata=result.metadata,
             )
 
             # Record tool-level telemetry
-            self.telemetry.record_tool_call(tc_request.name, result.success, duration_ms)
+            self.telemetry.record_tool_call(tc_request.name, result.success, duration_ms, metadata=result.metadata)
 
             # Truncate large tool outputs in session to save context tokens
             # (full output is preserved in the event log above)

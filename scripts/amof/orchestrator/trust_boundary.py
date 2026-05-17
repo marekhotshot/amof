@@ -18,7 +18,7 @@ Capability = Literal["read", "write", "network", "secret"]
 TRUSTED_INSTRUCTION = "trusted_instruction"
 UNTRUSTED_DATA = "untrusted_data"
 
-_READ_TOOL_NAMES = {"Read", "Grep", "Glob", "LS", "ReadLints", "MemorySearch"}
+_READ_TOOL_NAMES = {"Read", "InspectFiles", "Grep", "Glob", "LS", "ReadLints", "MemorySearch"}
 _WRITE_TOOL_NAMES = {"Write", "StrReplace", "InsertAfter", "Delete", "GitCheckpoint"}
 
 _WRITE_INTENT_RE = re.compile(

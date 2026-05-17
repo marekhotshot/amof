@@ -20,9 +20,11 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from amof.commands import agent_cmd
+from amof.orchestrator.events import EventLog
 from amof.orchestrator.llm.base import ProviderError
 from amof.orchestrator.planner import TaskPlanner
 from amof.orchestrator.runners import PUBLIC_DEFAULT_RUNNERS_CONFIG, RunnerFactory
+from amof.orchestrator.telemetry import SessionTelemetry
 from amof.orchestrator.trust_boundary import create_trust_state
 from amof.orchestrator.tools.base import GuardrailConfig, Guardrails, ToolCall, create_default_registry
 
@@ -1013,6 +1015,123 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("invalid_insertafter_anchor_not_observed", result.error or "")
         self.assertEqual(contents, "def greet(name):\n    return f'Hello, {name}!'\n")
+
+    def test_inspect_files_batches_read_evidence_for_safe_edits(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-inspect-files-evidence-") as td:
+            repo = Path(td) / "repo"
+            tests_dir = repo / "tests"
+            tests_dir.mkdir(parents=True)
+            app = repo / "app.py"
+            test_app = tests_dir / "test_app.py"
+            app.write_text("def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            test_app.write_text(
+                "from app import greet\n\n\ndef test_greet():\n    assert greet('Ada') == 'Hello, Ada!'\n",
+                encoding="utf-8",
+            )
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add farewell to app.py"),
+            )
+
+            with _cwd(repo):
+                inspect_result = registry.execute(
+                    ToolCall(
+                        id="inspect",
+                        name="InspectFiles",
+                        arguments={"paths": ["app.py", "tests/test_app.py"]},
+                    )
+                )
+                modified_after_inspect = set(registry.modified_files)
+                edit_result = registry.execute(
+                    ToolCall(
+                        id="insert",
+                        name="InsertAfter",
+                        arguments={
+                            "path": "app.py",
+                            "anchor_string": "    return f'Hello, {name}!'",
+                            "content_to_insert": "\n\n\ndef farewell(name: str) -> str:\n    return f'Goodbye, {name}.'",
+                        },
+                    )
+                )
+            app_contents = app.read_text(encoding="utf-8")
+            test_contents = test_app.read_text(encoding="utf-8")
+
+        self.assertTrue(inspect_result.success, inspect_result.error)
+        self.assertEqual(modified_after_inspect, set())
+        self.assertIn("app.py", inspect_result.output)
+        self.assertIn("tests/test_app.py", inspect_result.output)
+        self.assertTrue(edit_result.success, edit_result.error)
+        self.assertIn("def farewell", app_contents)
+        self.assertIn("test_greet", test_contents)
+
+    def test_inspect_files_read_only_keeps_target_repo_clean(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-inspect-files-clean-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            (repo / "app.py").write_text("def greet():\n    return 'hello'\n", encoding="utf-8")
+            (repo / "tests").mkdir()
+            (repo / "tests" / "test_app.py").write_text("def test_greet():\n    assert True\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Inspect app and tests"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="inspect",
+                        name="InspectFiles",
+                        arguments={"paths": ["app.py", "tests/test_app.py"]},
+                    )
+                )
+            status = subprocess.run(["git", "status", "--short"], cwd=repo, check=True, capture_output=True, text=True)
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(status.stdout, "")
+        self.assertEqual(registry.modified_files, set())
+
+    def test_inspect_files_records_tool_count_and_inspected_files(self) -> None:
+        telemetry = SessionTelemetry()
+        metadata = {"inspected_files": ["app.py", "tests/test_app.py"], "inspected_file_count": 2}
+        telemetry.record_tool_call("InspectFiles", True, 12, metadata=metadata)
+
+        with tempfile.TemporaryDirectory(prefix="amof-inspect-files-events-") as td:
+            events = EventLog(session_id="test-inspect-files", runs_dir=Path(td))
+            event = events.tool_call(
+                tool_name="InspectFiles",
+                arguments={"paths": ["app.py", "tests/test_app.py"]},
+                success=True,
+                duration_ms=12,
+                output_preview="inspected 2 files",
+                metadata=metadata,
+            )
+
+        summary = telemetry.to_dict()
+        self.assertEqual(summary["tools"]["InspectFiles"]["calls"], 1)
+        self.assertEqual(summary["inspected_files"]["files"], ["app.py", "tests/test_app.py"])
+        self.assertEqual(event["metadata"]["inspected_files"], ["app.py", "tests/test_app.py"])
+
+    def test_runner_telemetry_rollup_preserves_inspected_files(self) -> None:
+        parent = SessionTelemetry()
+        child = SessionTelemetry()
+        child.record_tool_call(
+            "InspectFiles",
+            True,
+            5,
+            metadata={"inspected_files": ["app.py", "tests/test_app.py"]},
+        )
+
+        RunnerFactory._rollup_telemetry(parent, child, "code")
+        summary = parent.to_dict()
+
+        self.assertEqual(summary["tools"]["runner:code:InspectFiles"]["calls"], 1)
+        self.assertEqual(summary["inspected_files"]["files"], ["app.py", "tests/test_app.py"])
 
     def test_str_replace_empty_old_string_fails_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-str-replace-empty-") as td:

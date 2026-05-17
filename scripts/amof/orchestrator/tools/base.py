@@ -92,6 +92,7 @@ class ToolResult:
     output: str
     error: Optional[str] = None
     cancelled: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_text(self) -> str:
         """Convert to text for LLM consumption."""
@@ -621,6 +622,8 @@ class ToolRegistry:
             record_untrusted_tool_output(tool_call.name, self.trust_state)
             if tool_call.name == "Read":
                 self._record_read_evidence(tool_call.arguments)
+            elif tool_call.name == "InspectFiles":
+                self._record_inspect_files_evidence(tool_call.arguments)
 
         # Track modified files for end-of-task linting
         if result.success and tool_call.name in ("Write", "StrReplace", "InsertAfter"):
@@ -636,6 +639,7 @@ class ToolRegistry:
                 output=truncated + f"\n\n... (output truncated at {self.max_output_chars} chars, total was {len(result.output)})",
                 error=result.error,
                 cancelled=result.cancelled,
+                metadata=result.metadata,
             )
 
         return result
@@ -777,6 +781,26 @@ class ToolRegistry:
         path = str(args.get("path") or "").strip()
         if not path:
             return
+        self._record_read_evidence_for_path(
+            path,
+            offset=args.get("offset"),
+            limit=args.get("limit"),
+        )
+
+    def _record_inspect_files_evidence(self, args: Dict[str, Any]) -> None:
+        paths = args.get("paths")
+        if not isinstance(paths, list):
+            return
+        for path in paths:
+            if not isinstance(path, str) or not path.strip():
+                continue
+            self._record_read_evidence_for_path(
+                path,
+                offset=args.get("offset"),
+                limit=args.get("limit"),
+            )
+
+    def _record_read_evidence_for_path(self, path: str, *, offset: Any = None, limit: Any = None) -> None:
         file_path = Path(path).resolve()
         if not file_path.is_file():
             return
@@ -787,8 +811,8 @@ class ToolRegistry:
 
         observed = self._slice_read_content(
             content,
-            offset=args.get("offset"),
-            limit=args.get("limit"),
+            offset=offset,
+            limit=limit,
         )
         key = str(file_path)
         self._read_evidence.setdefault(key, []).append(observed)
@@ -879,6 +903,12 @@ class ToolRegistry:
                 return f"Parameter '{param}' must be an integer, got {type(value).__name__}"
             elif expected_type == "boolean" and not isinstance(value, bool):
                 return f"Parameter '{param}' must be a boolean, got {type(value).__name__}"
+            elif expected_type == "array":
+                if not isinstance(value, list):
+                    return f"Parameter '{param}' must be an array, got {type(value).__name__}"
+                item_type = properties[param].get("items", {}).get("type")
+                if item_type == "string" and not all(isinstance(item, str) for item in value):
+                    return f"Parameter '{param}' must be an array of strings"
         
         return None
 
@@ -935,6 +965,7 @@ def create_default_registry(
         role: "orchestrator" (only planning/delegation), "worker" (execution tools), or "all" (default).
     """
     from .read import ReadTool
+    from .inspect_files import InspectFilesTool
     from .write import WriteTool
     from .str_replace import StrReplaceTool
     from .insert_after import InsertAfterTool
@@ -963,7 +994,7 @@ def create_default_registry(
 
     # Worker gets execution tools
     if role in ("worker", "all"):
-        for tool_cls in [ReadTool, WriteTool, StrReplaceTool, InsertAfterTool, DeleteTool, GrepTool, GlobTool, LSTool]:
+        for tool_cls in [ReadTool, InspectFilesTool, WriteTool, StrReplaceTool, InsertAfterTool, DeleteTool, GrepTool, GlobTool, LSTool]:
             registry.register(tool_cls())
         registry.register(
             ShellTool(
@@ -978,7 +1009,7 @@ def create_default_registry(
     if role in ("orchestrator", "all"):
         if role == "orchestrator":
             # Orchestrator still needs read access to build context
-            for tool_cls in [ReadTool, GrepTool, GlobTool, LSTool]:
+            for tool_cls in [ReadTool, InspectFilesTool, GrepTool, GlobTool, LSTool]:
                 registry.register(tool_cls())
         
         # Register DelegateTool if a runner factory is provided
