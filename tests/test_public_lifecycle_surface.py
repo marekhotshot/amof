@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -28,6 +29,47 @@ from amof.commands import check as check_command
 
 
 class PublicLifecycleSurfaceTests(unittest.TestCase):
+    def _run_source_amof(self, *args: str) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(SCRIPTS_ROOT)
+        return subprocess.run(
+            [sys.executable, "-m", "amof", *args],
+            cwd=REPO_ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_default_help_hides_non_public_mutation_commands(self) -> None:
+        result = self._run_source_amof("--help")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("public first-run commands", result.stdout)
+        self.assertIn("amof init --adopt .", result.stdout)
+        self.assertNotIn("promote-main", result.stdout)
+        self.assertNotIn("promote-main-revert", result.stdout)
+        self.assertNotIn("amof push", result.stdout)
+        self.assertNotIn("release        ", result.stdout)
+        self.assertNotIn("ticket start", result.stdout)
+
+    def test_hidden_maintainer_commands_remain_help_callable(self) -> None:
+        result = self._run_source_amof("promote-main", "--help")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage: amof promote-main", result.stdout)
+        self.assertIn("--dry-run", result.stdout)
+
+    def test_extended_help_labels_non_public_surfaces(self) -> None:
+        result = self._run_source_amof("help")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Public quickstart", result.stdout)
+        self.assertIn("Maintainer-only topics", result.stdout)
+        self.assertIn("Workspace-only topics", result.stdout)
+        self.assertNotIn("Essential commands", result.stdout)
+        self.assertNotIn("amof push                      Push all changes", result.stdout)
+
     def test_public_command_builders_raise_removed_surface_error(self) -> None:
         root = REPO_ROOT
         for builder in (

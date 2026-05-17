@@ -9,6 +9,31 @@ from .app_paths import director_prepare_runs_dir, director_run_local_dir, materi
 from .manifest import list_available_ecosystems
 
 
+PUBLIC_HELP_COMMANDS = (
+    "check",
+    "doctor",
+    "paths",
+    "setup",
+    "init",
+    "agent",
+    "bootstrap",
+    "update",
+    "uninstall",
+    "help",
+    "troubleshoot",
+    "shell",
+)
+
+PUBLIC_HELP_COMMANDS_METAVAR = "{" + ",".join(PUBLIC_HELP_COMMANDS) + "}"
+
+
+def _first_run_help(name: str, help_text: str | None) -> str | None:
+    """Keep first-run help focused while preserving hidden command compatibility."""
+    if name in PUBLIC_HELP_COMMANDS:
+        return help_text
+    return argparse.SUPPRESS
+
+
 def get_available_ecosystems() -> list[str]:
     """Get list of available ecosystem names."""
     return list_available_ecosystems()
@@ -20,13 +45,15 @@ def parse_args() -> argparse.Namespace:
         prog="amof",
         description="AMOF - Agentic Operations Fabric",
         epilog="Examples:\n"
-               "  amof -e aws-boilerplate install      Bootstrap ecosystem workspace\n"
-               "  amof -e aws-boilerplate spin deploy Deploy infrastructure\n"
-               "  amof open aws-boilerplate            Open workspace in Cursor\n"
-               "  amof workspace list                  List all workspaces\n"
-               "  amof ticket start Issue-123          Start ticket work\n"
-               "  amof -e aws-boilerplate status      Check all repo status\n"
-               "  amof ecosystem list                  List ecosystems\n",
+               "  amof check                         Verify local prerequisites\n"
+               "  amof doctor                        Report bootstrap readiness\n"
+               "  amof setup provider --list         Show public provider templates\n"
+               "  amof init --adopt .                Adopt the current Git repo\n"
+               "  amof agent --plan \"Inspect this repo\"  Run a read-only plan\n"
+               "  amof bootstrap bundle --json       Emit bootstrap evidence\n"
+               "\n"
+               "Advanced, workspace, and maintainer commands remain callable when known.\n"
+               "Use 'amof help' for categorized guidance.\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"AMOF v{__version__}")
@@ -35,7 +62,24 @@ def parse_args() -> argparse.Namespace:
         help="Ecosystem to use (required for most commands)",
         metavar="NAME",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True, title="commands")
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        title="public first-run commands",
+        metavar=PUBLIC_HELP_COMMANDS_METAVAR,
+    )
+    add_top_level_parser = subparsers.add_parser
+
+    def add_public_surface_parser(name: str, *args, **kwargs):
+        help_text = _first_run_help(name, kwargs.get("help"))
+        kwargs["help"] = help_text
+        before = len(subparsers._choices_actions)
+        command_parser = add_top_level_parser(name, *args, **kwargs)
+        if help_text == argparse.SUPPRESS and len(subparsers._choices_actions) > before:
+            subparsers._choices_actions.pop()
+        return command_parser
+
+    subparsers.add_parser = add_public_surface_parser
 
     # Sync command
     sync_parser = subparsers.add_parser(

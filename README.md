@@ -289,7 +289,10 @@ that directory as a flat app-data root.
 
 Additional public docs retained in this repo include:
 
-- `docs/operations/corp-laptop-bootstrap.md`
+- `docs/runbooks/happy-path-agent-workflow.md`
+- `docs/operations/source-checkout-bootstrap.md`
+- `docs/operations/public-surface-taxonomy.md`
+- `docs/operations/public-smoke-matrix.md`
 - `docs/adr/AMOF-198-app-data-context-scope.md`
 - `docs/adr/AMOF-201-installer-bootstrap-design.md`
 - `contracts/README.md`

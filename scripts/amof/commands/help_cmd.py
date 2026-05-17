@@ -1,263 +1,289 @@
-"""Extended help command -- rich examples and workflow guidance.
-
-Provides more context than --help, including real-world examples,
-common workflows, and links to documentation.
-"""
+"""Extended help command for public AMOF guidance."""
 
 from __future__ import annotations
 
-import sys
 from typing import Dict, Optional
 
 
-# ── Help content for each command ─────────────────────────────
-
 _HELP: Dict[str, str] = {
-    "install": """
-  amof install — Bootstrap an ecosystem workspace
+    "init": """
+  amof init --adopt . — Adopt the current Git repository
 
-  Creates the workspace branch, clones repos, generates profiles,
-  and builds the codebase index.
+  Public use:
+    amof init --adopt .
+    amof doctor
+    amof agent --plan "Inspect this repo"
 
-  Examples:
-    amof -e demo-dev install              # Full setup
-    amof -e demo-dev install --dry-run    # Preview without changes
-    amof -e demo-dev install --push       # Push branches to origin
+  Adoption stores AMOF metadata in app-data by default. It should not write
+  .amof, ecosystems, or context directories into the target repo.
+""",
 
-  What it does:
-    1. Creates workspace/<ecosystem> branch
-    2. Clones all repos from ecosystem.yaml to repos/
-    3. Creates feature branches for writable repos
-    4. Generates .amof/profile.md in each repo
-    5. Builds Merkle tree + codebase index (if API key set)
+    "setup": """
+  amof setup provider — Create a provider profile reference
 
-  Next steps:
-    amof ticket start PROJ-123    # Start working on a ticket
-    amof agent                    # Launch the AI agent
+  Public use:
+    amof setup provider --list
+    amof setup provider openrouter --name openrouter-default --activate
+    amof setup provider openrouter --name openrouter-default --activate --yes
+
+  Provider setup stores environment variable references only. It does not store
+  raw API keys and does not call a provider while writing the profile.
 """,
 
     "agent": """
-  amof agent — Run the AI coding agent
+  amof agent — Run AMOF planning or bounded execution
 
-  Supports interactive shell, single-shot tasks, and plan-execute mode.
-  Loads defaults from .amof/agent.yaml.
+  Public planning path:
+    amof agent --plan "Inspect this repo" --no-follow-up
 
-  Setup:
-    amof agent install                            # Create venv + install deps
-    source .venv/bin/activate                     # Activate the environment
+  No-key validation should reach provider configuration, for example:
+    [agent] OPENROUTER_API_KEY not set.
 
-  Examples:
-    amof agent                                    # Interactive shell
-    amof agent "fix the auth bug"                 # Single-shot task
-    amof agent --plan "analyze the codebase"      # Read-only mode
-    amof agent --plan-execute "refactor config"   # Plan then execute
-    amof agent --max-cost 1.00 "small fix"        # With cost limit
-    amof agent --resume <session-id>              # Resume interrupted
+  Bounded execution is manual/advanced:
+    amof agent --provider openrouter --plan-execute "Make a bounded change. Do not commit." --no-follow-up
 
-  Interactive shell commands:
-    /quick <task>    Run without planning
-    /status          Show cost and telemetry
-    /review          Show git diff --stat
-    /release         Tag a release
-    /help            Show all commands
-    Ctrl+C           Cancel current run
-    Ctrl+D           Exit
-
-  Cost optimization:
-    --model-ladder      Use tiered models (haiku/sonnet/opus)
-    --max-cost 2.00     Set budget ceiling
-    --plan-execute      Strong model plans, cheap models execute
-
+  Execution output must be reviewed as a Git diff. AMOF must not auto-commit,
+  auto-push, tag, or promote worker changes.
 """,
 
-    "ticket": """
-  amof ticket — Manage tickets within ecosystem workspace
+    "doctor": """
+  amof doctor — Report bootstrap readiness
 
-  Commands:
-    amof ticket start PROJ-123              # Create feature branches
-    amof ticket start PROJ-123 --repos a,b  # Specific repos only
-    amof ticket list                        # Show all tickets
-    amof ticket switch PROJ-456             # Switch (auto-commits)
-    amof ticket end PROJ-123                # Mark done
-    amof ticket end PROJ-123 --cleanup      # Delete branches too
+  Public use:
+    amof doctor
+    amof doctor --json
 
-  Workflow:
-    1. Start ticket -> creates feature/<ticket> in each repo
-    2. Work across repos, use agent or manual edits
-    3. Push when ready: amof push
-    4. End ticket when work is done
+  Fresh installs may warn when no provider profile is configured. That warning
+  is acceptable for install/adoption smoke and does not imply private runtime
+  prerequisites.
 """,
 
-    "release": """
-  amof release — Automated versioning, tagging, and release management
+    "bootstrap": """
+  amof bootstrap — Emit bootstrap evidence
 
-  Bumps version, updates CHANGELOG + README + __version__ files,
-  writes audit record, commits, tags, and pushes.
+  Public use:
+    amof bootstrap contract --json
+    amof bootstrap bundle --json
 
-  Inspect:
-    amof release status             # Current version, drift, readiness
-    amof release log                # Release history from audit trail
-
-  Bump:
-    amof release patch --alpha      # v1.0.3-alpha.1
-    amof release patch --alpha      # v1.0.3-alpha.2 (auto-increment)
-    amof release minor --alpha      # v1.1.0-alpha.1
-    amof release major              # v2.0.0
-
-  Promote:
-    amof release promote --beta     # alpha -> beta.1
-    amof release promote --rc       # beta -> rc.1
-    amof release promote            # pre-release -> stable
-
-  Flags:
-    --dry-run                       # Preview without changes
-    -y / --yes                      # Skip confirmation
-    --no-push                       # Local only (no git push)
-    --skip-validation               # Bypass pre-release checks
-    --strict                        # Treat warnings as errors
-
-  Versioning flow:
-    alpha.1 -> alpha.2 -> beta.1 -> rc.1 -> stable
-
-  Audit trail: releases/<tag>.json written on each release.
-
-  Also available as /release in the interactive shell
-  and [t] in the post-run menu.
-
-  Config: auto_tag_on_complete in .amof/agent.yaml
+  Evidence commands report truthful PASS, WARN, or BLOCKED status. They should
+  not require private topology or provider keys for no-key public smoke.
 """,
 
-    "status": """
-  amof status — Check repository status
+    "paths": """
+  amof paths — Show resolved AMOF app-data paths
 
-  Shows branch, commit, mode (RO/RW), and sync status for all repos.
+  Public use:
+    amof paths --json
 
-  Examples:
-    amof -e demo-dev status              # All repos
-    amof -e demo-dev status --repo iac   # Specific repo
-
-  Output columns:
-    REPO     Repository name
-    BRANCH   Current branch
-    COMMIT   Short hash of HEAD
-    MODE     RW (writable) or RO (readonly)
-    STATUS   OK, UNPUSHED, DIRTY, WRONG_BRANCH
-""",
-
-    "push": """
-  amof push — Push all branches to origin
-
-  Pushes workspace branch + all feature branches in one command.
-
-  Examples:
-    amof push                        # Push all
-    amof push -m "feat: my change"   # Commit first, then push
-""",
-
-    "sync": """
-  amof sync — Clone/update repositories
-
-  Syncs repos from ecosystem.yaml. Clones new repos, pulls existing ones.
-  Auto-generates repo profiles after sync.
-
-  Examples:
-    amof -e demo-dev sync              # All repos
-    amof -e demo-dev sync --repo iac   # Specific repo
-""",
-
-    "profile": """
-  amof profile — Generate repo profiles for agent navigation
-
-  Content-aware tech stack detection. Reads Chart.yaml, package.json,
-  pom.xml, Dockerfile, etc. Generates .amof/profile.md in each repo.
-
-  Examples:
-    amof -e demo-dev profile --all     # All repos
-    amof -e demo-dev profile my-repo   # Single repo
-""",
-
-    "troubleshoot": """
-  amof troubleshoot — Diagnose common issues
-
-  Checks environment, workspace, recent agent errors, and configuration.
-  Provides actionable fix suggestions for each issue found.
-
-  Examples:
-    amof troubleshoot                  # Run all diagnostics
-
-  Checks:
-    • Environment: .env, API keys, required tools (git, python)
-    • Workspace: git repo, branch, state.json, repos/
-    • Agent: recent errors from event logs
-    • Config: agent.yaml, guardrails.yaml, linters.yaml
-""",
-
-    "kb": """
-  amof kb — Knowledge base operations
-
-  Sync with Confluence or consolidate journals into KB articles.
-
-  Examples:
-    amof -e demo-dev kb pull              # Pull from Confluence
-    amof -e demo-dev kb push              # Push to Confluence
-    amof -e demo-dev kb diff              # Show differences
-    amof -e demo-dev kb sync              # Bi-directional
-    amof -e demo-dev kb consolidate       # Journals → KB articles
-    amof -e demo-dev kb consolidate --dry-run
-""",
-
-    "pr": """
-  amof pr — Create pull requests for all repos with changes
-
-  Uses Bitbucket REST API. Requires BITBUCKET_USER and BITBUCKET_TOKEN.
-
-  Examples:
-    amof -e demo-dev pr                       # Create PRs
-    amof -e demo-dev pr --reviewers alice,bob  # With reviewers
-    amof -e demo-dev pr --dry-run             # Preview
-""",
-
-    "archive": """
-  amof archive — Finish workspace (preserve repo branches)
-
-  Pushes all changes, saves state to archives/, deletes workspace branch.
-  Keeps repo feature branches for pending PRs.
-
-  Examples:
-    amof -e demo-dev archive -m "done"         # Archive with message
-    amof -e demo-dev archive --dry-run         # Preview
-    amof -e demo-dev archive --cleanup-features # Also delete feature branches
-""",
-
-    "discard": """
-  amof discard — Delete workspace and all feature branches
-
-  Removes everything: workspace branch, feature branches, repos/.
-  Use when you want to start fresh.
-
-  Examples:
-    amof -e demo-dev discard           # Interactive confirmation
-    amof -e demo-dev discard --force   # Skip confirmation
-    amof -e demo-dev discard --dry-run # Preview
-""",
-
-    "manifest": """
-  amof manifest — Validate and inspect ecosystem.yaml
-
-  Examples:
-    amof manifest validate    # Check for errors
-    amof manifest show        # Display contents
+  AMOF runtime state belongs in app-data roots such as ~/.config/amof,
+  ~/.local/share/amof, ~/.cache/amof, and ~/.local/state/amof. When AMOF_HOME is
+  set, AMOF uses that directory as a flat app-data root.
 """,
 
     "check": """
-  amof check — Verify environment prerequisites
+  amof check — Verify public prerequisites
 
-  Checks that required tools are installed: git, docker, helm, aws, kubectl.
-
-  Examples:
+  Public use:
     amof check
+
+  Checks required local tools and reports optional warnings. It should not
+  require kubeconfigs, clusters, private deployment topology, or provider keys.
+""",
+
+    "update": """
+  amof update — Update a pipx-managed AMOF install
+
+  Public use:
+    amof update --check
+    amof update
+    amof update --version v2.3.0
+
+  The update path targets public release tags from the public AMOF repository.
+""",
+
+    "uninstall": """
+  amof uninstall — Remove the local AMOF CLI install
+
+  Public use:
+    amof uninstall
+
+  For pipx-managed installs, AMOF delegates to pipx uninstall. Repositories and
+  AMOF app-data are not deleted by the CLI uninstall command.
+""",
+
+    "troubleshoot": """
+  amof troubleshoot — Diagnose local AMOF issues
+
+  Public use:
+    amof troubleshoot
+
+  Intended for local environment, workspace, config, and recent error hints.
+""",
+
+    "shell": """
+  amof shell — Emit shell integration helpers
+
+  Public use:
+    amof shell init bash
+
+  Convenience command for local shell integration.
+""",
+
+    "status": """
+  amof status — Advanced workspace/adopted-repo status
+
+  This command remains available for users who know the AMOF workspace model or
+  have adopted a repository, but it is not the public first-run path.
+""",
+
+    "context": """
+  amof context — Advanced context metadata operations
+
+  This command can record local or remote context metadata. It is advanced and
+  should not be needed for the public install/adoption happy path.
+""",
+
+    "manifest": """
+  amof manifest — Advanced ecosystem manifest inspection
+
+  Useful for AMOF workspace manifests. Adopted-repo public users do not need to
+  create an ecosystem.yaml by hand.
+""",
+
+    "generated-build": """
+  amof generated-build — Advanced build-proof lane
+
+  Detects, renders, and proofs generated build artifacts. Keep this manual and
+  review-oriented; it is not part of the first-run quickstart.
+""",
+
+    "director": """
+  amof director — Advanced bounded run planning
+
+  Director commands create and inspect bounded execution envelopes. They are
+  discoverable for advanced/manual evidence workflows, not first-run UX.
+""",
+
+    "workspace": """
+  amof workspace — Advanced workspace registry and materialization
+
+  Workspace commands remain callable for AMOF workspace workflows. They are not
+  required for adopting one existing repo with app-data.
+""",
+
+    "install": """
+  amof install — Workspace-only bootstrap
+
+  This command bootstraps an AMOF ecosystem workspace. It is not the public pipx
+  install command and should not be used as the adopted-repo quickstart.
+""",
+
+    "sync": """
+  amof sync — Workspace-only repository synchronization
+
+  Syncs repositories from an ecosystem manifest. This remains callable for
+  workspace users, but it is not part of the public first-run path.
+""",
+
+    "ticket": """
+  amof ticket — Workspace-only ticket lifecycle
+
+  Ticket commands create and manage branches across AMOF workspace repos. Public
+  adopted-repo users should use their normal Git branch and pull request flow.
+""",
+
+    "push": """
+  amof push — Maintainer/workspace-only push helper
+
+  This command can commit and push workspace branches. It is not a public
+  publishing command for arbitrary adopted repos. Use ordinary Git review and PR
+  workflows unless you have explicitly opted into AMOF workspace automation.
+""",
+
+    "release": """
+  amof release — Maintainer-only release automation
+
+  This command can bump versions, commit, tag, and push. It is not part of the
+  public quickstart and must not be used for this cleanup task.
+""",
+
+    "promote-main": """
+  amof promote-main — Maintainer-only promotion workflow
+
+  Promotion requires explicit candidate evidence, expected main SHA, and an
+  operator decision. It is not a public user publishing command.
+""",
+
+    "promote-main-revert": """
+  amof promote-main-revert — Maintainer-only promotion revert workflow
+
+  This is a guarded AMOF mainline recovery command, not a public first-run path.
+""",
+
+    "pr": """
+  amof pr — Optional integration / maintainer surface
+
+  This command is not part of the clean public baseline until it has public docs,
+  tests, and provider-agnostic behavior.
+""",
+
+    "jira": """
+  amof jira — Optional Atlassian integration
+
+  Requires external credentials and is not part of the public quickstart.
+""",
+
+    "kb": """
+  amof kb — Optional knowledge-base integration
+
+  Requires external credentials and is not part of the public quickstart.
+""",
+
+    "spin": """
+  amof spin — Infrastructure provisioner surface
+
+  This is not included in the public baseline. Do not use it unless you have a
+  documented public provisioner template and explicit operator intent.
+""",
+
+    "mcp": """
+  amof mcp — Experimental IDE integration server
+
+  Starts the AMOF MCP server for users who intentionally configure IDE tooling.
+  Not part of first-run public smoke.
+""",
+
+    "server": """
+  amof server — Experimental local API server
+
+  Starts the AMOF API server. Not part of the clean public first-run baseline.
 """,
 }
+
+_PUBLIC_TOPICS = [
+    "check",
+    "doctor",
+    "paths",
+    "setup",
+    "init",
+    "agent",
+    "bootstrap",
+    "update",
+    "uninstall",
+    "troubleshoot",
+]
+_ADVANCED_TOPICS = ["status", "context", "manifest", "generated-build", "director", "workspace", "mcp", "server"]
+_WORKSPACE_TOPICS = ["install", "sync", "ticket"]
+_MAINTAINER_TOPICS = ["push", "release", "promote-main", "promote-main-revert", "pr"]
+_OPTIONAL_TOPICS = ["jira", "kb", "spin"]
+
+
+def _topic_list(names: list[str]) -> str:
+    return "\n".join(
+        f"    {name:<18} {(_HELP[name].strip().splitlines()[0]).split(' — ', 1)[-1]}"
+        for name in names
+        if name in _HELP
+    )
 
 
 def cmd_help(topic: Optional[str] = None) -> int:
@@ -267,63 +293,54 @@ def cmd_help(topic: Optional[str] = None) -> int:
         return 0
 
     if topic:
-        # Try partial match
-        matches = [k for k in _HELP if k.startswith(topic)]
+        matches = [name for name in _HELP if name.startswith(topic)]
         if len(matches) == 1:
             print(_HELP[matches[0]])
             return 0
-        elif matches:
+        if matches:
             print(f"\n  Did you mean one of: {', '.join(matches)}?\n")
             return 1
-        else:
-            print(f"\n  No help found for '{topic}'.")
-            print(f"  Available topics: {', '.join(sorted(_HELP.keys()))}\n")
-            return 1
+        print(f"\n  No help found for '{topic}'.")
+        print(f"  Available topics: {', '.join(sorted(_HELP.keys()))}\n")
+        return 1
 
-    # General overview
-    print("""
+    print(f"""
   AMOF — Agentic Operations Fabric
 
-  Usage: amof [options] <command> [args]
+  Public quickstart:
+    pipx install "git+https://github.com/marekhotshot/amof.git@v2.3.0"
+    amof check
+    amof doctor
+    amof init --adopt .
+    amof setup provider --list
+    amof agent --plan "Inspect this repo" --no-follow-up
+    amof bootstrap bundle --json
 
-  Getting started:
-    amof -e my-project install     Bootstrap workspace
-    amof ticket start PROJ-123     Start ticket work
-    amof agent                     Launch AI agent (interactive)
-    amof status                    Check repo status
-    amof push                      Push all changes
+  Public first-run commands:
+{_topic_list(_PUBLIC_TOPICS)}
 
-  Essential commands:
-    install       Bootstrap ecosystem workspace
-    agent         Run the AI coding agent
-    ticket        Manage tickets (start, list, switch, end)
-    status        Show repository status
-    push          Push all branches
-    release        Version management (status, bump, promote, log)
+  Advanced/manual topics:
+{_topic_list(_ADVANCED_TOPICS)}
 
-  Operational:
-    sync          Clone/update repos
-    profile       Generate repo profiles
-    manifest      Validate ecosystem.yaml
-    check         Verify prerequisites
-    troubleshoot  Diagnose common issues
+  Workspace-only topics:
+{_topic_list(_WORKSPACE_TOPICS)}
 
-  Integrations:
-    pr            Create pull requests
-    jira          Jira ticket operations
-    kb            Knowledge base / Confluence sync
+  Maintainer-only topics:
+{_topic_list(_MAINTAINER_TOPICS)}
 
-  Cleanup:
-    archive       Finish workspace (keeps branches)
-    discard       Delete everything
+  Optional integration topics:
+{_topic_list(_OPTIONAL_TOPICS)}
 
-  Get detailed help:
-    amof help <command>            Extended help with examples
-    amof <command> --help          Flag reference
+  Boundaries:
+    - Public pipx users should use the `amof` shim, not system `python -m amof`.
+    - Provider setup stores env var references only and does not call providers.
+    - No-key agent validation should stop at provider configuration, not -e.
+    - Bounded worker output must be reviewed and committed manually.
+    - AMOF must not auto-commit, auto-push, tag, or promote worker changes.
 
-  Documentation:
-    docs/getting-started.md        Quick start guide
-    docs/cli-reference.md          CLI command reference
-    docs/architecture.md           Architecture overview
+  More detail:
+    amof help <topic>
+    docs/runbooks/happy-path-agent-workflow.md
+    docs/operations/public-surface-taxonomy.md
 """)
     return 0
