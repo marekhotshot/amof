@@ -861,6 +861,77 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertFalse(guard["requested_paths_observed"])
         self.assertTrue(any(reason.startswith("requested_paths_mismatch") for reason in guard["reasons"]))
 
+    def test_diff_guard_rejects_missing_requested_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-diff-missing-requested-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            (repo / "app.py").write_text("print('old')\n", encoding="utf-8")
+            (repo / "tests").mkdir()
+            (repo / "tests" / "test_app.py").write_text("print('old test')\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "app.py", "tests/test_app.py"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test: add app files"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
+            (repo / "app.py").write_text("print('changed')\n", encoding="utf-8")
+
+            guard = agent_cmd._evaluate_diff_guard(
+                "Add farewell(name) to app.py and a matching unittest in tests/test_app.py.",
+                repo,
+                agent_cmd._git_probe(repo),
+            )
+
+        self.assertEqual(guard["status"], "fail")
+        self.assertFalse(guard["requested_paths_observed"])
+        self.assertTrue(
+            any(reason.startswith("requested_paths_missing:tests/test_app.py") for reason in guard["reasons"])
+        )
+
+    def test_diff_guard_rejects_explosive_existing_file_growth(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-diff-explosive-growth-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            app = repo / "app.py"
+            app.write_text("def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["git", "commit", "-m", "test: add app"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
+            app.write_text(
+                "def greet(name):\n    return f'Hello, {name}!'\n"
+                + "\n".join(
+                    "def farewell(name):\n    return f'Goodbye, {name}!'" for _ in range(300)
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            guard = agent_cmd._evaluate_diff_guard(
+                "Add a small pure function farewell(name) to app.py. Keep the change minimal.",
+                repo,
+                agent_cmd._git_probe(repo),
+            )
+
+        self.assertEqual(guard["status"], "fail")
+        self.assertTrue(guard["destructive_rewrite_detected"])
+        self.assertTrue(any(reason.startswith("file_growth:app.py") for reason in guard["reasons"]))
+        self.assertTrue(any(reason.startswith("large_addition:app.py") for reason in guard["reasons"]))
+
     def test_pycache_untracked_noise_does_not_count_as_target_diff(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-diff-pycache-") as td:
             repo = Path(td) / "repo"

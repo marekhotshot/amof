@@ -739,8 +739,11 @@ def _evaluate_diff_guard(goal: str, workspace_root: Path, git_after: dict[str, s
 
     if requested_set:
         extra = sorted(changed_set - requested_set)
+        missing = sorted(requested_set - changed_set)
         if extra:
             reasons.append(f"requested_paths_mismatch:{','.join(extra)}")
+        if missing:
+            reasons.append(f"requested_paths_missing:{','.join(missing)}")
 
     if docs_only:
         code_changed = sorted(
@@ -793,6 +796,14 @@ def _evaluate_diff_guard(goal: str, workspace_root: Path, git_after: dict[str, s
         if before_lines and after_lines is not None and after_lines < before_lines * 0.70:
             destructive_rewrite_detected = True
             reasons.append(f"file_shrink:{path}:{before_lines}->{after_lines}")
+        if before_lines is not None and after_lines is not None:
+            growth_threshold = max(before_lines * 5, before_lines + 200, 250)
+            if after_lines > growth_threshold:
+                destructive_rewrite_detected = True
+                reasons.append(f"file_growth:{path}:{before_lines}->{after_lines}>{growth_threshold}")
+        if file_added > 500:
+            destructive_rewrite_detected = True
+            reasons.append(f"large_addition:{path}:{file_added}>500")
 
     requested_observed = not requested_set or requested_set.issubset(changed_set)
     status = "pass" if not reasons else "fail"
