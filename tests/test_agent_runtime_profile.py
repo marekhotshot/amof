@@ -179,6 +179,41 @@ class _FakeMutatingAgent(_FakeAgent):
         return "changed app.py"
 
 
+class _FakeInspectOnlyMutationAgent(_FakeAgent):
+    stop_reason = "completed"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.telemetry = kwargs.get("telemetry")
+
+    def run(self, goal: str) -> str:
+        self.telemetry.record_tool_call(
+            "InspectFiles",
+            True,
+            1,
+            metadata={"inspected_files": ["app.py", "tests/test_app.py"]},
+        )
+        return "def farewell(name: str) -> str:\n    return f'Goodbye, {name}.'"
+
+
+class _FakeInvalidPythonEditAgent(_FakeAgent):
+    stop_reason = "completed"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.telemetry = kwargs.get("telemetry")
+
+    def run(self, goal: str) -> str:
+        app = Path.cwd() / "app.py"
+        app.write_text(
+            app.read_text(encoding="utf-8")
+            + "defarewell(name: str) -> str:\n    return f'Goodbye, {name}.'\n",
+            encoding="utf-8",
+        )
+        self.telemetry.record_tool_call("InsertAfter", True, 1)
+        return "changed app.py"
+
+
 class _FakeUnsafeStrReplaceAgent(_FakeAgent):
     stop_reason = "completed"
 
@@ -1838,6 +1873,66 @@ Add a function.
         self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
         self.assertIn("target_has_diff=false", stdout.getvalue())
 
+    def test_mutation_intent_inspect_only_worker_fails_write_action_contract(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-prose-only-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Add a function.
+
+---
+
+## Tasks
+
+- [ ] 1. **Add farewell function** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeInspectOnlyMutationAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Add a farewell function",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+            git_status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertEqual(git_status.stdout.strip(), "")
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+        self.assertIn("write_action_observed=false", stdout.getvalue())
+        self.assertIn("mutation-intent plan did not call a write-class tool", stdout.getvalue())
+
     def test_plan_execute_provider_network_failure_returns_nonzero(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-provider-network-") as td:
             temp = Path(td)
@@ -2052,6 +2147,69 @@ Add code and test.
         self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
         self.assertIn("diff_guard_status=fail", stdout.getvalue())
         self.assertIn("requested_paths_missing:tests/test_app.py", stdout.getvalue())
+
+    def test_plan_execute_invalid_python_edit_returns_nonzero_with_compile_evidence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-invalid-python-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            (repo / "app.py").write_text("def greet(name: str) -> str:\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Add a function.
+
+---
+
+## Tasks
+
+- [ ] 1. **Add farewell function** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeInvalidPythonEditAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Add a farewell function to app.py",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+            diff = subprocess.run(
+                ["git", "diff", "--", "app.py"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertIn("defarewell", diff)
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+        self.assertIn("py_compile_status=fail", stdout.getvalue())
+        self.assertIn("py_compile:app.py", stdout.getvalue())
 
     def test_single_shot_provider_network_failure_returns_nonzero(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-single-provider-network-") as td:

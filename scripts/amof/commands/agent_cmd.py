@@ -856,9 +856,49 @@ def _tool_failure_counts(telemetry: Any) -> tuple[int, int]:
         failures = int(getattr(metrics, "failures", 0) or 0)
         total += failures
         leaf_name = str(tool_name).split(":")[-1]
-        if leaf_name in {"Write", "StrReplace", "Delete"}:
+        if leaf_name in {"Write", "StrReplace", "InsertAfter", "Delete"}:
             write_class += failures
     return total, write_class
+
+
+def _write_action_count(telemetry: Any) -> int:
+    total = 0
+    for tool_name, metrics in getattr(telemetry, "tool_metrics", {}).items():
+        leaf_name = str(tool_name).split(":")[-1]
+        if leaf_name in {"Write", "StrReplace", "InsertAfter", "Delete"}:
+            total += int(getattr(metrics, "calls", 0) or 0)
+    return total
+
+
+def _verify_changed_python_files(workspace_root: Path, git_after: dict[str, str]) -> dict[str, Any]:
+    changed = _parse_numstat(git_after.get("numstat", ""))
+    python_files = [
+        str(entry["path"])
+        for entry in changed
+        if Path(str(entry["path"])).suffix == ".py" and (workspace_root / str(entry["path"])).is_file()
+    ]
+    if not python_files:
+        return {"status": "not_applicable", "files": [], "reasons": []}
+
+    reasons: list[str] = []
+    for rel_path in python_files:
+        result = subprocess.run(
+            [sys.executable, "-m", "py_compile", rel_path],
+            cwd=workspace_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "compile failed").strip().splitlines()
+            preview = detail[-1] if detail else "compile failed"
+            reasons.append(f"py_compile:{rel_path}:{preview[:200]}")
+
+    return {
+        "status": "fail" if reasons else "pass",
+        "files": python_files,
+        "reasons": reasons,
+    }
 
 
 def _mark_plan_failed_for_verifier(plan: Any, reason: str) -> None:
@@ -1747,6 +1787,8 @@ def cmd_agent(
         diff_changed = git_before.get("diff") != git_after.get("diff")
         has_after_diff = bool(git_after.get("numstat") or git_after.get("diff"))
         failed_tool_calls, failed_write_tool_calls = _tool_failure_counts(telemetry)
+        write_action_count = _write_action_count(telemetry)
+        write_action_observed = write_action_count > 0
         diff_guard = {
             "status": "not_applicable",
             "reasons": [],
@@ -1759,16 +1801,27 @@ def cmd_agent(
         }
         if mutation_intent and has_after_diff:
             diff_guard = _evaluate_diff_guard(goal, workspace_root, git_after)
+        py_compile_guard = _verify_changed_python_files(workspace_root, git_after)
 
         verifier_failed = False
+        verifier_reasons: list[str] = []
         if failed_tool_calls:
             verifier_failed = True
+            verifier_reasons.append(f"failed_tool_calls:{failed_tool_calls}")
             _mark_plan_failed_for_verifier(
                 plan,
                 f"Verifier failed: {failed_tool_calls} tool call(s) failed.",
             )
+        if mutation_intent and not write_action_observed:
+            verifier_failed = True
+            verifier_reasons.append("mutation-intent plan did not call a write-class tool")
+            _mark_plan_failed_for_verifier(
+                plan,
+                "Verifier failed: mutation-intent plan did not call a write-class tool.",
+            )
         if mutation_intent and (not diff_changed or not has_after_diff):
             verifier_failed = True
+            verifier_reasons.append("mutation-intent plan produced no target repository diff")
             _mark_plan_failed_for_verifier(
                 plan,
                 "Verifier failed: mutation-intent plan produced no target repository diff.",
@@ -1776,9 +1829,18 @@ def cmd_agent(
         if mutation_intent and diff_guard["status"] == "fail":
             verifier_failed = True
             reasons = ", ".join(diff_guard["reasons"]) or "unknown"
+            verifier_reasons.append(f"diff_guard:{reasons}")
             _mark_plan_failed_for_verifier(
                 plan,
                 f"Verifier failed: diff guard rejected target diff ({reasons}).",
+            )
+        if py_compile_guard["status"] == "fail":
+            verifier_failed = True
+            reasons = ", ".join(py_compile_guard["reasons"]) or "unknown"
+            verifier_reasons.append(f"py_compile:{reasons}")
+            _mark_plan_failed_for_verifier(
+                plan,
+                f"Verifier failed: Python compile check failed ({reasons}).",
             )
 
         # Summary
@@ -1794,6 +1856,7 @@ def cmd_agent(
             f"failed_tool_calls={failed_tool_calls}, "
             f"failed_write_tool_calls={failed_write_tool_calls}, "
             f"mutation_intent={str(mutation_intent).lower()}, "
+            f"write_action_observed={str(write_action_observed).lower()}, "
             f"target_diff_changed={str(diff_changed).lower()}, "
             f"target_has_diff={str(has_after_diff).lower()}, "
             f"changed_files={','.join(diff_guard['changed_files']) or '-'}, "
@@ -1801,6 +1864,10 @@ def cmd_agent(
             f"diff_deleted_lines={diff_guard['deleted_lines']}, "
             f"diff_guard_status={diff_guard['status']}, "
             f"diff_guard_reasons={';'.join(diff_guard['reasons']) or '-'}, "
+            f"py_compile_status={py_compile_guard['status']}, "
+            f"py_compile_files={','.join(py_compile_guard['files']) or '-'}, "
+            f"py_compile_reasons={';'.join(py_compile_guard['reasons']) or '-'}, "
+            f"verifier_reasons={';'.join(verifier_reasons) or '-'}, "
             f"destructive_rewrite_detected="
             f"{str(diff_guard['destructive_rewrite_detected']).lower()}, "
             f"requested_paths_observed="
