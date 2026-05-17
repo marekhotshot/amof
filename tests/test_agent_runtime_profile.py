@@ -11,6 +11,8 @@ import tomllib
 import unittest
 from unittest.mock import patch
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_ROOT = ROOT / "scripts"
@@ -75,6 +77,66 @@ class _FakeAgent:
 
     def run(self, goal: str) -> str:
         return "fake agent response"
+
+
+class _FakeLocalLLM:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+    def model_name(self) -> str:
+        return f"local/test/{self.kwargs.get('model')}"
+
+
+@contextmanager
+def _isolated_provider_env(amof_home: Path, extra_env: dict[str, str] | None = None):
+    keys = {
+        "AMOF_HOME",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AMOF_BEDROCK_REGION",
+        "AMOF_LOCAL_QWEN_MODEL",
+        "AMOF_LOCAL_MODEL",
+        "AMOF_PLANNER_MODEL",
+    }
+    sentinel = object()
+    saved = {key: os.environ.get(key, sentinel) for key in keys}
+    try:
+        for key in keys:
+            os.environ.pop(key, None)
+        os.environ["AMOF_HOME"] = str(amof_home)
+        for key, value in (extra_env or {}).items():
+            os.environ[key] = value
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is sentinel:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value  # type: ignore[assignment]
+
+
+def _write_active_provider_profile(amof_home: Path, name: str, payload: dict[str, object]) -> None:
+    config_root = amof_home / "config"
+    profile_dir = config_root / "provider-profiles"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / f"{name}.yaml").write_text(
+        yaml.safe_dump({"name": name, **payload}, sort_keys=False),
+        encoding="utf-8",
+    )
+    (config_root / "config.yaml").write_text(
+        yaml.safe_dump({"current_context": "local"}, sort_keys=False),
+        encoding="utf-8",
+    )
+    (config_root / "contexts.yaml").write_text(
+        yaml.safe_dump(
+            {"contexts": {"local": {"credentials": {"provider_profile_refs": [name]}}}},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 class _FakeFailingWriteAgent(_FakeAgent):
@@ -310,6 +372,216 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             agent_cmd._default_planner_model("openrouter", "anthropic/claude-sonnet-4.5"),
             "anthropic/claude-sonnet-4.5",
         )
+
+    def test_active_local_profile_selects_local_client_without_api_key(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-local-profile-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            _write_active_provider_profile(
+                amof_home,
+                "local-qwen-default",
+                {
+                    "provider": "local",
+                    "lane": "worker",
+                    "model": "qwen2.5-coder:7b-instruct",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "credential_refs": {},
+                },
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            created_clients: list[_FakeLocalLLM] = []
+
+            def _fake_local_client(**kwargs):
+                client = _FakeLocalLLM(**kwargs)
+                created_clients.append(client)
+                return client
+
+            _FakeAgent.instances.clear()
+            with _isolated_provider_env(amof_home):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.agent.Agent", _FakeAgent):
+                        import amof.orchestrator.memory as memory
+
+                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
+                            with patch(
+                                "amof.orchestrator.llm.local_openai_compatible.LocalOpenAICompatibleClient",
+                                side_effect=_fake_local_client,
+                            ):
+                                with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                                    result = agent_cmd.cmd_agent(
+                                        manifest,
+                                        goal="Inspect this repo",
+                                        plan_mode=True,
+                                        no_follow_up=True,
+                                        verbose=False,
+                                    )
+
+            git_status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            appdata_text = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in amof_home.glob("share/**/*")
+                if path.is_file()
+            )
+
+        self.assertEqual(result, 0, stderr.getvalue())
+        self.assertTrue(created_clients)
+        self.assertEqual(created_clients[0].kwargs["base_url"], "http://127.0.0.1:11434/v1")
+        self.assertEqual(created_clients[0].kwargs["model"], "qwen2.5-coder:7b-instruct")
+        self.assertIsNone(created_clients[0].kwargs["api_key"])
+        self.assertTrue(_FakeAgent.instances)
+        self.assertIs(_FakeAgent.instances[-1].llm, created_clients[0])
+        self.assertIn("local/test/qwen2.5-coder:7b-instruct", stdout.getvalue())
+        self.assertEqual(git_status.stdout.strip(), "")
+        self.assertFalse((repo / ".amof").exists())
+        self.assertFalse((repo / "ecosystems").exists())
+        self.assertFalse((repo / "context").exists())
+        self.assertNotIn("ANTHROPIC_API_KEY", stderr.getvalue())
+        self.assertNotIn("OPENAI_API_KEY", stderr.getvalue())
+        self.assertNotIn("OPENROUTER_API_KEY", stderr.getvalue())
+        self.assertNotIn("api_key", appdata_text)
+
+    def test_active_local_profile_missing_base_url_fails_clearly(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-local-missing-base-url-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            _write_active_provider_profile(
+                amof_home,
+                "local-qwen-default",
+                {
+                    "provider": "local",
+                    "lane": "worker",
+                    "model": "qwen2.5-coder:7b-instruct",
+                    "credential_refs": {},
+                },
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+
+            with _isolated_provider_env(amof_home):
+                with _cwd(repo):
+                    with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                        result = agent_cmd.cmd_agent(
+                            manifest,
+                            goal="Inspect this repo",
+                            plan_mode=True,
+                            no_follow_up=True,
+                            verbose=False,
+                        )
+
+        self.assertEqual(result, 1)
+        self.assertIn("local provider profile requires base_url", stderr.getvalue())
+
+    def test_active_local_profile_missing_model_fails_clearly(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-local-missing-model-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            _write_active_provider_profile(
+                amof_home,
+                "local-qwen-default",
+                {
+                    "provider": "local",
+                    "lane": "worker",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "credential_refs": {},
+                },
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+
+            with _isolated_provider_env(amof_home):
+                with _cwd(repo):
+                    with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                        result = agent_cmd.cmd_agent(
+                            manifest,
+                            goal="Inspect this repo",
+                            plan_mode=True,
+                            no_follow_up=True,
+                            verbose=False,
+                        )
+
+        self.assertEqual(result, 1)
+        self.assertIn("local provider profile requires model", stderr.getvalue())
+
+    def test_explicit_cloud_provider_wins_over_active_local_profile(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-cloud-over-local-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            _write_active_provider_profile(
+                amof_home,
+                "local-qwen-default",
+                {
+                    "provider": "local",
+                    "lane": "worker",
+                    "model": "qwen2.5-coder:7b-instruct",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "credential_refs": {},
+                },
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            created_openai_clients: list[object] = []
+
+            def _fake_openai_client(**kwargs):
+                client = _FakeLocalLLM(**kwargs)
+                created_openai_clients.append(client)
+                return client
+
+            _FakeAgent.instances.clear()
+            with _isolated_provider_env(amof_home, {"OPENROUTER_API_KEY": "unit-test-provider-value"}):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.agent.Agent", _FakeAgent):
+                        import amof.orchestrator.memory as memory
+
+                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
+                            with patch(
+                                "amof.orchestrator.llm.local_openai_compatible.LocalOpenAICompatibleClient",
+                                side_effect=AssertionError("local profile should not be used"),
+                            ):
+                                with patch(
+                                    "amof.orchestrator.llm.openai_client.OpenAIClient",
+                                    side_effect=_fake_openai_client,
+                                ):
+                                    with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                                        result = agent_cmd.cmd_agent(
+                                            manifest,
+                                            goal="Inspect this repo",
+                                            plan_mode=True,
+                                            provider="openrouter",
+                                            no_follow_up=True,
+                                            verbose=False,
+                                        )
+
+        self.assertEqual(result, 0, stderr.getvalue())
+        self.assertTrue(created_openai_clients)
+        self.assertEqual(created_openai_clients[0].kwargs["api_key"], "unit-test-provider-value")
+        self.assertTrue(str(created_openai_clients[0].kwargs["model"]).startswith("openrouter/"))
 
     def test_plan_execute_no_follow_up_is_noninteractive_for_clarifications(self) -> None:
         with patch("sys.stdin.isatty", return_value=True):

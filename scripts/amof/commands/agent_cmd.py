@@ -20,6 +20,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from ..app_paths import get_app_paths, indexes_dir, runs_dir, vector_store_dir
 
@@ -34,7 +35,7 @@ AMOF_RUNTIME_DEPENDENCIES = {
     "yaml": "PyYAML",
 }
 OPTIONAL_MEMORY_DEPENDENCIES = {"chromadb", "pysqlite3"}
-SUPPORTED_PROFILE_PROVIDERS = {"anthropic", "openai", "openrouter", "bedrock"}
+SUPPORTED_PROFILE_PROVIDERS = {"anthropic", "openai", "openrouter", "bedrock", "local"}
 
 # Default model tiers when --model-ladder is enabled
 DEFAULT_TIERS = {
@@ -58,6 +59,10 @@ PROVIDER_DEFAULT_MODELS = {
     "bedrock": {
         "worker": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
         "planner": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    },
+    "local": {
+        "worker": "qwen2.5-coder:7b",
+        "planner": "qwen2.5-coder:7b",
     },
 }
 MUTATION_INTENT_RE = re.compile(
@@ -474,8 +479,6 @@ def _active_provider_profile() -> dict[str, Any] | None:
     provider_name = str(profile.get("provider") or "").strip()
     if not provider_name:
         raise ValueError(f"Provider profile {profile_name} does not declare a provider.")
-    if provider_name == "local":
-        raise ValueError("local provider profiles are not yet supported by amof agent CLI")
     if provider_name not in SUPPORTED_PROFILE_PROVIDERS:
         raise ValueError(
             f"Provider profile {profile_name} uses provider {provider_name}, "
@@ -542,10 +545,19 @@ def _default_worker_model(provider: str, model: str | None, profile_default_mode
             "AMOF_BEDROCK_STANDARD_MODEL_ID",
             PROVIDER_DEFAULT_MODELS["bedrock"]["worker"],
         )
+    if provider == "local":
+        return os.environ.get(
+            "AMOF_LOCAL_QWEN_MODEL",
+            os.environ.get("AMOF_LOCAL_MODEL", PROVIDER_DEFAULT_MODELS["local"]["worker"]),
+        )
     return os.environ.get("AMOF_ANTHROPIC_MODEL", PROVIDER_DEFAULT_MODELS["anthropic"]["worker"])
 
 
-def _default_planner_model(provider: str, planner_model: str | None) -> str:
+def _default_planner_model(
+    provider: str,
+    planner_model: str | None,
+    profile_default_model: str | None = None,
+) -> str:
     """Resolve a provider-compatible default planner model.
 
     Explicit CLI/env planner selections win. Defaults must be valid for the
@@ -556,7 +568,25 @@ def _default_planner_model(provider: str, planner_model: str | None) -> str:
     env_model = os.environ.get("AMOF_PLANNER_MODEL")
     if env_model:
         return env_model
+    if provider == "local" and profile_default_model:
+        return profile_default_model
     return PROVIDER_DEFAULT_MODELS.get(provider, PROVIDER_DEFAULT_MODELS["anthropic"])["planner"]
+
+
+def _validate_local_base_url(base_url: str | None) -> str | None:
+    normalized = str(base_url or "").strip()
+    if not normalized:
+        return "local provider profile requires base_url or default_base_url"
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return f"local provider base_url must be an http(s) URL, got: {normalized}"
+    return None
+
+
+def _validate_local_model(model: str | None) -> str | None:
+    if str(model or "").strip():
+        return None
+    return "local provider profile requires model or default_model"
 
 
 def _validate_runner_factory_for_plan(runner_factory: Any, plan: Any) -> str | None:
@@ -929,6 +959,16 @@ def cmd_agent(
     # Auto-load .env if API key isn't already in environment
     _auto_load_env(Path.cwd() / ".env")
     provider_base_url = _profile_base_url(provider_profile)
+    profile_default_model = _profile_model(provider_profile) if not explicit_provider else None
+    if provider == "local":
+        local_base_url_error = _validate_local_base_url(provider_base_url)
+        if local_base_url_error:
+            sys.stderr.write(f"[agent] {local_base_url_error}\n")
+            return 1
+        local_model_error = _validate_local_model(profile_default_model or model)
+        if local_model_error:
+            sys.stderr.write(f"[agent] {local_model_error}\n")
+            return 1
 
     # Resolve API key based on provider
     if provider == "openai":
@@ -964,6 +1004,8 @@ def cmd_agent(
                 "  Export AWS_REGION (or AMOF_BEDROCK_REGION) and optionally AWS_PROFILE.\n"
             )
             return 1
+    elif provider == "local":
+        api_key = ""
     else:
         api_key_env = _profile_credential_env(provider_profile, "api_key_env") if not explicit_provider else None
         api_key_env = api_key_env or "ANTHROPIC_API_KEY"
@@ -1038,6 +1080,15 @@ def cmd_agent(
     # Provider-specific client factory
     def _make_client(mdl: str) -> Any:
         """Create an LLM client for the configured provider."""
+        if provider == "local":
+            from ..orchestrator.llm.local_openai_compatible import LocalOpenAICompatibleClient
+
+            return LocalOpenAICompatibleClient(
+                base_url=provider_base_url or "",
+                model=mdl,
+                api_key=api_key or None,
+            )
+
         # Check if the model string is openrouter/ style
         if mdl.startswith("openrouter/"):
             from ..orchestrator.llm.openai_client import OpenAIClient
@@ -1094,7 +1145,6 @@ def cmd_agent(
     context_summarizer = None
 
     # Default model depends on provider
-    profile_default_model = _profile_model(provider_profile) if not explicit_provider else None
     default_model = _default_worker_model(provider, model, profile_default_model)
 
     primary_llm = _make_client(default_model)
@@ -1436,7 +1486,11 @@ def cmd_agent(
         from ..orchestrator.llm.base import ProviderError
 
         # Determine planner model (provider-aware default; explicit flag/env wins).
-        planner_model_id = _default_planner_model(provider, planner_model)
+        planner_model_id = _default_planner_model(
+            provider,
+            planner_model,
+            profile_default_model if not explicit_provider else None,
+        )
         planner_llm = _make_client(planner_model_id)
 
         if verbose:
@@ -1754,7 +1808,11 @@ def cmd_agent(
         from ..orchestrator.planner import TaskPlanner, ExecutionPlan
         from ..orchestrator.executor import SubtaskExecutor
 
-        planner_model_id = _default_planner_model(provider, planner_model)
+        planner_model_id = _default_planner_model(
+            provider,
+            planner_model,
+            profile_default_model if not explicit_provider else None,
+        )
         planner_llm = _make_client(planner_model_id)
 
         codebase_context = context_builder.build(mode="plan")
