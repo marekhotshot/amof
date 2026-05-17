@@ -8,6 +8,22 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.5.0] - 2026-05-17
+
+### Changed
+
+- Narrowed first-run CLI help to the clean public surface while preserving advanced, workspace, maintainer, and optional integration commands as callable documented topics.
+- Replaced stale and corporate-facing public docs with v2.5.0-safe happy-path, source-checkout, public surface taxonomy, and smoke matrix documentation.
+- Clarified public boundaries for pipx installs, no-key adoption, provider profile references, bounded worker diffs, and mandatory human review/test/commit.
+
+### Validation
+
+- Full unit test suite passed.
+- CLI help matrix passed for all known top-level commands.
+- Default help no longer presents maintainer mutation commands as first-run quickstart commands.
+- Docs/stale grep and secret grep gates passed with allowlisted references only.
+- No-key adoption/provider-validation smoke passed without target repo source pollution.
+
 ## [2.3.0] - 2026-05-17
 
 ### Added
