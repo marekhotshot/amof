@@ -545,6 +545,7 @@ class ToolRegistry:
         self.trust_state = trust_state
         self.policy_gate = policy_gate
         self.policy_source = policy_source
+        self._read_evidence: Dict[str, List[str]] = {}
 
     def register(self, tool: Tool) -> None:
         """Register a tool."""
@@ -577,15 +578,6 @@ class ToolRegistry:
                 error=f"Unknown tool: {tool_call.name}",
             )
 
-        # Pre-execution guardrail checks
-        policy_error = self._check_policy(tool_call)
-        if policy_error:
-            return ToolResult(success=False, output="", error=policy_error)
-
-        error = self._check_guardrails(tool_call)
-        if error:
-            return ToolResult(success=False, output="", error=error)
-        
         # Validate arguments against schema
         validation_error = self._validate_arguments(tool, tool_call.arguments)
         if validation_error:
@@ -594,6 +586,16 @@ class ToolRegistry:
                 output="",
                 error=f"Invalid arguments for {tool_call.name}: {validation_error}",
             )
+
+        # Pre-execution guardrail checks. Run after schema validation so
+        # protocol-specific guards can rely on required argument presence.
+        policy_error = self._check_policy(tool_call)
+        if policy_error:
+            return ToolResult(success=False, output="", error=policy_error)
+
+        error = self._check_guardrails(tool_call)
+        if error:
+            return ToolResult(success=False, output="", error=error)
 
         try:
             result = tool.execute(**tool_call.arguments)
@@ -617,9 +619,11 @@ class ToolRegistry:
 
         if result.success:
             record_untrusted_tool_output(tool_call.name, self.trust_state)
+            if tool_call.name == "Read":
+                self._record_read_evidence(tool_call.arguments)
 
         # Track modified files for end-of-task linting
-        if result.success and tool_call.name in ("Write", "StrReplace"):
+        if result.success and tool_call.name in ("Write", "StrReplace", "InsertAfter"):
             file_path = tool_call.arguments.get("path", "")
             if file_path:
                 self._modified_files.add(file_path)
@@ -702,11 +706,31 @@ class ToolRegistry:
         args = tool_call.arguments
 
         # Write-class tools check path
-        if name in ("Write", "StrReplace", "Delete"):
+        if name in ("Write", "StrReplace", "InsertAfter", "Delete"):
             path = args.get("path", "")
             guardrail_error = self.guardrails.check_write(path)
             if guardrail_error:
                 return guardrail_error
+            if name == "StrReplace" and path:
+                evidence_error = self._check_observed_edit_arg(
+                    path=path,
+                    value=args.get("old_string", ""),
+                    field_name="old_string",
+                    tool_name="StrReplace",
+                    reason_prefix="invalid_strreplace_old",
+                )
+                if evidence_error:
+                    return evidence_error
+            if name == "InsertAfter" and path:
+                evidence_error = self._check_observed_edit_arg(
+                    path=path,
+                    value=args.get("anchor_string", ""),
+                    field_name="anchor_string",
+                    tool_name="InsertAfter",
+                    reason_prefix="invalid_insertafter_anchor",
+                )
+                if evidence_error:
+                    return evidence_error
             if name == "Write" and path:
                 target_path = Path(path).resolve()
                 full_rewrite_authorized = bool(
@@ -748,6 +772,83 @@ class ToolRegistry:
                 return self.guardrails.check_shell(cmd_desc)
 
         return None
+
+    def _record_read_evidence(self, args: Dict[str, Any]) -> None:
+        path = str(args.get("path") or "").strip()
+        if not path:
+            return
+        file_path = Path(path).resolve()
+        if not file_path.is_file():
+            return
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return
+
+        observed = self._slice_read_content(
+            content,
+            offset=args.get("offset"),
+            limit=args.get("limit"),
+        )
+        key = str(file_path)
+        self._read_evidence.setdefault(key, []).append(observed)
+
+    @staticmethod
+    def _slice_read_content(content: str, *, offset: Any = None, limit: Any = None) -> str:
+        if offset is None and limit is None:
+            return content
+        lines = content.splitlines()
+        total_lines = len(lines)
+        try:
+            offset_value = int(offset) if offset is not None else None
+        except (TypeError, ValueError):
+            offset_value = None
+        try:
+            limit_value = int(limit) if limit is not None else None
+        except (TypeError, ValueError):
+            limit_value = None
+
+        if offset_value is not None:
+            if offset_value < 0:
+                start_idx = max(0, total_lines + offset_value)
+            else:
+                start_idx = max(0, offset_value - 1)
+        else:
+            start_idx = 0
+        if limit_value is not None:
+            end_idx = min(total_lines, start_idx + limit_value)
+        else:
+            end_idx = total_lines
+        return "\n".join(lines[start_idx:end_idx])
+
+    def _check_observed_edit_arg(
+        self,
+        *,
+        path: str,
+        value: Any,
+        field_name: str,
+        tool_name: str,
+        reason_prefix: str,
+    ) -> Optional[str]:
+        if not isinstance(value, str) or value.strip() == "":
+            return None
+        file_path = Path(path).resolve()
+        if not file_path.exists():
+            return None
+        key = str(file_path)
+        observed_values = self._read_evidence.get(key, [])
+        if not observed_values:
+            return (
+                f"{reason_prefix}_requires_read: Read {path} before {tool_name}, "
+                f"then copy {field_name} exactly from the Read output."
+            )
+        if any(value in observed for observed in observed_values):
+            return None
+        return (
+            f"{reason_prefix}_not_observed: {field_name} was not observed in a prior "
+            f"Read of {path}. Read the file again and copy an exact snippet from the "
+            "Read output before editing."
+        )
     
     def _validate_arguments(self, tool: Tool, arguments: Dict[str, Any]) -> Optional[str]:
         """Validate arguments against tool schema. Returns error message or None."""
@@ -836,6 +937,7 @@ def create_default_registry(
     from .read import ReadTool
     from .write import WriteTool
     from .str_replace import StrReplaceTool
+    from .insert_after import InsertAfterTool
     from .delete import DeleteTool
     from .shell import ShellTool
     from .grep import GrepTool
@@ -861,7 +963,7 @@ def create_default_registry(
 
     # Worker gets execution tools
     if role in ("worker", "all"):
-        for tool_cls in [ReadTool, WriteTool, StrReplaceTool, DeleteTool, GrepTool, GlobTool, LSTool]:
+        for tool_cls in [ReadTool, WriteTool, StrReplaceTool, InsertAfterTool, DeleteTool, GrepTool, GlobTool, LSTool]:
             registry.register(tool_cls())
         registry.register(
             ShellTool(

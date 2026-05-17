@@ -38,8 +38,10 @@ PACKAGED_CODE_RUNNER_PROMPT = (
     "provided tools; Shell, Delete, and GitCheckpoint are intentionally unavailable. "
     "Do not commit or push. Preserve existing file content. Never rewrite a whole "
     "existing file for small edits, additions, docs-only edits, or bounded changes. "
-    "Use StrReplace for targeted replacement or insertion in existing files, and use "
-    "Write only to create new files unless the top-level task explicitly asks to "
+    "Before editing an existing file, Read it first. Never invent old_string or "
+    "anchor_string values; copy them exactly from Read output. Use InsertAfter for "
+    "small additions after a unique anchor, StrReplace for targeted replacement, "
+    "and use Write only to create new files unless the top-level task explicitly asks to "
     "rewrite or overwrite the entire file. If a docs insertion point is ambiguous, "
     "fail or ask in interactive mode rather than replacing the document with generic "
     "content. For docs edits, prefer the smallest reviewable diff and insert exact "
@@ -53,7 +55,7 @@ PUBLIC_DEFAULT_RUNNERS_CONFIG: Dict[str, Any] = {
     "runners": {
         "code": {
             "prompt": "__packaged__/runners/code.md",
-            "tools": ["Read", "Write", "StrReplace", "Glob", "LS", "ReadLints"],
+            "tools": ["Read", "Write", "StrReplace", "InsertAfter", "Glob", "LS", "ReadLints"],
             "description": "Safe public code-edit runner without shell, delete, checkpoint, or git push tools.",
             "default_tier": "standard",
             "max_iterations": 20,

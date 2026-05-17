@@ -834,6 +834,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             )
 
             with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
                 result = registry.execute(
                     ToolCall(
                         id="1",
@@ -863,6 +866,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             )
 
             with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
                 result = registry.execute(
                     ToolCall(
                         id="1",
@@ -872,8 +878,141 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 )
             contents = (repo / "README.md").read_text(encoding="utf-8")
 
+        self.assertTrue(read_result.success, read_result.error)
         self.assertTrue(result.success, result.error)
         self.assertEqual(contents, "old\nnew\n")
+
+    def test_str_replace_requires_prior_read_evidence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-read-first-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("old\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={"path": "README.md", "old_string": "old\n", "new_string": "old\nnew\n"},
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_old_requires_read", result.error or "")
+        self.assertEqual(contents, "old\n")
+
+    def test_str_replace_old_string_must_be_observed_in_prior_read(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-observed-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("old\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={
+                            "path": "README.md",
+                            "old_string": "# Add your code here",
+                            "new_string": "old\nnew\n",
+                        },
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertTrue(read_result.success, read_result.error)
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_old_not_observed", result.error or "")
+        self.assertEqual(contents, "old\n")
+
+    def test_insert_after_uses_read_observed_anchor_for_small_insert(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-insert-after-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "app.py"
+            target.write_text("def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add farewell to app.py"),
+            )
+
+            with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "app.py"})
+                )
+                result = registry.execute(
+                    ToolCall(
+                        id="insert",
+                        name="InsertAfter",
+                        arguments={
+                            "path": "app.py",
+                            "anchor_string": "    return f'Hello, {name}!'",
+                            "content_to_insert": "\n\n\ndef farewell(name: str) -> str:\n    return f'Goodbye, {name}.'",
+                        },
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertTrue(read_result.success, read_result.error)
+        self.assertTrue(result.success, result.error)
+        self.assertIn("def farewell", contents)
+        self.assertIn("def greet", contents)
+
+    def test_insert_after_rejects_unobserved_anchor_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-insert-after-unobserved-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "app.py"
+            target.write_text("def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add farewell to app.py"),
+            )
+
+            with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "app.py"})
+                )
+                result = registry.execute(
+                    ToolCall(
+                        id="insert",
+                        name="InsertAfter",
+                        arguments={
+                            "path": "app.py",
+                            "anchor_string": "# Add your code here",
+                            "content_to_insert": "\n\n\ndef farewell(name: str) -> str:\n    return f'Goodbye, {name}.'",
+                        },
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertTrue(read_result.success, read_result.error)
+        self.assertFalse(result.success)
+        self.assertIn("invalid_insertafter_anchor_not_observed", result.error or "")
+        self.assertEqual(contents, "def greet(name):\n    return f'Hello, {name}!'\n")
 
     def test_str_replace_empty_old_string_fails_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-str-replace-empty-") as td:
@@ -889,6 +1028,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             )
 
             with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
                 result = registry.execute(
                     ToolCall(
                         id="1",
@@ -943,6 +1085,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             )
 
             with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
                 result = registry.execute(
                     ToolCall(
                         id="1",
@@ -952,8 +1097,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 )
             contents = target.read_text(encoding="utf-8")
 
+        self.assertTrue(read_result.success, read_result.error)
         self.assertFalse(result.success)
-        self.assertIn("invalid_strreplace_old_not_found", result.error or "")
+        self.assertIn("invalid_strreplace_old_not_observed", result.error or "")
         self.assertEqual(contents, "abc\n")
 
     def test_str_replace_multiple_matches_fails_without_replace_all(self) -> None:
@@ -970,6 +1116,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             )
 
             with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
                 result = registry.execute(
                     ToolCall(
                         id="1",
@@ -979,6 +1128,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 )
             contents = target.read_text(encoding="utf-8")
 
+        self.assertTrue(read_result.success, read_result.error)
         self.assertFalse(result.success)
         self.assertIn("invalid_strreplace_old_multiple", result.error or "")
         self.assertEqual(contents, "same\nsame\n")
@@ -997,6 +1147,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             )
 
             with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
                 result = registry.execute(
                     ToolCall(
                         id="1",
@@ -1011,6 +1164,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 )
             contents = target.read_text(encoding="utf-8")
 
+        self.assertTrue(read_result.success, read_result.error)
         self.assertFalse(result.success)
         self.assertIn("invalid_strreplace_replace_all_too_many", result.error or "")
         self.assertEqual(contents, "x\n" * 25)
@@ -1029,6 +1183,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             )
 
             with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
                 result = registry.execute(
                     ToolCall(
                         id="1",
@@ -1042,6 +1199,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 )
             contents = target.read_text(encoding="utf-8")
 
+        self.assertTrue(read_result.success, read_result.error)
         self.assertFalse(result.success)
         self.assertIn("invalid_strreplace", result.error or "")
         self.assertEqual(contents, "needle\n")
