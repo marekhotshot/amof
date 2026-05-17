@@ -177,6 +177,20 @@ class _FakeMutatingAgent(_FakeAgent):
         return "changed app.py"
 
 
+class _FakeProviderNetworkAgent(_FakeAgent):
+    stop_reason = "provider_network"
+
+    def run(self, goal: str) -> str:
+        return "local provider error (network): request timed out"
+
+
+class _FakeFailedSubtaskAgent(_FakeAgent):
+    stop_reason = "max_iterations"
+
+    def run(self, goal: str) -> str:
+        return "worker failed before completing the subtask"
+
+
 class _FakeInteractiveAgent:
     def __init__(self) -> None:
         self.run_calls = 0
@@ -1233,6 +1247,191 @@ Add a function.
         self.assertEqual(git_status.stdout.strip(), "")
         self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
         self.assertIn("target_has_diff=false", stdout.getvalue())
+
+    def test_plan_execute_provider_network_failure_returns_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-provider-network-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Inspect the repo.
+
+---
+
+## Tasks
+
+- [ ] 1. **Inspect files** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeProviderNetworkAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Inspect this repo",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+
+    def test_plan_execute_failed_subtask_returns_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-failed-subtask-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Run one worker subtask.
+
+---
+
+## Tasks
+
+- [ ] 1. **Run worker** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeFailedSubtaskAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Run one worker subtask",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+
+    def test_plan_execute_diff_guard_failure_returns_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-diff-guard-fail-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            (repo / "app.py").write_text("def greet(name):\n    return f'Hello, {name}'\n", encoding="utf-8")
+            (repo / "tests").mkdir()
+            (repo / "tests" / "test_app.py").write_text("def test_greet():\n    assert True\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py", "tests/test_app.py"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add app files"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Add code and test.
+
+---
+
+## Tasks
+
+- [ ] 1. **Add farewell function and test** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeMutatingAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Add farewell(name) to app.py and a matching unittest in tests/test_app.py.",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+        self.assertIn("diff_guard_status=fail", stdout.getvalue())
+        self.assertIn("requested_paths_missing:tests/test_app.py", stdout.getvalue())
+
+    def test_single_shot_provider_network_failure_returns_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-single-provider-network-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.agent.Agent", _FakeProviderNetworkAgent):
+                        import amof.orchestrator.memory as memory
+
+                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
+                            with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                                result = agent_cmd.cmd_agent(
+                                    manifest,
+                                    goal="Inspect this repo",
+                                    plan_mode=True,
+                                    provider="openrouter",
+                                    no_follow_up=True,
+                                    verbose=False,
+                                )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertIn("provider error", stdout.getvalue())
 
     def test_successful_worker_mutation_creates_diff_without_source_noise(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-mutation-") as td:

@@ -878,6 +878,24 @@ def _plan_execute_noninteractive(no_follow_up: Any, approve_plan: Any) -> bool:
     return bool(no_follow_up or approve_plan or not sys.stdin.isatty())
 
 
+FATAL_AGENT_STOP_REASONS = {
+    "cost_exceeded",
+    "max_iterations",
+    "circuit_breaker",
+    "interrupted",
+    "provider_payment_required",
+    "provider_auth",
+    "provider_rate_limit",
+    "provider_server_error",
+    "provider_network",
+    "provider_api_error",
+}
+
+
+def _agent_stop_reason_exit_code(stop_reason: str | None) -> int:
+    return 1 if str(stop_reason or "") in FATAL_AGENT_STOP_REASONS else 0
+
+
 def _interactive_confirm(command: str, reason: str) -> str:
     """Prompt user for confirmation when a sensitive/dangerous command is detected.
 
@@ -1847,13 +1865,18 @@ def cmd_agent(
         print(f"\n{telemetry.summary()}")
         print(f"Event log: {events.log_path}")
 
+        exit_code = _agent_stop_reason_exit_code(agent.stop_reason)
+
         # Post-run follow-up menu
         if not no_follow_up:
+            if exit_code:
+                return exit_code
             return _post_run_menu(
                 agent=agent, session=session, telemetry=telemetry, events=events,
                 workspace_root=workspace_root, manifest=manifest,
                 continue_budget=continue_budget, goal=goal,
             )
+        return exit_code
     else:
         # Interactive chat shell (plan-execute by default)
         from ..orchestrator.planner import TaskPlanner, ExecutionPlan
