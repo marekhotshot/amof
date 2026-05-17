@@ -163,12 +163,15 @@ class LocalOpenAICompatibleClient(OpenAIClient):
         self._api_key = api_key or os.environ.get("AMOF_LOCAL_LLM_API_KEY", "") or "local"
         self._base_url = base_url
         self._client = None
-        self._max_retries = 0  # Retries are cheap on cloud; for local /
-        # Runpod we let the authority/agent loop decide rather than retry
-        # inside the SDK adapter, so transient backend-down conditions
-        # trigger fallback promptly.
+        # Keep both AMOF-level and SDK-level retries explicit for local-shaped
+        # providers. The OpenAI SDK defaults to retrying internally, which can
+        # turn one local timeout into several minutes of wall time.
+        self._max_retries = 0
+        self._sdk_max_retries = 0
         self._reasoning_effort = None
         self._timeout = float(timeout)
+        if self._timeout <= 0:
+            raise ValueError("LocalOpenAICompatibleClient timeout must be a positive number")
         self._model_label = model_label or self._build_model_label(
             provider_id, base_url, model
         )
@@ -201,6 +204,7 @@ class LocalOpenAICompatibleClient(OpenAIClient):
             kwargs: Dict[str, Any] = {
                 "api_key": self._api_key,
                 "base_url": self._base_url,
+                "max_retries": self._sdk_max_retries,
             }
             # The SDK accepts a `timeout` kwarg; forward it so connection
             # hangs to a downed local server surface quickly instead of
@@ -222,6 +226,15 @@ class LocalOpenAICompatibleClient(OpenAIClient):
         """
 
         return self._model_label
+
+    def _wrap_provider_error(self, exc: BaseException) -> Any:
+        provider_error = super()._wrap_provider_error(exc)
+        provider_error.args = (
+            f"{provider_error.args[0]} "
+            f"(provider={self._provider}, base_url={self._base_url}, "
+            f"timeout_seconds={self._timeout:g}, sdk_max_retries={self._sdk_max_retries})",
+        )
+        return provider_error
 
     def chat(
         self,

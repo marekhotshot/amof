@@ -34,6 +34,7 @@ def _args(**overrides):
         "api_key_env": None,
         "base_url": None,
         "base_url_env": None,
+        "timeout_seconds": None,
         "activate": False,
         "dry_run": False,
         "yes": False,
@@ -126,6 +127,7 @@ class ProviderSetupCommandTests(unittest.TestCase):
                         profile_name="local-qwen",
                         base_url="http://localhost:11434/v1",
                         model="qwen2.5-coder:7b",
+                        timeout_seconds=30,
                         yes=True,
                     )
                 )
@@ -136,6 +138,16 @@ class ProviderSetupCommandTests(unittest.TestCase):
                 self.assertEqual(result, 0)
                 self.assertEqual(payload["base_url"], "http://localhost:11434/v1")
                 self.assertEqual(payload["model"], "qwen2.5-coder:7b")
+                self.assertEqual(payload["timeout_seconds"], 30.0)
+
+    def test_local_qwen_rejects_invalid_timeout_override(self) -> None:
+        with redirect_stderr(StringIO()) as stderr:
+            result = setup_cmd.cmd_setup(
+                _args(provider_template="local-qwen", timeout_seconds=0, print_template=True)
+            )
+
+        self.assertEqual(result, 1)
+        self.assertIn("--timeout-seconds expects a positive number of seconds", stderr.getvalue())
 
     def test_runpod_supports_base_url_env_and_api_key_env(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-provider-runpod-") as td:

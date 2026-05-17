@@ -527,6 +527,17 @@ def _profile_base_url(profile: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _profile_timeout_seconds(profile: dict[str, Any] | None) -> str | None:
+    if profile:
+        value = profile.get("timeout_seconds")
+        if value is not None:
+            return str(value).strip()
+    value = os.environ.get("AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS")
+    if value is not None:
+        return value.strip()
+    return None
+
+
 def _default_worker_model(provider: str, model: str | None, profile_default_model: str | None) -> str:
     """Resolve the default worker/orchestrator model for a provider."""
     if model:
@@ -587,6 +598,25 @@ def _validate_local_model(model: str | None) -> str | None:
     if str(model or "").strip():
         return None
     return "local provider profile requires model or default_model"
+
+
+def _resolve_local_timeout_seconds(profile: dict[str, Any] | None) -> tuple[float | None, str | None]:
+    raw_timeout = _profile_timeout_seconds(profile)
+    if raw_timeout is None or raw_timeout == "":
+        return None, None
+    try:
+        timeout_seconds = float(raw_timeout)
+    except ValueError:
+        return None, (
+            "local provider timeout_seconds must be a positive number "
+            f"(got {raw_timeout!r})"
+        )
+    if timeout_seconds <= 0:
+        return None, (
+            "local provider timeout_seconds must be a positive number "
+            f"(got {raw_timeout!r})"
+        )
+    return timeout_seconds, None
 
 
 def _validate_runner_factory_for_plan(runner_factory: Any, plan: Any) -> str | None:
@@ -971,6 +1001,7 @@ def cmd_agent(
     _auto_load_env(Path.cwd() / ".env")
     provider_base_url = _profile_base_url(provider_profile)
     profile_default_model = _profile_model(provider_profile) if not explicit_provider else None
+    local_timeout_seconds: float | None = None
     if provider == "local":
         local_base_url_error = _validate_local_base_url(provider_base_url)
         if local_base_url_error:
@@ -979,6 +1010,14 @@ def cmd_agent(
         local_model_error = _validate_local_model(profile_default_model or model)
         if local_model_error:
             sys.stderr.write(f"[agent] {local_model_error}\n")
+            return 1
+        local_timeout_seconds, local_timeout_error = _resolve_local_timeout_seconds(provider_profile)
+        if local_timeout_error:
+            sys.stderr.write(
+                "[agent] "
+                f"{local_timeout_error}; provider=local "
+                f"base_url={provider_base_url} sdk_max_retries=0\n"
+            )
             return 1
 
     # Resolve API key based on provider
@@ -1098,6 +1137,7 @@ def cmd_agent(
                 base_url=provider_base_url or "",
                 model=mdl,
                 api_key=api_key or None,
+                timeout=local_timeout_seconds if local_timeout_seconds is not None else 60.0,
             )
 
         # Check if the model string is openrouter/ style

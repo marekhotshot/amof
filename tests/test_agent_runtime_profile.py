@@ -99,6 +99,7 @@ def _isolated_provider_env(amof_home: Path, extra_env: dict[str, str] | None = N
         "AMOF_BEDROCK_REGION",
         "AMOF_LOCAL_QWEN_MODEL",
         "AMOF_LOCAL_MODEL",
+        "AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS",
         "AMOF_PLANNER_MODEL",
     }
     sentinel = object()
@@ -388,6 +389,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                     "model": "qwen2.5-coder:7b-instruct",
                     "base_url": "http://127.0.0.1:11434/v1",
                     "credential_refs": {},
+                    "timeout_seconds": 45,
                 },
             )
             manifest = {
@@ -403,7 +405,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 return client
 
             _FakeAgent.instances.clear()
-            with _isolated_provider_env(amof_home):
+            with _isolated_provider_env(amof_home, {"AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS": "12.5"}):
                 with _cwd(repo):
                     with patch("amof.orchestrator.agent.Agent", _FakeAgent):
                         import amof.orchestrator.memory as memory
@@ -440,6 +442,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertEqual(created_clients[0].kwargs["base_url"], "http://127.0.0.1:11434/v1")
         self.assertEqual(created_clients[0].kwargs["model"], "qwen2.5-coder:7b-instruct")
         self.assertIsNone(created_clients[0].kwargs["api_key"])
+        self.assertEqual(created_clients[0].kwargs["timeout"], 45.0)
         self.assertTrue(_FakeAgent.instances)
         self.assertIs(_FakeAgent.instances[-1].llm, created_clients[0])
         self.assertIn("local/test/qwen2.5-coder:7b-instruct", stdout.getvalue())
@@ -451,6 +454,123 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertNotIn("OPENAI_API_KEY", stderr.getvalue())
         self.assertNotIn("OPENROUTER_API_KEY", stderr.getvalue())
         self.assertNotIn("api_key", appdata_text)
+
+    def test_active_local_profile_honors_env_timeout_when_profile_omits_timeout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-local-timeout-env-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            _write_active_provider_profile(
+                amof_home,
+                "local-qwen-default",
+                {
+                    "provider": "local",
+                    "lane": "worker",
+                    "model": "qwen2.5-coder:7b-instruct",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "credential_refs": {},
+                },
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            created_clients: list[_FakeLocalLLM] = []
+
+            def _fake_local_client(**kwargs):
+                client = _FakeLocalLLM(**kwargs)
+                created_clients.append(client)
+                return client
+
+            with _isolated_provider_env(amof_home, {"AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS": "12.5"}):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.agent.Agent", _FakeAgent):
+                        import amof.orchestrator.memory as memory
+
+                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
+                            with patch(
+                                "amof.orchestrator.llm.local_openai_compatible.LocalOpenAICompatibleClient",
+                                side_effect=_fake_local_client,
+                            ):
+                                with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                                    result = agent_cmd.cmd_agent(
+                                        manifest,
+                                        goal="Inspect this repo",
+                                        plan_mode=True,
+                                        no_follow_up=True,
+                                        verbose=False,
+                                    )
+
+        self.assertEqual(result, 0, stderr.getvalue())
+        self.assertTrue(created_clients)
+        self.assertEqual(created_clients[0].kwargs["timeout"], 12.5)
+
+    def test_active_local_profile_invalid_timeout_fails_clearly(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-local-timeout-invalid-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            _write_active_provider_profile(
+                amof_home,
+                "local-qwen-default",
+                {
+                    "provider": "local",
+                    "lane": "worker",
+                    "model": "qwen2.5-coder:7b-instruct",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "credential_refs": {},
+                    "timeout_seconds": "not-a-number",
+                },
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+
+            with _isolated_provider_env(amof_home):
+                with _cwd(repo):
+                    with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                        result = agent_cmd.cmd_agent(
+                            manifest,
+                            goal="Inspect this repo",
+                            plan_mode=True,
+                            no_follow_up=True,
+                            verbose=False,
+                        )
+
+        err = stderr.getvalue()
+        self.assertEqual(result, 1)
+        self.assertIn("timeout_seconds must be a positive number", err)
+        self.assertIn("provider=local", err)
+        self.assertIn("base_url=http://127.0.0.1:11434/v1", err)
+        self.assertIn("sdk_max_retries=0", err)
+
+    def test_local_openai_compatible_client_disables_sdk_retries(self) -> None:
+        from amof.orchestrator.llm.local_openai_compatible import LocalOpenAICompatibleClient
+
+        captured: dict[str, object] = {}
+
+        class _OpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        fake_openai_module = type("FakeOpenAI", (), {"OpenAI": _OpenAI})
+        with patch.dict(sys.modules, {"openai": fake_openai_module}):
+            client = LocalOpenAICompatibleClient(
+                base_url="http://127.0.0.1:11434/v1",
+                model="qwen2.5-coder:7b-instruct",
+                timeout=7.5,
+            )
+            client._get_client()
+
+        self.assertEqual(captured["timeout"], 7.5)
+        self.assertEqual(captured["max_retries"], 0)
+        self.assertEqual(captured["base_url"], "http://127.0.0.1:11434/v1")
+        self.assertEqual(captured["api_key"], "local")
 
     def test_active_local_profile_missing_base_url_fails_clearly(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-local-missing-base-url-") as td:
@@ -582,6 +702,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertTrue(created_openai_clients)
         self.assertEqual(created_openai_clients[0].kwargs["api_key"], "unit-test-provider-value")
         self.assertTrue(str(created_openai_clients[0].kwargs["model"]).startswith("openrouter/"))
+        self.assertNotIn("timeout", created_openai_clients[0].kwargs)
 
     def test_plan_execute_no_follow_up_is_noninteractive_for_clarifications(self) -> None:
         with patch("sys.stdin.isatty", return_value=True):

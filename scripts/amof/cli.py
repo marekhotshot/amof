@@ -413,6 +413,7 @@ def parse_args() -> argparse.Namespace:
     setup_provider.add_argument("--api-key-env", help="Environment variable name containing the API key")
     setup_provider.add_argument("--base-url", help="Concrete OpenAI-compatible base URL to record")
     setup_provider.add_argument("--base-url-env", help="Environment variable name containing the base URL")
+    setup_provider.add_argument("--timeout-seconds", type=float, help="Local provider request timeout in seconds")
     setup_provider.add_argument("--activate", action="store_true", help="Add this profile name to the current context")
     setup_provider.add_argument("--dry-run", action="store_true", help="Print target path and YAML without writing")
     setup_provider.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
