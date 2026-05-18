@@ -402,7 +402,7 @@ def parse_args() -> argparse.Namespace:
     setup_provider.add_argument(
         "provider_template",
         nargs="?",
-        choices=["openrouter", "local-qwen", "openai", "anthropic", "xai", "runpod"],
+        choices=["openrouter", "local-qwen", "openai", "anthropic", "bedrock", "xai", "runpod"],
         help="Provider template to use",
     )
     setup_provider.add_argument("--list", dest="list_templates", action="store_true", help="List provider templates")

@@ -32,6 +32,7 @@ AMOF_RUNTIME_DEPENDENCIES = {
     "botocore": "botocore",
     "openai": "openai",
     "pydantic": "pydantic",
+    "requests": "requests",
     "yaml": "PyYAML",
 }
 OPTIONAL_MEMORY_DEPENDENCIES = {"chromadb", "pysqlite3"}
@@ -245,7 +246,7 @@ def _runtime_dependency_guidance(missing: str | None = None) -> str:
         "  Update or reinstall AMOF:\n"
         "    amof update\n"
         "  or:\n"
-        "    pipx install --force git+https://github.com/marekhotshot/amof.git@v2.2.0\n"
+        "    pipx install --force git+https://github.com/marekhotshot/amof.git\n"
     )
 
 

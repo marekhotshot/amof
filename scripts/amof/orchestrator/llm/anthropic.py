@@ -56,6 +56,20 @@ THINKING_MODELS = {
 DEFAULT_THINKING_BUDGET = 16_000
 
 
+def _resolve_ca_bundle() -> Optional[str]:
+    ca_bundle = (
+        os.environ.get("SSL_CERT_FILE")
+        or os.environ.get("REQUESTS_CA_BUNDLE")
+        or os.environ.get("AWS_CA_BUNDLE")
+    )
+    if ca_bundle:
+        return ca_bundle
+    for ca_path in ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"]:
+        if os.path.exists(ca_path):
+            return ca_path
+    return None
+
+
 class AnthropicClient(LLMClient):
     """Anthropic Claude API client.
 
@@ -101,14 +115,7 @@ class AnthropicClient(LLMClient):
 
             # Auto-detect system CA bundle for corporate proxy environments (Zscaler, etc.)
             import httpx
-            ca_bundle = os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
-            if not ca_bundle:
-                # Check common system CA locations
-                for ca_path in ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"]:
-                    if os.path.exists(ca_path):
-                        ca_bundle = ca_path
-                        break
-
+            ca_bundle = _resolve_ca_bundle()
             if ca_bundle:
                 http_client = httpx.Client(verify=ca_bundle)
                 self._client = anthropic.Anthropic(api_key=self._api_key, http_client=http_client)

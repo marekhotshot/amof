@@ -110,8 +110,12 @@ def _write_ecosystem_resolution_failure() -> None:
     sys.stderr.write("Error: no ecosystem resolved for this AMOF command.\n")
     git_root = _current_git_root()
     if git_root is not None:
+        ecosystem_name = git_root.name
         sys.stderr.write(f"Detected git root: {git_root}\n")
-        sys.stderr.write("Run: amof init --adopt .\n")
+        sys.stderr.write(f"Run: amof init --adopt . --name {ecosystem_name}\n")
+        sys.stderr.write(
+            f'Then: amof agent -e {ecosystem_name} --plan "Inspect this repo" --no-follow-up\n'
+        )
     else:
         sys.stderr.write("Run from a git checkout and then: amof init --adopt .\n")
     sys.stderr.write("Usage: amof -e <ecosystem> <command>\n\n")

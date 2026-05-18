@@ -14,7 +14,7 @@ from ..app_config import activate_provider_profile_ref, get_current_context_name
 from ..app_paths import ensure_parent_dir, provider_profiles_dir
 
 
-PROVIDER_TEMPLATE_ORDER = ("openrouter", "local-qwen", "openai", "anthropic", "xai", "runpod")
+PROVIDER_TEMPLATE_ORDER = ("openrouter", "local-qwen", "openai", "anthropic", "bedrock", "xai", "runpod")
 
 PROVIDER_TEMPLATES: dict[str, dict[str, Any]] = {
     "openrouter": {
@@ -86,6 +86,23 @@ PROVIDER_TEMPLATES: dict[str, dict[str, Any]] = {
         "notes": [
             "Stores the ANTHROPIC_API_KEY environment variable name only.",
             "Anthropic remains the default provider when no agent provider is configured.",
+        ],
+    },
+    "bedrock": {
+        "name": "bedrock-default",
+        "provider": "bedrock",
+        "lane": "planner",
+        "model_family": "anthropic-bedrock",
+        "model_env": "AMOF_BEDROCK_STANDARD_MODEL_ID",
+        "default_model": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "credential_refs": {},
+        "redaction_policy": {"record_secret_names_only": True},
+        "allow_direct_git_write": False,
+        "status": "setup_profile_only",
+        "notes": [
+            "Stores environment variable names only; Bedrock credentials stay in AWS_PROFILE/AWS_REGION or AMOF_BEDROCK_REGION.",
+            "Corporate TLS environments may need SSL_CERT_FILE or REQUESTS_CA_BUNDLE plus AWS_CA_BUNDLE.",
+            "Current CLI execution also accepts --provider bedrock and does not call AWS during setup.",
         ],
     },
     "xai": {
@@ -229,7 +246,9 @@ def cmd_setup(args: Any) -> int:
 
     provider_name = str(getattr(args, "provider_template", "") or "").strip()
     if not provider_name:
-        sys.stderr.write("Usage: amof setup provider <openrouter|local-qwen|openai|anthropic|xai|runpod> [options]\n")
+        sys.stderr.write(
+            "Usage: amof setup provider <openrouter|local-qwen|openai|anthropic|bedrock|xai|runpod> [options]\n"
+        )
         return 1
 
     try:

@@ -24,6 +24,7 @@ _HELP: Dict[str, str] = {
   Public use:
     amof setup provider --list
     amof setup provider openrouter --name openrouter-default --activate
+    amof setup provider bedrock --name bedrock-default --activate --yes
     amof setup provider openrouter --name openrouter-default --activate --yes
 
   Provider setup stores environment variable references only. It does not store
