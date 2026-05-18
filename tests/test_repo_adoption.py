@@ -89,6 +89,7 @@ class RepoAdoptionTests(unittest.TestCase):
         self.assertIn("no ecosystem resolved", result.stderr)
         self.assertIn(f"Detected git root: {repo}", result.stderr)
         self.assertIn("Run: amof init --adopt .", result.stderr)
+        self.assertIn("Then: amof agent -e demo-repo --plan \"Inspect this repo\" --no-follow-up", result.stderr)
         self.assertNotIn("Error: --ecosystem/-e is required", result.stderr)
 
     def test_init_adopt_creates_appdata_binding_and_manifest(self) -> None:
@@ -158,6 +159,34 @@ class RepoAdoptionTests(unittest.TestCase):
         self.assertIn("[agent] OPENROUTER_API_KEY not set.", result.stderr)
         self.assertNotIn("ANTHROPIC_API_KEY", result.stderr)
         self.assertNotIn("--ecosystem/-e is required", result.stderr)
+
+    def test_active_bedrock_profile_drives_agent_default_provider_without_unrelated_credentials(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-adopt-provider-bedrock-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / ".amof-home"
+            _init_git_repo(repo)
+            init_result = _run_amof(repo, amof_home, "init", "--adopt", ".")
+            self.assertEqual(init_result.returncode, 0, init_result.stderr)
+            setup_result = _run_amof(
+                repo,
+                amof_home,
+                "setup",
+                "provider",
+                "bedrock",
+                "--name",
+                "bedrock-default",
+                "--activate",
+                "--yes",
+            )
+            self.assertEqual(setup_result.returncode, 0, setup_result.stderr)
+
+            result = _run_amof(repo, amof_home, "agent", "--plan", "Inspect", "--no-follow-up")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("[agent] AWS_REGION not set for Bedrock.", result.stderr)
+        self.assertNotIn("OPENROUTER_API_KEY", result.stderr)
+        self.assertNotIn("RUNPOD_API_KEY", result.stderr)
 
     def test_explicit_provider_overrides_active_provider_profile(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-adopt-provider-override-") as td:

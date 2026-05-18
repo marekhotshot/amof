@@ -14,7 +14,7 @@ from ..app_config import activate_provider_profile_ref, get_current_context_name
 from ..app_paths import ensure_parent_dir, provider_profiles_dir
 
 
-PROVIDER_TEMPLATE_ORDER = ("openrouter", "local-qwen", "openai", "anthropic", "xai", "runpod")
+PROVIDER_TEMPLATE_ORDER = ("openrouter", "local-qwen", "openai", "anthropic", "bedrock", "xai", "runpod")
 
 PROVIDER_TEMPLATES: dict[str, dict[str, Any]] = {
     "openrouter": {
@@ -46,12 +46,14 @@ PROVIDER_TEMPLATES: dict[str, dict[str, Any]] = {
         "credential_refs": {},
         "base_url_env": "AMOF_LOCAL_OPENAI_BASE_URL",
         "default_base_url": "http://localhost:11434/v1",
+        "timeout_seconds": 60.0,
         "redaction_policy": {"record_secret_names_only": True},
         "allow_direct_git_write": False,
         "status": "template_only_until_runner_profile_is_configured",
         "notes": [
             "No API key is required by default for local Ollama-compatible endpoints.",
             "Start the local OpenAI-compatible server before using this profile for live inference.",
+            "Local SDK retries are disabled; tune timeout_seconds for slower local generations.",
         ],
     },
     "openai": {
@@ -84,6 +86,23 @@ PROVIDER_TEMPLATES: dict[str, dict[str, Any]] = {
         "notes": [
             "Stores the ANTHROPIC_API_KEY environment variable name only.",
             "Anthropic remains the default provider when no agent provider is configured.",
+        ],
+    },
+    "bedrock": {
+        "name": "bedrock-default",
+        "provider": "bedrock",
+        "lane": "planner",
+        "model_family": "anthropic-bedrock",
+        "model_env": "AMOF_BEDROCK_STANDARD_MODEL_ID",
+        "default_model": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "credential_refs": {},
+        "redaction_policy": {"record_secret_names_only": True},
+        "allow_direct_git_write": False,
+        "status": "setup_profile_only",
+        "notes": [
+            "Stores environment variable names only; Bedrock credentials stay in AWS_PROFILE/AWS_REGION or AMOF_BEDROCK_REGION.",
+            "Corporate TLS environments may need SSL_CERT_FILE or REQUESTS_CA_BUNDLE plus AWS_CA_BUNDLE.",
+            "Current CLI execution also accepts --provider bedrock and does not call AWS during setup.",
         ],
     },
     "xai": {
@@ -159,6 +178,16 @@ def _validate_env_var_name(value: str, *, flag_name: str) -> str:
     return normalized
 
 
+def _validate_timeout_seconds(value: Any, *, flag_name: str) -> float:
+    try:
+        timeout_seconds = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{flag_name} expects a positive number of seconds") from None
+    if timeout_seconds <= 0:
+        raise ValueError(f"{flag_name} expects a positive number of seconds")
+    return timeout_seconds
+
+
 def _profile_target_path(profile_name: str) -> Path:
     return provider_profiles_dir() / f"{profile_name}.yaml"
 
@@ -185,6 +214,8 @@ def _apply_overrides(template: dict[str, Any], args: Any) -> dict[str, Any]:
         profile["base_url"] = str(args.base_url).strip()
     if getattr(args, "base_url_env", None):
         credential_refs["base_url_env"] = _validate_env_var_name(args.base_url_env, flag_name="--base-url-env")
+    if getattr(args, "timeout_seconds", None) is not None:
+        profile["timeout_seconds"] = _validate_timeout_seconds(args.timeout_seconds, flag_name="--timeout-seconds")
     return profile
 
 
@@ -215,7 +246,9 @@ def cmd_setup(args: Any) -> int:
 
     provider_name = str(getattr(args, "provider_template", "") or "").strip()
     if not provider_name:
-        sys.stderr.write("Usage: amof setup provider <openrouter|local-qwen|openai|anthropic|xai|runpod> [options]\n")
+        sys.stderr.write(
+            "Usage: amof setup provider <openrouter|local-qwen|openai|anthropic|bedrock|xai|runpod> [options]\n"
+        )
         return 1
 
     try:

@@ -37,7 +37,7 @@ from .llm.base import LLMClient, LLMResponse
 logger = logging.getLogger(__name__)
 
 # Tools that indicate an "exploration" phase (cheap model is fine)
-EXPLORATION_TOOLS = {"LS", "Read", "Glob", "Grep"}
+EXPLORATION_TOOLS = {"LS", "Read", "InspectFiles", "Glob", "Grep"}
 
 # Maximum consecutive failures before promoting to next tier
 MAX_FAILURES_BEFORE_PROMOTE = 2

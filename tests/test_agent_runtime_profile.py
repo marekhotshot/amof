@@ -20,9 +20,11 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from amof.commands import agent_cmd
+from amof.orchestrator.events import EventLog
 from amof.orchestrator.llm.base import ProviderError
 from amof.orchestrator.planner import TaskPlanner
 from amof.orchestrator.runners import PUBLIC_DEFAULT_RUNNERS_CONFIG, RunnerFactory
+from amof.orchestrator.telemetry import SessionTelemetry
 from amof.orchestrator.trust_boundary import create_trust_state
 from amof.orchestrator.tools.base import GuardrailConfig, Guardrails, ToolCall, create_default_registry
 
@@ -99,6 +101,7 @@ def _isolated_provider_env(amof_home: Path, extra_env: dict[str, str] | None = N
         "AMOF_BEDROCK_REGION",
         "AMOF_LOCAL_QWEN_MODEL",
         "AMOF_LOCAL_MODEL",
+        "AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS",
         "AMOF_PLANNER_MODEL",
     }
     sentinel = object()
@@ -174,6 +177,78 @@ class _FakeMutatingAgent(_FakeAgent):
         )
         self.telemetry.record_tool_call("Write", True, 1)
         return "changed app.py"
+
+
+class _FakeInspectOnlyMutationAgent(_FakeAgent):
+    stop_reason = "completed"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.telemetry = kwargs.get("telemetry")
+
+    def run(self, goal: str) -> str:
+        self.telemetry.record_tool_call(
+            "InspectFiles",
+            True,
+            1,
+            metadata={"inspected_files": ["app.py", "tests/test_app.py"]},
+        )
+        return "def farewell(name: str) -> str:\n    return f'Goodbye, {name}.'"
+
+
+class _FakeInvalidPythonEditAgent(_FakeAgent):
+    stop_reason = "completed"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.telemetry = kwargs.get("telemetry")
+
+    def run(self, goal: str) -> str:
+        app = Path.cwd() / "app.py"
+        app.write_text(
+            app.read_text(encoding="utf-8")
+            + "defarewell(name: str) -> str:\n    return f'Goodbye, {name}.'\n",
+            encoding="utf-8",
+        )
+        self.telemetry.record_tool_call("InsertAfter", True, 1)
+        return "changed app.py"
+
+
+class _FakeUnsafeStrReplaceAgent(_FakeAgent):
+    stop_reason = "completed"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.telemetry = kwargs.get("telemetry")
+
+    def run(self, goal: str) -> str:
+        result = self.tools.execute(
+            ToolCall(
+                id="unsafe",
+                name="StrReplace",
+                arguments={
+                    "path": "README.md",
+                    "old_string": "",
+                    "new_string": "bad",
+                },
+            )
+        )
+        self.telemetry.record_tool_call("StrReplace", result.success, 1)
+        return result.to_text()
+
+
+class _FakeProviderNetworkAgent(_FakeAgent):
+    stop_reason = "provider_network"
+
+    def run(self, goal: str) -> str:
+        return "local provider error (network): request timed out"
+
+
+class _FakeFailedSubtaskAgent(_FakeAgent):
+    stop_reason = "max_iterations"
+
+    def run(self, goal: str) -> str:
+        return "worker failed before completing the subtask"
 
 
 class _FakeInteractiveAgent:
@@ -388,6 +463,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                     "model": "qwen2.5-coder:7b-instruct",
                     "base_url": "http://127.0.0.1:11434/v1",
                     "credential_refs": {},
+                    "timeout_seconds": 45,
                 },
             )
             manifest = {
@@ -403,7 +479,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 return client
 
             _FakeAgent.instances.clear()
-            with _isolated_provider_env(amof_home):
+            with _isolated_provider_env(amof_home, {"AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS": "12.5"}):
                 with _cwd(repo):
                     with patch("amof.orchestrator.agent.Agent", _FakeAgent):
                         import amof.orchestrator.memory as memory
@@ -440,6 +516,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertEqual(created_clients[0].kwargs["base_url"], "http://127.0.0.1:11434/v1")
         self.assertEqual(created_clients[0].kwargs["model"], "qwen2.5-coder:7b-instruct")
         self.assertIsNone(created_clients[0].kwargs["api_key"])
+        self.assertEqual(created_clients[0].kwargs["timeout"], 45.0)
         self.assertTrue(_FakeAgent.instances)
         self.assertIs(_FakeAgent.instances[-1].llm, created_clients[0])
         self.assertIn("local/test/qwen2.5-coder:7b-instruct", stdout.getvalue())
@@ -451,6 +528,123 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertNotIn("OPENAI_API_KEY", stderr.getvalue())
         self.assertNotIn("OPENROUTER_API_KEY", stderr.getvalue())
         self.assertNotIn("api_key", appdata_text)
+
+    def test_active_local_profile_honors_env_timeout_when_profile_omits_timeout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-local-timeout-env-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            _write_active_provider_profile(
+                amof_home,
+                "local-qwen-default",
+                {
+                    "provider": "local",
+                    "lane": "worker",
+                    "model": "qwen2.5-coder:7b-instruct",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "credential_refs": {},
+                },
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            created_clients: list[_FakeLocalLLM] = []
+
+            def _fake_local_client(**kwargs):
+                client = _FakeLocalLLM(**kwargs)
+                created_clients.append(client)
+                return client
+
+            with _isolated_provider_env(amof_home, {"AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS": "12.5"}):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.agent.Agent", _FakeAgent):
+                        import amof.orchestrator.memory as memory
+
+                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
+                            with patch(
+                                "amof.orchestrator.llm.local_openai_compatible.LocalOpenAICompatibleClient",
+                                side_effect=_fake_local_client,
+                            ):
+                                with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                                    result = agent_cmd.cmd_agent(
+                                        manifest,
+                                        goal="Inspect this repo",
+                                        plan_mode=True,
+                                        no_follow_up=True,
+                                        verbose=False,
+                                    )
+
+        self.assertEqual(result, 0, stderr.getvalue())
+        self.assertTrue(created_clients)
+        self.assertEqual(created_clients[0].kwargs["timeout"], 12.5)
+
+    def test_active_local_profile_invalid_timeout_fails_clearly(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-local-timeout-invalid-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            _write_active_provider_profile(
+                amof_home,
+                "local-qwen-default",
+                {
+                    "provider": "local",
+                    "lane": "worker",
+                    "model": "qwen2.5-coder:7b-instruct",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "credential_refs": {},
+                    "timeout_seconds": "not-a-number",
+                },
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+
+            with _isolated_provider_env(amof_home):
+                with _cwd(repo):
+                    with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                        result = agent_cmd.cmd_agent(
+                            manifest,
+                            goal="Inspect this repo",
+                            plan_mode=True,
+                            no_follow_up=True,
+                            verbose=False,
+                        )
+
+        err = stderr.getvalue()
+        self.assertEqual(result, 1)
+        self.assertIn("timeout_seconds must be a positive number", err)
+        self.assertIn("provider=local", err)
+        self.assertIn("base_url=http://127.0.0.1:11434/v1", err)
+        self.assertIn("sdk_max_retries=0", err)
+
+    def test_local_openai_compatible_client_disables_sdk_retries(self) -> None:
+        from amof.orchestrator.llm.local_openai_compatible import LocalOpenAICompatibleClient
+
+        captured: dict[str, object] = {}
+
+        class _OpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        fake_openai_module = type("FakeOpenAI", (), {"OpenAI": _OpenAI})
+        with patch.dict(sys.modules, {"openai": fake_openai_module}):
+            client = LocalOpenAICompatibleClient(
+                base_url="http://127.0.0.1:11434/v1",
+                model="qwen2.5-coder:7b-instruct",
+                timeout=7.5,
+            )
+            client._get_client()
+
+        self.assertEqual(captured["timeout"], 7.5)
+        self.assertEqual(captured["max_retries"], 0)
+        self.assertEqual(captured["base_url"], "http://127.0.0.1:11434/v1")
+        self.assertEqual(captured["api_key"], "local")
 
     def test_active_local_profile_missing_base_url_fails_clearly(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-local-missing-base-url-") as td:
@@ -582,6 +776,7 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertTrue(created_openai_clients)
         self.assertEqual(created_openai_clients[0].kwargs["api_key"], "unit-test-provider-value")
         self.assertTrue(str(created_openai_clients[0].kwargs["model"]).startswith("openrouter/"))
+        self.assertNotIn("timeout", created_openai_clients[0].kwargs)
 
     def test_plan_execute_no_follow_up_is_noninteractive_for_clarifications(self) -> None:
         with patch("sys.stdin.isatty", return_value=True):
@@ -676,6 +871,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             )
 
             with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
                 result = registry.execute(
                     ToolCall(
                         id="1",
@@ -705,6 +903,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             )
 
             with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
                 result = registry.execute(
                     ToolCall(
                         id="1",
@@ -714,8 +915,539 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 )
             contents = (repo / "README.md").read_text(encoding="utf-8")
 
+        self.assertTrue(read_result.success, read_result.error)
         self.assertTrue(result.success, result.error)
         self.assertEqual(contents, "old\nnew\n")
+
+    def test_str_replace_requires_prior_read_evidence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-read-first-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("old\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={"path": "README.md", "old_string": "old\n", "new_string": "old\nnew\n"},
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_old_requires_read", result.error or "")
+        self.assertEqual(contents, "old\n")
+
+    def test_str_replace_old_string_must_be_observed_in_prior_read(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-observed-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("old\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={
+                            "path": "README.md",
+                            "old_string": "# Add your code here",
+                            "new_string": "old\nnew\n",
+                        },
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertTrue(read_result.success, read_result.error)
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_old_not_observed", result.error or "")
+        self.assertEqual(contents, "old\n")
+
+    def test_insert_after_uses_read_observed_anchor_for_small_insert(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-insert-after-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "app.py"
+            target.write_text("def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add farewell to app.py"),
+            )
+
+            with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "app.py"})
+                )
+                result = registry.execute(
+                    ToolCall(
+                        id="insert",
+                        name="InsertAfter",
+                        arguments={
+                            "path": "app.py",
+                            "anchor_string": "    return f'Hello, {name}!'",
+                            "content_to_insert": "\n\n\ndef farewell(name: str) -> str:\n    return f'Goodbye, {name}.'",
+                        },
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertTrue(read_result.success, read_result.error)
+        self.assertTrue(result.success, result.error)
+        self.assertIn("def farewell", contents)
+        self.assertIn("def greet", contents)
+
+    def test_insert_after_rejects_unobserved_anchor_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-insert-after-unobserved-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "app.py"
+            target.write_text("def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add farewell to app.py"),
+            )
+
+            with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "app.py"})
+                )
+                result = registry.execute(
+                    ToolCall(
+                        id="insert",
+                        name="InsertAfter",
+                        arguments={
+                            "path": "app.py",
+                            "anchor_string": "# Add your code here",
+                            "content_to_insert": "\n\n\ndef farewell(name: str) -> str:\n    return f'Goodbye, {name}.'",
+                        },
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertTrue(read_result.success, read_result.error)
+        self.assertFalse(result.success)
+        self.assertIn("invalid_insertafter_anchor_not_observed", result.error or "")
+        self.assertEqual(contents, "def greet(name):\n    return f'Hello, {name}!'\n")
+
+    def test_inspect_files_batches_read_evidence_for_safe_edits(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-inspect-files-evidence-") as td:
+            repo = Path(td) / "repo"
+            tests_dir = repo / "tests"
+            tests_dir.mkdir(parents=True)
+            app = repo / "app.py"
+            test_app = tests_dir / "test_app.py"
+            app.write_text("def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            test_app.write_text(
+                "from app import greet\n\n\ndef test_greet():\n    assert greet('Ada') == 'Hello, Ada!'\n",
+                encoding="utf-8",
+            )
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add farewell to app.py"),
+            )
+
+            with _cwd(repo):
+                inspect_result = registry.execute(
+                    ToolCall(
+                        id="inspect",
+                        name="InspectFiles",
+                        arguments={"paths": ["app.py", "tests/test_app.py"]},
+                    )
+                )
+                modified_after_inspect = set(registry.modified_files)
+                edit_result = registry.execute(
+                    ToolCall(
+                        id="insert",
+                        name="InsertAfter",
+                        arguments={
+                            "path": "app.py",
+                            "anchor_string": "    return f'Hello, {name}!'",
+                            "content_to_insert": "\n\n\ndef farewell(name: str) -> str:\n    return f'Goodbye, {name}.'",
+                        },
+                    )
+                )
+            app_contents = app.read_text(encoding="utf-8")
+            test_contents = test_app.read_text(encoding="utf-8")
+
+        self.assertTrue(inspect_result.success, inspect_result.error)
+        self.assertEqual(modified_after_inspect, set())
+        self.assertIn("app.py", inspect_result.output)
+        self.assertIn("tests/test_app.py", inspect_result.output)
+        self.assertTrue(edit_result.success, edit_result.error)
+        self.assertIn("def farewell", app_contents)
+        self.assertIn("test_greet", test_contents)
+
+    def test_inspect_files_read_only_keeps_target_repo_clean(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-inspect-files-clean-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            (repo / "app.py").write_text("def greet():\n    return 'hello'\n", encoding="utf-8")
+            (repo / "tests").mkdir()
+            (repo / "tests" / "test_app.py").write_text("def test_greet():\n    assert True\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Inspect app and tests"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="inspect",
+                        name="InspectFiles",
+                        arguments={"paths": ["app.py", "tests/test_app.py"]},
+                    )
+                )
+            status = subprocess.run(["git", "status", "--short"], cwd=repo, check=True, capture_output=True, text=True)
+
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(status.stdout, "")
+        self.assertEqual(registry.modified_files, set())
+
+    def test_inspect_files_records_tool_count_and_inspected_files(self) -> None:
+        telemetry = SessionTelemetry()
+        metadata = {"inspected_files": ["app.py", "tests/test_app.py"], "inspected_file_count": 2}
+        telemetry.record_tool_call("InspectFiles", True, 12, metadata=metadata)
+
+        with tempfile.TemporaryDirectory(prefix="amof-inspect-files-events-") as td:
+            events = EventLog(session_id="test-inspect-files", runs_dir=Path(td))
+            event = events.tool_call(
+                tool_name="InspectFiles",
+                arguments={"paths": ["app.py", "tests/test_app.py"]},
+                success=True,
+                duration_ms=12,
+                output_preview="inspected 2 files",
+                metadata=metadata,
+            )
+
+        summary = telemetry.to_dict()
+        self.assertEqual(summary["tools"]["InspectFiles"]["calls"], 1)
+        self.assertEqual(summary["inspected_files"]["files"], ["app.py", "tests/test_app.py"])
+        self.assertEqual(event["metadata"]["inspected_files"], ["app.py", "tests/test_app.py"])
+
+    def test_runner_telemetry_rollup_preserves_inspected_files(self) -> None:
+        parent = SessionTelemetry()
+        child = SessionTelemetry()
+        child.record_tool_call(
+            "InspectFiles",
+            True,
+            5,
+            metadata={"inspected_files": ["app.py", "tests/test_app.py"]},
+        )
+
+        RunnerFactory._rollup_telemetry(parent, child, "code")
+        summary = parent.to_dict()
+
+        self.assertEqual(summary["tools"]["runner:code:InspectFiles"]["calls"], 1)
+        self.assertEqual(summary["inspected_files"]["files"], ["app.py", "tests/test_app.py"])
+
+    def test_tool_proposal_read_only_executes_from_appdata_with_evidence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-tool-proposal-safe-") as td:
+            root = Path(td)
+            repo = root / "repo"
+            _init_git_repo(repo)
+            target = repo / "app.py"
+            target.write_text("def greet():\n    return 'hello'\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            amof_home = root / "amof-home"
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Inspect files using a safe proposal"),
+            )
+
+            with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}):
+                with _cwd(repo):
+                    result = registry.execute(
+                        ToolCall(
+                            id="proposal",
+                            name="ToolProposal",
+                            arguments={
+                                "purpose": "Count lines in app.py",
+                                "mutation_intent": False,
+                                "allowed_paths": ["app.py"],
+                                "allow_network": False,
+                                "timeout_seconds": 5,
+                                "inputs": ["app.py"],
+                                "outputs": ["stdout line count"],
+                                "rollback": "No rollback needed for read-only inspection.",
+                                "script": "python3 - <<'PY'\nfrom pathlib import Path\nprint(len(Path('app.py').read_text().splitlines()))\nPY\n",
+                            },
+                        )
+                    )
+                status = subprocess.run(["git", "status", "--short"], cwd=repo, check=True, capture_output=True, text=True)
+                script_path = Path(result.metadata["script_path"])
+                script_exists = script_path.is_file()
+                script_in_appdata = str(script_path).startswith(str(amof_home))
+
+            self.assertTrue(result.success, result.error)
+            self.assertIn("rc=0", result.output)
+            self.assertIn("stdout:", result.output)
+            self.assertEqual(status.stdout, "")
+            self.assertEqual(result.metadata["rc"], 0)
+            self.assertIn("script_hash", result.metadata)
+            self.assertTrue(script_exists)
+            self.assertTrue(script_in_appdata)
+
+    def test_tool_proposal_rejects_unsafe_commands_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-tool-proposal-unsafe-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            amof_home = Path(td) / "amof-home"
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Inspect files using a safe proposal"),
+            )
+
+            with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}):
+                with _cwd(repo):
+                    result = registry.execute(
+                        ToolCall(
+                            id="proposal",
+                            name="ToolProposal",
+                            arguments={
+                                "purpose": "Publish changes",
+                                "mutation_intent": False,
+                                "allowed_paths": ["."],
+                                "allow_network": False,
+                                "timeout_seconds": 5,
+                                "inputs": [],
+                                "outputs": [],
+                                "rollback": "None",
+                                "script": "git commit -am nope\ngit push origin HEAD\n",
+                            },
+                        )
+                    )
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid_tool_proposal_static_gate", result.error or "")
+        self.assertFalse((amof_home / "share" / "evidence" / "tool-proposals").exists())
+
+    def test_public_default_runner_exposes_tool_proposal_not_shell(self) -> None:
+        tools = PUBLIC_DEFAULT_RUNNERS_CONFIG["runners"]["code"]["tools"]
+        self.assertIn("ToolProposal", tools)
+        self.assertNotIn("Shell", tools)
+
+    def test_str_replace_empty_old_string_fails_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-empty-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("abc\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={"path": "README.md", "old_string": "", "new_string": "X"},
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_old_empty", result.error or "")
+        self.assertEqual(contents, "abc\n")
+
+    def test_str_replace_whitespace_old_string_fails_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-whitespace-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("abc\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={"path": "README.md", "old_string": " \n\t", "new_string": "X"},
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_old_whitespace", result.error or "")
+        self.assertEqual(contents, "abc\n")
+
+    def test_str_replace_not_found_fails_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-not-found-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("abc\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={"path": "README.md", "old_string": "missing", "new_string": "X"},
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertTrue(read_result.success, read_result.error)
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_old_not_observed", result.error or "")
+        self.assertEqual(contents, "abc\n")
+
+    def test_str_replace_multiple_matches_fails_without_replace_all(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-multiple-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("same\nsame\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={"path": "README.md", "old_string": "same", "new_string": "other"},
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertTrue(read_result.success, read_result.error)
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_old_multiple", result.error or "")
+        self.assertEqual(contents, "same\nsame\n")
+
+    def test_str_replace_replace_all_is_bounded_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-all-bound-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("x\n" * 25, encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Update README.md"),
+            )
+
+            with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={
+                            "path": "README.md",
+                            "old_string": "x",
+                            "new_string": "y",
+                            "replace_all": True,
+                        },
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertTrue(read_result.success, read_result.error)
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace_replace_all_too_many", result.error or "")
+        self.assertEqual(contents, "x\n" * 25)
+
+    def test_str_replace_replacement_growth_fails_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-str-replace-growth-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            target = repo / "README.md"
+            target.write_text("needle\n", encoding="utf-8")
+            registry = create_default_registry(
+                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Add a section to README.md"),
+            )
+
+            with _cwd(repo):
+                read_result = registry.execute(
+                    ToolCall(id="read", name="Read", arguments={"path": "README.md"})
+                )
+                result = registry.execute(
+                    ToolCall(
+                        id="1",
+                        name="StrReplace",
+                        arguments={
+                            "path": "README.md",
+                            "old_string": "needle",
+                            "new_string": "needle\n" + ("expanded\n" * 200),
+                        },
+                    )
+                )
+            contents = target.read_text(encoding="utf-8")
+
+        self.assertTrue(read_result.success, read_result.error)
+        self.assertFalse(result.success)
+        self.assertIn("invalid_strreplace", result.error or "")
+        self.assertEqual(contents, "needle\n")
 
     def test_write_outside_adopted_repo_remains_blocked(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-write-outside-") as td:
@@ -861,6 +1593,77 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertFalse(guard["requested_paths_observed"])
         self.assertTrue(any(reason.startswith("requested_paths_mismatch") for reason in guard["reasons"]))
 
+    def test_diff_guard_rejects_missing_requested_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-diff-missing-requested-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            (repo / "app.py").write_text("print('old')\n", encoding="utf-8")
+            (repo / "tests").mkdir()
+            (repo / "tests" / "test_app.py").write_text("print('old test')\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "app.py", "tests/test_app.py"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test: add app files"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
+            (repo / "app.py").write_text("print('changed')\n", encoding="utf-8")
+
+            guard = agent_cmd._evaluate_diff_guard(
+                "Add farewell(name) to app.py and a matching unittest in tests/test_app.py.",
+                repo,
+                agent_cmd._git_probe(repo),
+            )
+
+        self.assertEqual(guard["status"], "fail")
+        self.assertFalse(guard["requested_paths_observed"])
+        self.assertTrue(
+            any(reason.startswith("requested_paths_missing:tests/test_app.py") for reason in guard["reasons"])
+        )
+
+    def test_diff_guard_rejects_explosive_existing_file_growth(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-diff-explosive-growth-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            app = repo / "app.py"
+            app.write_text("def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["git", "commit", "-m", "test: add app"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
+            app.write_text(
+                "def greet(name):\n    return f'Hello, {name}!'\n"
+                + "\n".join(
+                    "def farewell(name):\n    return f'Goodbye, {name}!'" for _ in range(300)
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            guard = agent_cmd._evaluate_diff_guard(
+                "Add a small pure function farewell(name) to app.py. Keep the change minimal.",
+                repo,
+                agent_cmd._git_probe(repo),
+            )
+
+        self.assertEqual(guard["status"], "fail")
+        self.assertTrue(guard["destructive_rewrite_detected"])
+        self.assertTrue(any(reason.startswith("file_growth:app.py") for reason in guard["reasons"]))
+        self.assertTrue(any(reason.startswith("large_addition:app.py") for reason in guard["reasons"]))
+
     def test_pycache_untracked_noise_does_not_count_as_target_diff(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-diff-pycache-") as td:
             repo = Path(td) / "repo"
@@ -902,6 +1705,34 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertEqual(result.stop_reason, "tool_failed")
         self.assertEqual(result.failed_tool_calls, 1)
         self.assertEqual(result.failed_write_tool_calls, 1)
+
+    def test_runner_failed_strreplace_records_failed_tool_call_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-failed-strreplace-") as td:
+            repo = Path(td) / "repo"
+            _init_git_repo(repo)
+            readme = repo / "README.md"
+            before = readme.read_text(encoding="utf-8")
+            guardrails = Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo])
+            parent_tools = create_default_registry(guardrails=guardrails, role="worker", workspace_root=repo)
+            factory = RunnerFactory.from_config(
+                config_path=Path(td) / "missing-runners.yaml",
+                model_clients={"standard": object()},
+                parent_tools=parent_tools,
+                guardrails=guardrails,
+                workspace_root=repo,
+                default_config=PUBLIC_DEFAULT_RUNNERS_CONFIG,
+            )
+            with _cwd(repo):
+                with patch("amof.orchestrator.runners.Agent", _FakeUnsafeStrReplaceAgent):
+                    result = factory.run_runner("code", "Attempt unsafe StrReplace")
+            after = readme.read_text(encoding="utf-8")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.stop_reason, "tool_failed")
+        self.assertEqual(result.failed_tool_calls, 1)
+        self.assertEqual(result.failed_write_tool_calls, 1)
+        self.assertIn("invalid_strreplace_old_empty", result.response)
+        self.assertEqual(after, before)
 
     def test_adopted_plan_execute_uses_packaged_runner_defaults(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-runner-default-") as td:
@@ -1041,6 +1872,375 @@ Add a function.
         self.assertEqual(git_status.stdout.strip(), "")
         self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
         self.assertIn("target_has_diff=false", stdout.getvalue())
+
+    def test_mutation_intent_inspect_only_worker_fails_write_action_contract(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-prose-only-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Add a function.
+
+---
+
+## Tasks
+
+- [ ] 1. **Add farewell function** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeInspectOnlyMutationAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Add a farewell function",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+            git_status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertEqual(git_status.stdout.strip(), "")
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+        self.assertIn("write_action_observed=false", stdout.getvalue())
+        self.assertIn("mutation-intent plan did not call a write-class tool", stdout.getvalue())
+
+    def test_plan_execute_provider_network_failure_returns_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-provider-network-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Inspect the repo.
+
+---
+
+## Tasks
+
+- [ ] 1. **Inspect files** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeProviderNetworkAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Inspect this repo",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+
+    def test_plan_execute_unsafe_strreplace_returns_nonzero_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-unsafe-strreplace-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            before = (repo / "README.md").read_text(encoding="utf-8")
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Attempt one unsafe replacement.
+
+---
+
+## Tasks
+
+- [ ] 1. **Attempt unsafe replacement** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeUnsafeStrReplaceAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Add a section to README.md",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+            after = (repo / "README.md").read_text(encoding="utf-8")
+            git_status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertEqual(after, before)
+        self.assertEqual(git_status.stdout.strip(), "")
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+        self.assertIn("failed_tool_calls=1", stdout.getvalue())
+
+    def test_plan_execute_failed_subtask_returns_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-failed-subtask-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Run one worker subtask.
+
+---
+
+## Tasks
+
+- [ ] 1. **Run worker** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeFailedSubtaskAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Run one worker subtask",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+
+    def test_plan_execute_diff_guard_failure_returns_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-diff-guard-fail-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            (repo / "app.py").write_text("def greet(name):\n    return f'Hello, {name}'\n", encoding="utf-8")
+            (repo / "tests").mkdir()
+            (repo / "tests" / "test_app.py").write_text("def test_greet():\n    assert True\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py", "tests/test_app.py"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add app files"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Add code and test.
+
+---
+
+## Tasks
+
+- [ ] 1. **Add farewell function and test** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeMutatingAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Add farewell(name) to app.py and a matching unittest in tests/test_app.py.",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+        self.assertIn("diff_guard_status=fail", stdout.getvalue())
+        self.assertIn("requested_paths_missing:tests/test_app.py", stdout.getvalue())
+
+    def test_plan_execute_invalid_python_edit_returns_nonzero_with_compile_evidence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-invalid-python-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            (repo / "app.py").write_text("def greet(name: str) -> str:\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
+            plan_file.write_text(
+                """# Execution Plan
+
+**Status**: pending
+
+## Analysis
+
+Add a function.
+
+---
+
+## Tasks
+
+- [ ] 1. **Add farewell function** (code)
+""",
+                encoding="utf-8",
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeInvalidPythonEditAgent):
+                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                            result = agent_cmd.cmd_agent(
+                                manifest,
+                                goal="Add a farewell function to app.py",
+                                plan_execute=True,
+                                provider="openrouter",
+                                plan_file=str(plan_file),
+                                no_follow_up=True,
+                                approve_plan=True,
+                                verbose=False,
+                            )
+
+            diff = subprocess.run(
+                ["git", "diff", "--", "app.py"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertIn("defarewell", diff)
+        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+        self.assertIn("py_compile_status=fail", stdout.getvalue())
+        self.assertIn("py_compile:app.py", stdout.getvalue())
+
+    def test_single_shot_provider_network_failure_returns_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-single-provider-network-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.agent.Agent", _FakeProviderNetworkAgent):
+                        import amof.orchestrator.memory as memory
+
+                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
+                            with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                                result = agent_cmd.cmd_agent(
+                                    manifest,
+                                    goal="Inspect this repo",
+                                    plan_mode=True,
+                                    provider="openrouter",
+                                    no_follow_up=True,
+                                    verbose=False,
+                                )
+
+        self.assertEqual(result, 1, stderr.getvalue())
+        self.assertIn("provider error", stdout.getvalue())
 
     def test_successful_worker_mutation_creates_diff_without_source_noise(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-mutation-") as td:

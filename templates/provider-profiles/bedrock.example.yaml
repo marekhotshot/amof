@@ -1,0 +1,15 @@
+name: bedrock-default
+provider: bedrock
+lane: planner
+model_family: anthropic-bedrock
+model_env: AMOF_BEDROCK_STANDARD_MODEL_ID
+default_model: eu.anthropic.claude-haiku-4-5-20251001-v1:0
+credential_refs: {}
+redaction_policy:
+  record_secret_names_only: true
+allow_direct_git_write: false
+status: setup_profile_only
+notes:
+  - Stores environment variable names only; Bedrock credentials stay in AWS_PROFILE, AWS_REGION, or AMOF_BEDROCK_REGION.
+  - Corporate TLS environments may need SSL_CERT_FILE or REQUESTS_CA_BUNDLE plus AWS_CA_BUNDLE.
+  - Current CLI execution also accepts --provider bedrock and does not call AWS during setup.

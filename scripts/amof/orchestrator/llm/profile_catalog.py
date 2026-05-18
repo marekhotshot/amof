@@ -6,14 +6,12 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
-from amof.api.services.runpod_heavy_lane import resolve_profile as resolve_runpod_heavy_profile
-
 PROFILE_SLOTS = ("fast", "standard", "strong")
 
 DEFAULT_BEDROCK_HAIKU_INFERENCE_PROFILE = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
 DEFAULT_BEDROCK_FAST_MODEL = DEFAULT_BEDROCK_HAIKU_INFERENCE_PROFILE
 DEFAULT_BEDROCK_STANDARD_MODEL = DEFAULT_BEDROCK_HAIKU_INFERENCE_PROFILE
-DEFAULT_BEDROCK_STRONG_MODEL = "anthropic.claude-opus-4-6-v1:0"
+DEFAULT_BEDROCK_STRONG_MODEL = "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 RECOMMENDED_DEMO_SELECTION = {
     "fast": "bedrock_claude_haiku",
@@ -40,9 +38,19 @@ def _bedrock_model_from_env(var_name: str, fallback: str) -> str:
     return str(os.environ.get(var_name) or fallback).strip()
 
 
+def _resolve_runpod_profile() -> Optional[Mapping[str, Any]]:
+    try:
+        from amof.api.services.runpod_heavy_lane import resolve_profile as resolve_runpod_heavy_profile
+    except Exception:
+        return None
+    try:
+        return resolve_runpod_heavy_profile()
+    except Exception:
+        return None
+
+
 def get_profile_catalog() -> Dict[str, LLMProfile]:
-    runpod_profile = resolve_runpod_heavy_profile()
-    return {
+    catalog = {
         "bedrock_claude_haiku": LLMProfile(
             id="bedrock_claude_haiku",
             label="Bedrock Claude Haiku",
@@ -70,7 +78,10 @@ def get_profile_catalog() -> Dict[str, LLMProfile]:
             aws_profile_env="AWS_PROFILE",
             aws_region_env="AWS_REGION",
         ),
-        "runpod_heavy": LLMProfile(
+    }
+    runpod_profile = _resolve_runpod_profile()
+    if runpod_profile:
+        catalog["runpod_heavy"] = LLMProfile(
             id="runpod_heavy",
             label="RunPod Heavy",
             provider="runpod",
@@ -79,8 +90,8 @@ def get_profile_catalog() -> Dict[str, LLMProfile]:
             base_url_env=str(runpod_profile.get("endpoint_env") or "RUNPOD_OPENAI_BASE_URL"),
             api_key_env=str(runpod_profile.get("api_key_env") or "RUNPOD_API_KEY"),
             source=str(runpod_profile.get("source") or "runpod_profile"),
-        ),
-    }
+        )
+    return catalog
 
 
 def list_profile_catalog() -> List[Dict[str, Any]]:

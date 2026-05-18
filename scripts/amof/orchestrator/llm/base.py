@@ -117,7 +117,15 @@ def classify_provider_status(status_code: Optional[int], error_name: str = "") -
         return PROVIDER_FAILURE_RATE_LIMIT
     if status_code is not None and 500 <= int(status_code) < 600:
         return PROVIDER_FAILURE_SERVER_ERROR
-    if error_name in ("APIConnectionError", "Timeout", "APITimeoutError"):
+    if error_name in (
+        "APIConnectionError",
+        "APITimeoutError",
+        "ConnectError",
+        "PoolTimeout",
+        "ReadTimeout",
+        "Timeout",
+        "WriteTimeout",
+    ):
         return PROVIDER_FAILURE_NETWORK
     if error_name == "InternalServerError":
         return PROVIDER_FAILURE_SERVER_ERROR

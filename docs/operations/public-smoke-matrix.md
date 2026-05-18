@@ -101,6 +101,6 @@ public smoke.
 
 ## Release Candidate Rule
 
-Prepare a v2.5.0 release candidate only after local/no-key gates pass and any
+Prepare a v2.5.1 release candidate only after local/no-key gates pass and any
 optional live smoke is explicitly marked manual. Do not push, tag, promote main,
 or release as part of the smoke gate itself.

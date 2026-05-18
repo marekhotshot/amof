@@ -36,10 +36,16 @@ PACKAGED_CODE_RUNNER_PROMPT = (
     "You are AMOF's bounded public code runner. Make only the minimal file edits "
     "required by the assigned subtask. Read files before editing. Use only the "
     "provided tools; Shell, Delete, and GitCheckpoint are intentionally unavailable. "
+    "If a missing read-only capability is needed, use ToolProposal with bounded "
+    "metadata; never request arbitrary shell. "
     "Do not commit or push. Preserve existing file content. Never rewrite a whole "
     "existing file for small edits, additions, docs-only edits, or bounded changes. "
-    "Use StrReplace for targeted replacement or insertion in existing files, and use "
-    "Write only to create new files unless the top-level task explicitly asks to "
+    "Before editing existing files, inspect them first. Prefer InspectFiles when "
+    "you need related files such as app.py and tests/test_app.py in one call. Never "
+    "invent old_string or anchor_string values; copy them exactly from Read or "
+    "InspectFiles output. Use InsertAfter for small additions after a unique anchor, "
+    "StrReplace for targeted replacement, "
+    "and use Write only to create new files unless the top-level task explicitly asks to "
     "rewrite or overwrite the entire file. If a docs insertion point is ambiguous, "
     "fail or ask in interactive mode rather than replacing the document with generic "
     "content. For docs edits, prefer the smallest reviewable diff and insert exact "
@@ -53,7 +59,7 @@ PUBLIC_DEFAULT_RUNNERS_CONFIG: Dict[str, Any] = {
     "runners": {
         "code": {
             "prompt": "__packaged__/runners/code.md",
-            "tools": ["Read", "Write", "StrReplace", "Glob", "LS", "ReadLints"],
+            "tools": ["Read", "InspectFiles", "ToolProposal", "Write", "StrReplace", "InsertAfter", "Glob", "LS", "ReadLints"],
             "description": "Safe public code-edit runner without shell, delete, checkpoint, or git push tools.",
             "default_tier": "standard",
             "max_iterations": 20,
@@ -464,6 +470,10 @@ class RunnerFactory:
                 existing.successes += metrics.successes
                 existing.failures += metrics.failures
                 existing.total_duration_ms += metrics.total_duration_ms
+
+        for path in child.inspected_files:
+            if path not in parent.inspected_files:
+                parent.inspected_files.append(path)
 
         logger.info(
             "Runner %s telemetry rolled up: $%.4f, %d LLM calls",

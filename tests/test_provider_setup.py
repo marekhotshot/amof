@@ -34,6 +34,7 @@ def _args(**overrides):
         "api_key_env": None,
         "base_url": None,
         "base_url_env": None,
+        "timeout_seconds": None,
         "activate": False,
         "dry_run": False,
         "yes": False,
@@ -90,6 +91,26 @@ class ProviderSetupCommandTests(unittest.TestCase):
                 self.assertEqual(payload["provider"], "openrouter")
                 self.assertFalse(provider_profiles_dir().exists())
 
+    def test_bedrock_template_prints_secret_reference_only_metadata(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-provider-bedrock-print-") as td:
+            with patch.dict("os.environ", {"AMOF_HOME": str(Path(td) / "amof-home")}, clear=False):
+                with redirect_stdout(StringIO()) as stdout:
+                    result = setup_cmd.cmd_setup(
+                        _args(provider_template="bedrock", print_template=True)
+                    )
+
+                self.assertEqual(result, 0)
+                payload = yaml.safe_load(stdout.getvalue())
+                self.assertEqual(payload["provider"], "bedrock")
+                self.assertEqual(payload["model_env"], "AMOF_BEDROCK_STANDARD_MODEL_ID")
+                self.assertTrue(payload["redaction_policy"]["record_secret_names_only"])
+                notes = "\n".join(payload["notes"])
+                self.assertIn("AWS_PROFILE", notes)
+                self.assertIn("AWS_REGION", notes)
+                self.assertIn("SSL_CERT_FILE", notes)
+                self.assertIn("AWS_CA_BUNDLE", notes)
+                self.assertFalse(provider_profiles_dir().exists())
+
     def test_dry_run_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-provider-dry-run-") as td:
             with patch.dict("os.environ", {"AMOF_HOME": str(Path(td) / "amof-home")}, clear=False):
@@ -126,6 +147,7 @@ class ProviderSetupCommandTests(unittest.TestCase):
                         profile_name="local-qwen",
                         base_url="http://localhost:11434/v1",
                         model="qwen2.5-coder:7b",
+                        timeout_seconds=30,
                         yes=True,
                     )
                 )
@@ -136,6 +158,16 @@ class ProviderSetupCommandTests(unittest.TestCase):
                 self.assertEqual(result, 0)
                 self.assertEqual(payload["base_url"], "http://localhost:11434/v1")
                 self.assertEqual(payload["model"], "qwen2.5-coder:7b")
+                self.assertEqual(payload["timeout_seconds"], 30.0)
+
+    def test_local_qwen_rejects_invalid_timeout_override(self) -> None:
+        with redirect_stderr(StringIO()) as stderr:
+            result = setup_cmd.cmd_setup(
+                _args(provider_template="local-qwen", timeout_seconds=0, print_template=True)
+            )
+
+        self.assertEqual(result, 1)
+        self.assertIn("--timeout-seconds expects a positive number of seconds", stderr.getvalue())
 
     def test_runpod_supports_base_url_env_and_api_key_env(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-provider-runpod-") as td:
@@ -173,6 +205,28 @@ class ProviderSetupCommandTests(unittest.TestCase):
                 refs = context["credentials"]["provider_profile_refs"]
                 self.assertEqual(result, 0)
                 self.assertIn("openrouter-default", refs)
+
+    def test_activate_bedrock_profile_updates_current_context_provider_profile_refs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-provider-bedrock-activate-") as td:
+            with patch.dict("os.environ", {"AMOF_HOME": str(Path(td) / "amof-home")}, clear=False):
+                result = setup_cmd.cmd_setup(
+                    _args(
+                        provider_template="bedrock",
+                        profile_name="bedrock-default",
+                        activate=True,
+                        yes=True,
+                    )
+                )
+
+                context = get_context(get_current_context_name())
+                refs = context["credentials"]["provider_profile_refs"]
+                payload = yaml.safe_load(
+                    (provider_profiles_dir() / "bedrock-default.yaml").read_text(encoding="utf-8")
+                )
+                self.assertEqual(result, 0)
+                self.assertIn("bedrock-default", refs)
+                self.assertEqual(payload["provider"], "bedrock")
+                self.assertNotIn("api_key", payload)
 
     def test_setup_command_does_not_require_ecosystem(self) -> None:
         import amof.entrypoint as entrypoint

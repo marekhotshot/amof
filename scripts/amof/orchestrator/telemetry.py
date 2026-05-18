@@ -97,6 +97,7 @@ class SessionTelemetry:
     session_start: float = field(default_factory=time.time)
     max_cost: Optional[float] = None  # cost ceiling from config
     tool_metrics: Dict[str, ToolMetrics] = field(default_factory=lambda: defaultdict(ToolMetrics))
+    inspected_files: List[str] = field(default_factory=list)
     context_history: List[ContextSnapshot] = field(default_factory=list)
     tier_metrics: Dict[str, TierMetrics] = field(default_factory=lambda: defaultdict(TierMetrics))
     _summarization_cost: float = 0.0
@@ -176,7 +177,13 @@ class SessionTelemetry:
         self.record(metrics)
         return metrics
 
-    def record_tool_call(self, tool_name: str, success: bool, duration_ms: int) -> None:
+    def record_tool_call(
+        self,
+        tool_name: str,
+        success: bool,
+        duration_ms: int,
+        metadata: Optional[Dict[str, object]] = None,
+    ) -> None:
         """Record metrics from a tool execution."""
         tm = self.tool_metrics[tool_name]
         tm.calls += 1
@@ -185,6 +192,12 @@ class SessionTelemetry:
         else:
             tm.failures += 1
         tm.total_duration_ms += duration_ms
+        if success and metadata:
+            inspected = metadata.get("inspected_files")
+            if isinstance(inspected, list):
+                for path in inspected:
+                    if isinstance(path, str) and path not in self.inspected_files:
+                        self.inspected_files.append(path)
 
     def record_summarization_cost(self, cumulative_cost: float) -> None:
         """Record cumulative summarization cost (from ContextSummarizer)."""
@@ -313,6 +326,9 @@ class SessionTelemetry:
         if "prompt_cache" in data:
             telemetry.cache_creation_tokens = data["prompt_cache"].get("creation_tokens", 0)
             telemetry.cache_read_tokens = data["prompt_cache"].get("read_tokens", 0)
+        inspected_files = data.get("inspected_files", {}).get("files", [])
+        if isinstance(inspected_files, list):
+            telemetry.inspected_files = [path for path in inspected_files if isinstance(path, str)]
         return telemetry
 
     @property
@@ -503,6 +519,9 @@ class SessionTelemetry:
             for name, tm in self.top_tools(5):
                 lines.append(f"    {name:15s} {tm.calls:3d} calls  {tm.success_rate:5.1f}% ok  avg {tm.avg_duration_ms}ms")
 
+        if self.inspected_files:
+            lines.append(f"  Inspected files: {len(self.inspected_files)}")
+
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
@@ -548,6 +567,11 @@ class SessionTelemetry:
                     "avg_duration_ms": tm.avg_duration_ms,
                 }
                 for name, tm in self.tool_metrics.items()
+            }
+        if self.inspected_files:
+            result["inspected_files"] = {
+                "count": len(self.inspected_files),
+                "files": list(self.inspected_files),
             }
         # Efficiency metrics
         if self.total_calls > 0:

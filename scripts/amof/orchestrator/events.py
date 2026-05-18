@@ -83,6 +83,7 @@ class EventLog:
         duration_ms: int,
         output_preview: Optional[str] = None,
         error: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Log a tool execution."""
         event_data: Dict[str, Any] = {
@@ -95,6 +96,8 @@ class EventLog:
             event_data["output_preview"] = output_preview[:200]
         if error:
             event_data["error"] = error[:500]
+        if metadata:
+            event_data["metadata"] = metadata
         return self.log("tool_call", **event_data)
 
     def policy_gate(

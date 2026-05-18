@@ -32,6 +32,7 @@ AMOF_RUNTIME_DEPENDENCIES = {
     "botocore": "botocore",
     "openai": "openai",
     "pydantic": "pydantic",
+    "requests": "requests",
     "yaml": "PyYAML",
 }
 OPTIONAL_MEMORY_DEPENDENCIES = {"chromadb", "pysqlite3"}
@@ -245,7 +246,7 @@ def _runtime_dependency_guidance(missing: str | None = None) -> str:
         "  Update or reinstall AMOF:\n"
         "    amof update\n"
         "  or:\n"
-        "    pipx install --force git+https://github.com/marekhotshot/amof.git@v2.2.0\n"
+        "    pipx install --force git+https://github.com/marekhotshot/amof.git\n"
     )
 
 
@@ -527,6 +528,17 @@ def _profile_base_url(profile: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _profile_timeout_seconds(profile: dict[str, Any] | None) -> str | None:
+    if profile:
+        value = profile.get("timeout_seconds")
+        if value is not None:
+            return str(value).strip()
+    value = os.environ.get("AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS")
+    if value is not None:
+        return value.strip()
+    return None
+
+
 def _default_worker_model(provider: str, model: str | None, profile_default_model: str | None) -> str:
     """Resolve the default worker/orchestrator model for a provider."""
     if model:
@@ -587,6 +599,25 @@ def _validate_local_model(model: str | None) -> str | None:
     if str(model or "").strip():
         return None
     return "local provider profile requires model or default_model"
+
+
+def _resolve_local_timeout_seconds(profile: dict[str, Any] | None) -> tuple[float | None, str | None]:
+    raw_timeout = _profile_timeout_seconds(profile)
+    if raw_timeout is None or raw_timeout == "":
+        return None, None
+    try:
+        timeout_seconds = float(raw_timeout)
+    except ValueError:
+        return None, (
+            "local provider timeout_seconds must be a positive number "
+            f"(got {raw_timeout!r})"
+        )
+    if timeout_seconds <= 0:
+        return None, (
+            "local provider timeout_seconds must be a positive number "
+            f"(got {raw_timeout!r})"
+        )
+    return timeout_seconds, None
 
 
 def _validate_runner_factory_for_plan(runner_factory: Any, plan: Any) -> str | None:
@@ -739,8 +770,11 @@ def _evaluate_diff_guard(goal: str, workspace_root: Path, git_after: dict[str, s
 
     if requested_set:
         extra = sorted(changed_set - requested_set)
+        missing = sorted(requested_set - changed_set)
         if extra:
             reasons.append(f"requested_paths_mismatch:{','.join(extra)}")
+        if missing:
+            reasons.append(f"requested_paths_missing:{','.join(missing)}")
 
     if docs_only:
         code_changed = sorted(
@@ -793,6 +827,14 @@ def _evaluate_diff_guard(goal: str, workspace_root: Path, git_after: dict[str, s
         if before_lines and after_lines is not None and after_lines < before_lines * 0.70:
             destructive_rewrite_detected = True
             reasons.append(f"file_shrink:{path}:{before_lines}->{after_lines}")
+        if before_lines is not None and after_lines is not None:
+            growth_threshold = max(before_lines * 5, before_lines + 200, 250)
+            if after_lines > growth_threshold:
+                destructive_rewrite_detected = True
+                reasons.append(f"file_growth:{path}:{before_lines}->{after_lines}>{growth_threshold}")
+        if file_added > 500:
+            destructive_rewrite_detected = True
+            reasons.append(f"large_addition:{path}:{file_added}>500")
 
     requested_observed = not requested_set or requested_set.issubset(changed_set)
     status = "pass" if not reasons else "fail"
@@ -815,9 +857,49 @@ def _tool_failure_counts(telemetry: Any) -> tuple[int, int]:
         failures = int(getattr(metrics, "failures", 0) or 0)
         total += failures
         leaf_name = str(tool_name).split(":")[-1]
-        if leaf_name in {"Write", "StrReplace", "Delete"}:
+        if leaf_name in {"Write", "StrReplace", "InsertAfter", "Delete"}:
             write_class += failures
     return total, write_class
+
+
+def _write_action_count(telemetry: Any) -> int:
+    total = 0
+    for tool_name, metrics in getattr(telemetry, "tool_metrics", {}).items():
+        leaf_name = str(tool_name).split(":")[-1]
+        if leaf_name in {"Write", "StrReplace", "InsertAfter", "Delete"}:
+            total += int(getattr(metrics, "calls", 0) or 0)
+    return total
+
+
+def _verify_changed_python_files(workspace_root: Path, git_after: dict[str, str]) -> dict[str, Any]:
+    changed = _parse_numstat(git_after.get("numstat", ""))
+    python_files = [
+        str(entry["path"])
+        for entry in changed
+        if Path(str(entry["path"])).suffix == ".py" and (workspace_root / str(entry["path"])).is_file()
+    ]
+    if not python_files:
+        return {"status": "not_applicable", "files": [], "reasons": []}
+
+    reasons: list[str] = []
+    for rel_path in python_files:
+        result = subprocess.run(
+            [sys.executable, "-m", "py_compile", rel_path],
+            cwd=workspace_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "compile failed").strip().splitlines()
+            preview = detail[-1] if detail else "compile failed"
+            reasons.append(f"py_compile:{rel_path}:{preview[:200]}")
+
+    return {
+        "status": "fail" if reasons else "pass",
+        "files": python_files,
+        "reasons": reasons,
+    }
 
 
 def _mark_plan_failed_for_verifier(plan: Any, reason: str) -> None:
@@ -835,6 +917,24 @@ def _mark_plan_failed_for_verifier(plan: Any, reason: str) -> None:
 
 def _plan_execute_noninteractive(no_follow_up: Any, approve_plan: Any) -> bool:
     return bool(no_follow_up or approve_plan or not sys.stdin.isatty())
+
+
+FATAL_AGENT_STOP_REASONS = {
+    "cost_exceeded",
+    "max_iterations",
+    "circuit_breaker",
+    "interrupted",
+    "provider_payment_required",
+    "provider_auth",
+    "provider_rate_limit",
+    "provider_server_error",
+    "provider_network",
+    "provider_api_error",
+}
+
+
+def _agent_stop_reason_exit_code(stop_reason: str | None) -> int:
+    return 1 if str(stop_reason or "") in FATAL_AGENT_STOP_REASONS else 0
 
 
 def _interactive_confirm(command: str, reason: str) -> str:
@@ -960,6 +1060,7 @@ def cmd_agent(
     _auto_load_env(Path.cwd() / ".env")
     provider_base_url = _profile_base_url(provider_profile)
     profile_default_model = _profile_model(provider_profile) if not explicit_provider else None
+    local_timeout_seconds: float | None = None
     if provider == "local":
         local_base_url_error = _validate_local_base_url(provider_base_url)
         if local_base_url_error:
@@ -968,6 +1069,14 @@ def cmd_agent(
         local_model_error = _validate_local_model(profile_default_model or model)
         if local_model_error:
             sys.stderr.write(f"[agent] {local_model_error}\n")
+            return 1
+        local_timeout_seconds, local_timeout_error = _resolve_local_timeout_seconds(provider_profile)
+        if local_timeout_error:
+            sys.stderr.write(
+                "[agent] "
+                f"{local_timeout_error}; provider=local "
+                f"base_url={provider_base_url} sdk_max_retries=0\n"
+            )
             return 1
 
     # Resolve API key based on provider
@@ -1087,6 +1196,7 @@ def cmd_agent(
                 base_url=provider_base_url or "",
                 model=mdl,
                 api_key=api_key or None,
+                timeout=local_timeout_seconds if local_timeout_seconds is not None else 60.0,
             )
 
         # Check if the model string is openrouter/ style
@@ -1678,6 +1788,8 @@ def cmd_agent(
         diff_changed = git_before.get("diff") != git_after.get("diff")
         has_after_diff = bool(git_after.get("numstat") or git_after.get("diff"))
         failed_tool_calls, failed_write_tool_calls = _tool_failure_counts(telemetry)
+        write_action_count = _write_action_count(telemetry)
+        write_action_observed = write_action_count > 0
         diff_guard = {
             "status": "not_applicable",
             "reasons": [],
@@ -1690,16 +1802,27 @@ def cmd_agent(
         }
         if mutation_intent and has_after_diff:
             diff_guard = _evaluate_diff_guard(goal, workspace_root, git_after)
+        py_compile_guard = _verify_changed_python_files(workspace_root, git_after)
 
         verifier_failed = False
+        verifier_reasons: list[str] = []
         if failed_tool_calls:
             verifier_failed = True
+            verifier_reasons.append(f"failed_tool_calls:{failed_tool_calls}")
             _mark_plan_failed_for_verifier(
                 plan,
                 f"Verifier failed: {failed_tool_calls} tool call(s) failed.",
             )
+        if mutation_intent and not write_action_observed:
+            verifier_failed = True
+            verifier_reasons.append("mutation-intent plan did not call a write-class tool")
+            _mark_plan_failed_for_verifier(
+                plan,
+                "Verifier failed: mutation-intent plan did not call a write-class tool.",
+            )
         if mutation_intent and (not diff_changed or not has_after_diff):
             verifier_failed = True
+            verifier_reasons.append("mutation-intent plan produced no target repository diff")
             _mark_plan_failed_for_verifier(
                 plan,
                 "Verifier failed: mutation-intent plan produced no target repository diff.",
@@ -1707,9 +1830,18 @@ def cmd_agent(
         if mutation_intent and diff_guard["status"] == "fail":
             verifier_failed = True
             reasons = ", ".join(diff_guard["reasons"]) or "unknown"
+            verifier_reasons.append(f"diff_guard:{reasons}")
             _mark_plan_failed_for_verifier(
                 plan,
                 f"Verifier failed: diff guard rejected target diff ({reasons}).",
+            )
+        if py_compile_guard["status"] == "fail":
+            verifier_failed = True
+            reasons = ", ".join(py_compile_guard["reasons"]) or "unknown"
+            verifier_reasons.append(f"py_compile:{reasons}")
+            _mark_plan_failed_for_verifier(
+                plan,
+                f"Verifier failed: Python compile check failed ({reasons}).",
             )
 
         # Summary
@@ -1725,6 +1857,7 @@ def cmd_agent(
             f"failed_tool_calls={failed_tool_calls}, "
             f"failed_write_tool_calls={failed_write_tool_calls}, "
             f"mutation_intent={str(mutation_intent).lower()}, "
+            f"write_action_observed={str(write_action_observed).lower()}, "
             f"target_diff_changed={str(diff_changed).lower()}, "
             f"target_has_diff={str(has_after_diff).lower()}, "
             f"changed_files={','.join(diff_guard['changed_files']) or '-'}, "
@@ -1732,6 +1865,10 @@ def cmd_agent(
             f"diff_deleted_lines={diff_guard['deleted_lines']}, "
             f"diff_guard_status={diff_guard['status']}, "
             f"diff_guard_reasons={';'.join(diff_guard['reasons']) or '-'}, "
+            f"py_compile_status={py_compile_guard['status']}, "
+            f"py_compile_files={','.join(py_compile_guard['files']) or '-'}, "
+            f"py_compile_reasons={';'.join(py_compile_guard['reasons']) or '-'}, "
+            f"verifier_reasons={';'.join(verifier_reasons) or '-'}, "
             f"destructive_rewrite_detected="
             f"{str(diff_guard['destructive_rewrite_detected']).lower()}, "
             f"requested_paths_observed="
@@ -1796,13 +1933,18 @@ def cmd_agent(
         print(f"\n{telemetry.summary()}")
         print(f"Event log: {events.log_path}")
 
+        exit_code = _agent_stop_reason_exit_code(agent.stop_reason)
+
         # Post-run follow-up menu
         if not no_follow_up:
+            if exit_code:
+                return exit_code
             return _post_run_menu(
                 agent=agent, session=session, telemetry=telemetry, events=events,
                 workspace_root=workspace_root, manifest=manifest,
                 continue_budget=continue_budget, goal=goal,
             )
+        return exit_code
     else:
         # Interactive chat shell (plan-execute by default)
         from ..orchestrator.planner import TaskPlanner, ExecutionPlan

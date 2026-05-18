@@ -8,6 +8,32 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.5.1] - 2026-05-18
+
+### Fixed
+
+- Installed CLI package metadata now includes `requests`, so Bedrock/provider startup no longer requires `pipx inject amof requests`.
+- `amof setup provider` now includes a first-class `bedrock` template/example that stores secret references only and does not call AWS during setup.
+- Bedrock startup now keeps RunPod/profile-catalog loading lazy enough to avoid unrelated provider credential failures on the selected Bedrock path.
+- Bedrock CA handling now honors `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `AWS_CA_BUNDLE`.
+- First-run ecosystem resolution guidance now shows the exact adopt command plus the next agent command.
+
+### Notes
+
+- In enterprise TLS-intercepted environments, Bedrock is not expected to work out of the box without an explicit combined CA bundle that includes the system trust roots plus the corporate interception CA (for example, Zscaler).
+- Release evidence for this version includes:
+  - AMOF-268 smoke ref: `amof-268-bedrock-oob-smoke-20260518-212251`
+  - AMOF-269 operator-supplied corp-laptop classification: `PASS_BEDROCK_INSTALLED_CLI_LIVE_PLAN`
+
+### Validation
+
+- Full unit test suite passed.
+- `amof setup provider --list` includes `bedrock`.
+- `amof setup provider bedrock --print-template` works.
+- No-key/no-cloud app-data write/activate smoke passed.
+- Installed-candidate metadata check confirmed `Requires-Dist: requests`.
+- Installed-candidate Bedrock startup reached `AWS_REGION not set for Bedrock` instead of missing dependency or unrelated provider credential failures.
+
 ## [2.5.0] - 2026-05-17
 
 ### Changed

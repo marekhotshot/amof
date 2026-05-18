@@ -10,7 +10,8 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
-from .anthropic import AnthropicClient, DEFAULT_THINKING_BUDGET
+from .anthropic import AnthropicClient, DEFAULT_THINKING_BUDGET, _resolve_ca_bundle
+from .base import PROVIDER_FAILURE_NETWORK, ProviderError
 
 
 class BedrockAnthropicClient(AnthropicClient):
@@ -69,5 +70,25 @@ class BedrockAnthropicClient(AnthropicClient):
             kwargs = {"aws_region": self._aws_region, "max_retries": self._max_retries}
             if self._aws_profile:
                 kwargs["aws_profile"] = self._aws_profile
+            ca_bundle = _resolve_ca_bundle()
+            if ca_bundle:
+                import httpx
+
+                kwargs["http_client"] = httpx.Client(verify=ca_bundle)
             self._client = anthropic.AnthropicBedrock(**kwargs)
         return self._client
+
+    def _wrap_provider_error(self, exc: BaseException) -> ProviderError:
+        wrapped = super()._wrap_provider_error(exc)
+        if wrapped.failure_class != PROVIDER_FAILURE_NETWORK:
+            return wrapped
+        return ProviderError(
+            provider=wrapped.provider,
+            message=(
+                f"{exc}. Corporate TLS note: set SSL_CERT_FILE or REQUESTS_CA_BUNDLE for "
+                "Anthropic/httpx trust, and set AWS_CA_BUNDLE for AWS SDK trust when needed."
+            ),
+            status_code=wrapped.status_code,
+            failure_class=wrapped.failure_class,
+            original=wrapped.original,
+        )

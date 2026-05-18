@@ -10,11 +10,11 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v2.5.0-0A7FFF.svg" alt="release v2.5.0" />
+  <img src="https://img.shields.io/badge/release-v2.5.1-0A7FFF.svg" alt="release v2.5.1" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
-AMOF v2.5.0 is published on canonical `main` as a public installable CLI for
+AMOF v2.5.1 is published on canonical `main` as a public installable CLI for
 repository adoption, bootstrap validation, provider setup, read-only planning,
 and bounded worker execution.
 
@@ -33,7 +33,7 @@ Those belong outside the public product tree.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v2.5.0 surface:
+This public `main` intentionally keeps a narrow, installable v2.5.1 surface:
 
 - `./scripts/install-amof.sh`
 - `amof check`
@@ -47,7 +47,7 @@ This public `main` intentionally keeps a narrow, installable v2.5.0 surface:
 
 ## Released Public CLI Surface
 
-What works in v2.5.0:
+What works in v2.5.1:
 
 - `./scripts/install-amof.sh`
 - `./scripts/install-local.sh`
@@ -77,7 +77,7 @@ What is intentionally not included on this canonical main:
 ## Quick Install
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.5.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.5.1"
 ```
 
 This is the recommended public install path for end users. It installs the
@@ -107,7 +107,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v2.5.0
+amof update --version v2.5.1
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -150,7 +150,7 @@ Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.5.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.5.1"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
@@ -168,7 +168,7 @@ message rather than fail on missing `--ecosystem/-e`.
 
 ## Bounded Worker Execution
 
-AMOF v2.5.0 includes a public default `code` runner for bounded
+AMOF v2.5.1 includes a public default `code` runner for bounded
 `amof agent --plan-execute` demos in adopted repositories. The default runner is
 limited to repository read/write tools and does not include shell, delete,
 checkpoint, commit, or push tools.
@@ -222,6 +222,24 @@ export RUNPOD_API_KEY="<redacted>"
 export RUNPOD_OPENAI_BASE_URL="<redacted>"
 amof setup provider runpod --name runpod-heavy --activate
 ```
+
+Bedrock:
+
+```bash
+amof setup provider bedrock --name bedrock-default --activate
+export AWS_PROFILE="<your-profile>"
+export AWS_REGION="eu-central-1"
+export SSL_CERT_FILE="/path/to/combined-ca.pem"
+export REQUESTS_CA_BUNDLE="/path/to/combined-ca.pem"
+export AWS_CA_BUNDLE="/path/to/combined-ca.pem"
+amof agent --provider bedrock --plan "Inspect this repo" --no-follow-up
+```
+
+The installed CLI Bedrock path no longer requires `pipx inject amof requests`.
+In enterprise TLS-intercepted environments, Bedrock is not expected to work
+without an explicit combined CA bundle containing the system trust roots plus
+the corporate interception CA. `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` cover
+Anthropic/httpx trust; `AWS_CA_BUNDLE` covers AWS SDK trust.
 
 For scripts or CI, add `--yes` to skip the confirmation prompt. Do not put an
 OpenRouter key into `ANTHROPIC_API_KEY`; provider setup stores environment
@@ -290,6 +308,8 @@ that directory as a flat app-data root.
 Additional public docs retained in this repo include:
 
 - `docs/runbooks/happy-path-agent-workflow.md`
+- `docs/runbooks/installed-cli-bedrock.md`
+- `docs/operations/amof-269-operator-supplied-bedrock-live-smoke.md`
 - `docs/operations/source-checkout-bootstrap.md`
 - `docs/operations/public-surface-taxonomy.md`
 - `docs/operations/public-smoke-matrix.md`
@@ -300,7 +320,7 @@ Additional public docs retained in this repo include:
 
 ## Release State
 
-- `v2.5.0` is the current public release.
+- `v2.5.1` is the current public release.
 - Public install and no-key adoption smoke passed from the GitHub tag.
 - Bounded worker execution is public/demoable, but output must be reviewed as a
   Git diff before commit.
