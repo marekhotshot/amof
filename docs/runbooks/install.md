@@ -56,6 +56,19 @@ cd amof
 This fallback remains supported for development and for users who want the AMOF
 runtime installed into a checkout-local virtualenv.
 
+## Source Checkout Test Install
+
+Use this path when developing AMOF itself or running focused operator tests from
+a clean checkout:
+
+```bash
+python -m pip install -e ".[test]"
+python -m pytest tests/test_remote_ial.py
+```
+
+The `test` extra is intentionally separate from AMOF runtime dependencies so
+end-user installs do not pull in pytest.
+
 ## Optional Pipx Path
 
 Use this path if you prefer an isolated user install:

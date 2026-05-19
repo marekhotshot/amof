@@ -78,6 +78,23 @@ DEFAULT_LOCAL_TIMEOUT_SECONDS = 60.0
 _ALLOWED_PROVIDER_IDS = frozenset({"local", "runpod"})
 
 
+def normalize_openai_compatible_base_url(base_url: str, *, provider_id: str = "local") -> str:
+    """Normalize OpenAI-compatible API roots without duplicating `/v1`.
+
+    RunPod pod proxies commonly present either `https://<pod>-8000.proxy.runpod.net`
+    or the explicit API root with `/v1`. The OpenAI SDK expects the API root and
+    appends `/chat/completions`, so RunPod URLs need exactly one `/v1` suffix.
+    """
+    normalized = str(base_url or "").strip().rstrip("/")
+    if provider_id != "runpod" or not normalized:
+        return normalized
+    while normalized.endswith("/v1/v1"):
+        normalized = normalized[:-3]
+    if not normalized.endswith("/v1"):
+        normalized = f"{normalized}/v1"
+    return normalized
+
+
 class LocalOpenAICompatibleClient(OpenAIClient):
     """OpenAI-compatible LLM client for local-shaped inference servers.
 
@@ -161,7 +178,10 @@ class LocalOpenAICompatibleClient(OpenAIClient):
         # truthfully as a ProviderError(provider="runpod", failure_class=
         # "auth").
         self._api_key = api_key or os.environ.get("AMOF_LOCAL_LLM_API_KEY", "") or "local"
-        self._base_url = base_url
+        self._base_url = normalize_openai_compatible_base_url(
+            base_url,
+            provider_id=provider_id,
+        )
         self._client = None
         # Keep both AMOF-level and SDK-level retries explicit for local-shaped
         # providers. The OpenAI SDK defaults to retrying internally, which can
@@ -206,6 +226,20 @@ class LocalOpenAICompatibleClient(OpenAIClient):
                 "base_url": self._base_url,
                 "max_retries": self._sdk_max_retries,
             }
+            if self._provider == "runpod":
+                # RunPod's Cloudflare proxy can reject the OpenAI SDK's
+                # default request signature even when the same path succeeds
+                # via curl. These headers carry no secrets and match the
+                # browser-like probe shape used by the operator gate.
+                kwargs["default_headers"] = {
+                    "User-Agent": (
+                        "Mozilla/5.0 (X11; Linux x86_64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/125 Safari/537.36"
+                    ),
+                    "Accept": "application/json,text/plain,*/*",
+                    "Accept-Language": "en-US,en;q=0.9",
+                }
             # The SDK accepts a `timeout` kwarg; forward it so connection
             # hangs to a downed local server surface quickly instead of
             # blocking the agent loop.
@@ -232,6 +266,9 @@ class LocalOpenAICompatibleClient(OpenAIClient):
         provider_error.args = (
             f"{provider_error.args[0]} "
             f"(provider={self._provider}, base_url={self._base_url}, "
+            f"base_url_ends_with_v1={str(str(self._base_url).rstrip('/').endswith('/v1')).lower()}, "
+            f"endpoint_family=chat.completions, final_path="
+            f"{urlparse(self._base_url).path.rstrip('/') or ''}/chat/completions, "
             f"timeout_seconds={self._timeout:g}, sdk_max_retries={self._sdk_max_retries})",
         )
         return provider_error

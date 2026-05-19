@@ -36,7 +36,7 @@ AMOF_RUNTIME_DEPENDENCIES = {
     "yaml": "PyYAML",
 }
 OPTIONAL_MEMORY_DEPENDENCIES = {"chromadb", "pysqlite3"}
-SUPPORTED_PROFILE_PROVIDERS = {"anthropic", "openai", "openrouter", "bedrock", "local"}
+SUPPORTED_PROFILE_PROVIDERS = {"anthropic", "openai", "openrouter", "bedrock", "local", "runpod"}
 
 # Default model tiers when --model-ladder is enabled
 DEFAULT_TIERS = {
@@ -64,6 +64,10 @@ PROVIDER_DEFAULT_MODELS = {
     "local": {
         "worker": "qwen2.5-coder:7b",
         "planner": "qwen2.5-coder:7b",
+    },
+    "runpod": {
+        "worker": "deepseek-ai/DeepSeek-V4-Flash",
+        "planner": "deepseek-ai/DeepSeek-V4-Flash",
     },
 }
 MUTATION_INTENT_RE = re.compile(
@@ -528,6 +532,46 @@ def _profile_base_url(profile: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _normalize_runpod_openai_base_url(base_url: str | None) -> str | None:
+    """Normalize a RunPod OpenAI-compatible API root to exactly one `/v1` suffix."""
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        return None
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return normalized
+    while normalized.endswith("/v1/v1"):
+        normalized = normalized[:-3]
+    if not normalized.endswith("/v1"):
+        normalized = f"{normalized}/v1"
+    return normalized
+
+
+def _provider_endpoint_diagnostics(
+    *,
+    provider: str,
+    profile: dict[str, Any] | None,
+    base_url: str | None,
+    model: str | None,
+    endpoint_family: str,
+) -> str:
+    profile_name = str((profile or {}).get("name") or "<none>")
+    base = str(base_url or "").strip()
+    parsed = urlparse(base)
+    redacted_base = base
+    if parsed.username or parsed.password:
+        redacted_base = parsed._replace(netloc=parsed.hostname or "").geturl()
+    final_path = "/chat/completions" if endpoint_family == "chat.completions" else "<unknown>"
+    if parsed.path:
+        final_path = f"{parsed.path.rstrip('/')}{final_path}"
+    return (
+        f"provider={provider} profile={profile_name} model={model or '<missing>'} "
+        f"base_url={redacted_base or '<missing>'} "
+        f"base_url_ends_with_v1={str(base.endswith('/v1')).lower()} "
+        f"endpoint_family={endpoint_family} final_path={final_path}"
+    )
+
+
 def _profile_timeout_seconds(profile: dict[str, Any] | None) -> str | None:
     if profile:
         value = profile.get("timeout_seconds")
@@ -562,6 +606,11 @@ def _default_worker_model(provider: str, model: str | None, profile_default_mode
             "AMOF_LOCAL_QWEN_MODEL",
             os.environ.get("AMOF_LOCAL_MODEL", PROVIDER_DEFAULT_MODELS["local"]["worker"]),
         )
+    if provider == "runpod":
+        return os.environ.get(
+            "AMOF_RUNPOD_MODEL",
+            os.environ.get("RUNPOD_MODEL", PROVIDER_DEFAULT_MODELS["runpod"]["worker"]),
+        )
     return os.environ.get("AMOF_ANTHROPIC_MODEL", PROVIDER_DEFAULT_MODELS["anthropic"]["worker"])
 
 
@@ -581,6 +630,8 @@ def _default_planner_model(
     if env_model:
         return env_model
     if provider == "local" and profile_default_model:
+        return profile_default_model
+    if provider == "runpod" and profile_default_model:
         return profile_default_model
     return PROVIDER_DEFAULT_MODELS.get(provider, PROVIDER_DEFAULT_MODELS["anthropic"])["planner"]
 
@@ -1059,23 +1110,34 @@ def cmd_agent(
     # Auto-load .env if API key isn't already in environment
     _auto_load_env(Path.cwd() / ".env")
     provider_base_url = _profile_base_url(provider_profile)
+    if provider == "runpod":
+        provider_base_url = _normalize_runpod_openai_base_url(provider_base_url)
     profile_default_model = _profile_model(provider_profile) if not explicit_provider else None
     local_timeout_seconds: float | None = None
-    if provider == "local":
+    if provider in {"local", "runpod"}:
         local_base_url_error = _validate_local_base_url(provider_base_url)
         if local_base_url_error:
-            sys.stderr.write(f"[agent] {local_base_url_error}\n")
+            sys.stderr.write(
+                "[agent] "
+                f"{local_base_url_error}; "
+                f"{_provider_endpoint_diagnostics(provider=provider, profile=provider_profile, base_url=provider_base_url, model=profile_default_model or model, endpoint_family='chat.completions')}\n"
+            )
             return 1
         local_model_error = _validate_local_model(profile_default_model or model)
         if local_model_error:
-            sys.stderr.write(f"[agent] {local_model_error}\n")
+            sys.stderr.write(
+                "[agent] "
+                f"{local_model_error}; "
+                f"{_provider_endpoint_diagnostics(provider=provider, profile=provider_profile, base_url=provider_base_url, model=profile_default_model or model, endpoint_family='chat.completions')}\n"
+            )
             return 1
         local_timeout_seconds, local_timeout_error = _resolve_local_timeout_seconds(provider_profile)
         if local_timeout_error:
             sys.stderr.write(
                 "[agent] "
-                f"{local_timeout_error}; provider=local "
-                f"base_url={provider_base_url} sdk_max_retries=0\n"
+                f"{local_timeout_error}; "
+                f"{_provider_endpoint_diagnostics(provider=provider, profile=provider_profile, base_url=provider_base_url, model=profile_default_model or model, endpoint_family='chat.completions')} "
+                f"sdk_max_retries=0\n"
             )
             return 1
 
@@ -1115,6 +1177,16 @@ def cmd_agent(
             return 1
     elif provider == "local":
         api_key = ""
+    elif provider == "runpod":
+        api_key_env = _profile_credential_env(provider_profile, "api_key_env") if not explicit_provider else None
+        api_key_env = api_key_env or "RUNPOD_API_KEY"
+        api_key = os.environ.get(api_key_env, "")
+        if not api_key:
+            sys.stderr.write(
+                f"[agent] {api_key_env} not set.\n"
+                f"  Export {api_key_env}=<provider-api-key> before running live agent calls.\n"
+            )
+            return 1
     else:
         api_key_env = _profile_credential_env(provider_profile, "api_key_env") if not explicit_provider else None
         api_key_env = api_key_env or "ANTHROPIC_API_KEY"
@@ -1189,7 +1261,7 @@ def cmd_agent(
     # Provider-specific client factory
     def _make_client(mdl: str) -> Any:
         """Create an LLM client for the configured provider."""
-        if provider == "local":
+        if provider in {"local", "runpod"}:
             from ..orchestrator.llm.local_openai_compatible import LocalOpenAICompatibleClient
 
             return LocalOpenAICompatibleClient(
@@ -1197,6 +1269,7 @@ def cmd_agent(
                 model=mdl,
                 api_key=api_key or None,
                 timeout=local_timeout_seconds if local_timeout_seconds is not None else 60.0,
+                provider_id="runpod" if provider == "runpod" else "local",
             )
 
         # Check if the model string is openrouter/ style

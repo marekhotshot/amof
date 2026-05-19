@@ -103,6 +103,10 @@ def _isolated_provider_env(amof_home: Path, extra_env: dict[str, str] | None = N
         "AMOF_LOCAL_MODEL",
         "AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS",
         "AMOF_PLANNER_MODEL",
+        "AMOF_RUNPOD_MODEL",
+        "RUNPOD_API_KEY",
+        "RUNPOD_MODEL",
+        "RUNPOD_OPENAI_BASE_URL",
     }
     sentinel = object()
     saved = {key: os.environ.get(key, sentinel) for key in keys}
@@ -645,6 +649,130 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertEqual(captured["max_retries"], 0)
         self.assertEqual(captured["base_url"], "http://127.0.0.1:11434/v1")
         self.assertEqual(captured["api_key"], "local")
+
+    def test_runpod_openai_compatible_client_normalizes_v1_once(self) -> None:
+        from amof.orchestrator.llm.local_openai_compatible import (
+            LocalOpenAICompatibleClient,
+            normalize_openai_compatible_base_url,
+        )
+
+        self.assertEqual(
+            normalize_openai_compatible_base_url(
+                "https://pod-8000.proxy.runpod.net",
+                provider_id="runpod",
+            ),
+            "https://pod-8000.proxy.runpod.net/v1",
+        )
+        self.assertEqual(
+            normalize_openai_compatible_base_url(
+                "https://pod-8000.proxy.runpod.net/v1/v1",
+                provider_id="runpod",
+            ),
+            "https://pod-8000.proxy.runpod.net/v1",
+        )
+
+        client = LocalOpenAICompatibleClient(
+            base_url="https://pod-8000.proxy.runpod.net/v1/v1/",
+            model="deepseek-ai/DeepSeek-V4-Flash",
+            api_key="unit-test-key",
+            provider_id="runpod",
+        )
+
+        self.assertEqual(client._base_url, "https://pod-8000.proxy.runpod.net/v1")
+        self.assertIn("runpod/pod-8000.proxy.runpod.net/deepseek-ai/DeepSeek-V4-Flash", client.model_name())
+
+    def test_runpod_openai_compatible_client_adds_proxy_safe_headers(self) -> None:
+        from amof.orchestrator.llm.local_openai_compatible import LocalOpenAICompatibleClient
+
+        captured: dict[str, object] = {}
+
+        class _OpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        fake_openai_module = type("FakeOpenAI", (), {"OpenAI": _OpenAI})
+        with patch.dict(sys.modules, {"openai": fake_openai_module}):
+            client = LocalOpenAICompatibleClient(
+                base_url="https://pod-8000.proxy.runpod.net",
+                model="deepseek-ai/DeepSeek-V4-Flash",
+                api_key="unit-test-key",
+                provider_id="runpod",
+            )
+            client._get_client()
+
+        headers = captured["default_headers"]
+        self.assertIsInstance(headers, dict)
+        self.assertEqual(captured["base_url"], "https://pod-8000.proxy.runpod.net/v1")
+        self.assertIn("Mozilla/5.0", headers["User-Agent"])
+        self.assertIn("application/json", headers["Accept"])
+
+    def test_active_runpod_profile_uses_openai_compatible_client_with_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runpod-profile-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            _write_active_provider_profile(
+                amof_home,
+                "runpod-heavy",
+                {
+                    "provider": "runpod",
+                    "lane": "heavy-lane",
+                    "model_env": "RUNPOD_MODEL",
+                    "credential_refs": {
+                        "api_key_env": "RUNPOD_API_KEY",
+                        "base_url_env": "RUNPOD_OPENAI_BASE_URL",
+                    },
+                    "timeout_seconds": 90,
+                },
+            )
+            manifest = {
+                "ecosystem": "demo-repo",
+                "manifest_source": "appdata",
+                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+            }
+            created_clients: list[_FakeLocalLLM] = []
+
+            def _fake_local_client(**kwargs):
+                client = _FakeLocalLLM(**kwargs)
+                created_clients.append(client)
+                return client
+
+            _FakeAgent.instances.clear()
+            with _isolated_provider_env(
+                amof_home,
+                {
+                    "RUNPOD_API_KEY": "unit-test-runpod-key",
+                    "RUNPOD_MODEL": "deepseek-ai/DeepSeek-V4-Flash",
+                    "RUNPOD_OPENAI_BASE_URL": "https://pod-8000.proxy.runpod.net",
+                },
+            ):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.agent.Agent", _FakeAgent):
+                        import amof.orchestrator.memory as memory
+
+                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
+                            with patch(
+                                "amof.orchestrator.llm.local_openai_compatible.LocalOpenAICompatibleClient",
+                                side_effect=_fake_local_client,
+                            ):
+                                with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                                    result = agent_cmd.cmd_agent(
+                                        manifest,
+                                        goal="Inspect this repo",
+                                        plan_mode=True,
+                                        no_follow_up=True,
+                                        verbose=False,
+                                    )
+
+        self.assertEqual(result, 0, stderr.getvalue())
+        self.assertTrue(created_clients)
+        self.assertEqual(created_clients[0].kwargs["base_url"], "https://pod-8000.proxy.runpod.net/v1")
+        self.assertEqual(created_clients[0].kwargs["model"], "deepseek-ai/DeepSeek-V4-Flash")
+        self.assertEqual(created_clients[0].kwargs["api_key"], "unit-test-runpod-key")
+        self.assertEqual(created_clients[0].kwargs["provider_id"], "runpod")
+        self.assertEqual(created_clients[0].kwargs["timeout"], 90.0)
+        self.assertIn("local/test/deepseek-ai/DeepSeek-V4-Flash", stdout.getvalue())
 
     def test_active_local_profile_missing_base_url_fails_clearly(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-local-missing-base-url-") as td:
