@@ -8,6 +8,28 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.6.1] - 2026-05-20
+
+### Fixed
+
+- Added first-class `runpod` provider handling for AMOF agent profiles.
+- Normalized RunPod OpenAI-compatible base URLs to exactly one `/v1` suffix.
+- Added non-secret RunPod endpoint diagnostics for provider/path failures.
+- Sent proxy-safe non-secret headers for RunPod OpenAI-compatible SDK calls.
+
+### Changed
+
+- Added a `test` optional dependency extra so focused operator tests can install `pytest` deterministically without adding it to runtime installs.
+- Documented the source checkout test install path for AMOF development and operator validation.
+
+### Validation
+
+- `python -m pip install -e ".[test]"` passed.
+- Focused provider/runtime tests passed.
+- Full pytest passed in AMOF-272G validation.
+- Runtime-only install was verified not to require `pytest`.
+- AMOF-272F was promoted and remote-verified at `cde6ae34721d957af34bba51f78b64f4192eb42e`.
+
 ## [2.6.0] - 2026-05-19
 
 ### Added

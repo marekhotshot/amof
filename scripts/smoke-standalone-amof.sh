@@ -67,7 +67,7 @@ chmod 0755 "${FAKE_BIN}/cursor"
 )
 
 if ! rg -q '^AMOF v2\.6\.0$' "${LOG_DIR}/version.txt"; then
-  echo "FAIL: standalone artifact did not report AMOF v2.6.0" >&2
+  echo "FAIL: standalone artifact did not report AMOF v2.6.1" >&2
   exit 1
 fi
 

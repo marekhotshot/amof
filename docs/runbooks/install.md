@@ -74,7 +74,7 @@ end-user installs do not pull in pytest.
 Use this path if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.6.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.6.1"
 amof --version
 ```
 

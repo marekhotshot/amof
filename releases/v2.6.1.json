@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "version": "2.6.1",
+  "tag": "v2.6.1",
+  "previous_tag": "v2.6.0",
+  "timestamp": "2026-05-19T22:09:52Z",
+  "action": "bump",
+  "bump_part": "patch",
+  "stage": null,
+  "stage_num": null,
+  "branch": "release/v2.6.1",
+  "commit": "cde6ae34721d957af34bba51f78b64f4192eb42e",
+  "author": "Marek Ga\u0161per",
+  "commits_since_previous": 1,
+  "commit_subjects": [
+    "chore(promote-main): promote AMOF-272F candidate bundle"
+  ],
+  "files_updated": [
+    "pyproject.toml",
+    "scripts/amof/__init__.py",
+    "scripts/amof/orchestrator/__init__.py",
+    "CHANGELOG.md",
+    "README.md",
+    "docs/runbooks/install.md",
+    "docs/operations/public-smoke-matrix.md",
+    "scripts/smoke-standalone-amof.sh",
+    "releases/v2.6.1.json"
+  ],
+  "origin": "amof-272h-release-operator",
+  "dry_run": false,
+  "pushed": false,
+  "source_ticket": "AMOF-272F",
+  "release_ticket": "AMOF-272H",
+  "promoted_main_sha": "cde6ae34721d957af34bba51f78b64f4192eb42e"
+}
