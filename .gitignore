@@ -17,6 +17,8 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+build/
+dist/
 scripts/amof.egg-info/
 
 # IDE

@@ -25,6 +25,7 @@ ignore = shutil.ignore_patterns(
     ".git",
     ".venv",
     "build",
+    "dist",
     "__pycache__",
     "*.pyc",
     ".pytest_cache",

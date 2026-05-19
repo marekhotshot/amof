@@ -2,9 +2,10 @@
 
 Status: public first-touch install guidance
 
-This runbook explains the two supported public install paths:
+This runbook explains the three supported public install paths:
 
-- primary no-pipx path from a source checkout
+- primary standalone artifact path built from a source checkout
+- checkout-local fallback path from a source checkout
 - optional pipx path for an isolated Python install
 
 ## What AMOF Installs
@@ -20,9 +21,30 @@ AMOF installs a local CLI that can:
 AMOF is evidence-first. It does not auto-commit or push on its own, and it does
 not store raw provider secrets in profile setup.
 
-## Primary No-Pipx Path
+## Primary Standalone Artifact Path
 
-Use this path if you do not want `pipx`.
+Use this path if you want a single-file public executable without `pipx`.
+
+```bash
+git clone https://github.com/marekhotshot/amof.git
+cd amof
+./scripts/build-standalone-amof.sh
+./dist/amof --version
+```
+
+What this does:
+
+- builds a single-file executable artifact at `./dist/amof`
+- bundles the AMOF CLI and its Python dependencies into that artifact
+- lets you run AMOF without pipx and without keeping `.venv/bin/amof` as the only no-pipx path
+
+The standalone artifact is not a native binary. It is a Python-based executable
+artifact and still requires a compatible `python3` runtime on the host unless
+proven otherwise for your environment.
+
+## Checkout-Local Fallback Path
+
+Use this path if you prefer the existing local virtualenv install:
 
 ```bash
 git clone https://github.com/marekhotshot/amof.git
@@ -31,21 +53,15 @@ cd amof
 ./.venv/bin/amof --version
 ```
 
-What this does:
-
-- creates a checkout-local virtualenv at `.venv`
-- installs AMOF and its Python dependencies into that virtualenv
-- gives you an executable CLI at `./.venv/bin/amof`
-
-This is not yet a true standalone binary or `pyz`. The current public no-pipx
-path is a Python virtualenv install that produces an executable `amof` shim.
+This fallback remains supported for development and for users who want the AMOF
+runtime installed into a checkout-local virtualenv.
 
 ## Optional Pipx Path
 
 Use this path if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.5.2"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.6.0"
 amof --version
 ```
 
@@ -58,7 +74,8 @@ amof setup provider --list
 ```
 
 If you installed from a source checkout virtualenv, replace `amof` with
-`./.venv/bin/amof`.
+`./.venv/bin/amof`. If you built the standalone artifact, replace `amof` with
+`./dist/amof`.
 
 ## Adopt A Repo
 

@@ -8,6 +8,39 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.6.0] - 2026-05-19
+
+### Added
+
+- Added `./scripts/build-standalone-amof.sh` to build a single-file public `PEX` artifact at `./dist/amof`.
+- Added `./scripts/smoke-standalone-amof.sh` to validate the standalone artifact against the public no-key smoke surface.
+
+### Changed
+
+- Public install docs now describe three install paths: a standalone artifact build, the checkout-local `./scripts/install-amof.sh` fallback, and the optional pipx path.
+- The public smoke matrix now includes a standalone artifact gate for version, bounded `check`, `doctor`, provider setup, and clean `init --adopt .` adoption.
+
+### Notes
+
+- The standalone artifact is a Python-based executable built locally with `PEX`; it is not claimed as a native binary.
+- The standalone artifact still requires a compatible `python3` runtime on the host unless proven otherwise for a specific environment.
+
+### Validation
+
+- `git diff --check` passed.
+- `python3 -m unittest tests.test_check` passed.
+- Full unit test suite passed.
+- `./scripts/smoke-no-pipx-install.sh` passed.
+- `./scripts/build-standalone-amof.sh` passed.
+- `./scripts/smoke-standalone-amof.sh` passed, including:
+  - executable artifact creation at `dist/amof`
+  - `amof --version`
+  - bounded `amof check` with a fake hanging `cursor`
+  - `amof doctor`
+  - `amof setup provider --list`
+  - `amof setup provider bedrock --print-template`
+  - clean adopted target repo with no source pollution
+
 ## [2.5.2] - 2026-05-19
 
 ### Fixed

@@ -10,11 +10,11 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v2.5.2-0A7FFF.svg" alt="release v2.5.2" />
+  <img src="https://img.shields.io/badge/release-v2.6.0-0A7FFF.svg" alt="release v2.6.0" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
-AMOF v2.5.2 is a local-first CLI for adopting a repo into an evidence-first
+AMOF v2.6.0 is a local-first CLI for adopting a repo into an evidence-first
 agent workflow. It validates the workstation, stores app-data and run evidence
 outside the target repo, records provider profile references, and can run
 read-only planning or explicitly requested bounded execution.
@@ -52,9 +52,11 @@ Those belong outside the public product tree.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v2.5.2 surface:
+This public `main` intentionally keeps a narrow, installable v2.6.0 surface:
 
 - `./scripts/install-amof.sh`
+- `./scripts/build-standalone-amof.sh`
+- `./dist/amof`
 - `amof check`
 - `amof doctor`
 - `amof setup provider`
@@ -66,11 +68,13 @@ This public `main` intentionally keeps a narrow, installable v2.5.2 surface:
 
 ## Released Public CLI Surface
 
-What works in v2.5.2:
+What works in v2.6.0:
 
 - `./scripts/install-amof.sh`
+- `./scripts/build-standalone-amof.sh`
 - `./scripts/install-local.sh`
 - `./install.sh`
+- `./dist/amof --version` after a local standalone build
 - `amof --help`
 - `pipx runpip amof show amof` for installed package metadata
 - `amof update --check`
@@ -95,31 +99,51 @@ What is intentionally not included on this canonical main:
 
 ## 60-Second Quickstart
 
-Primary no-pipx path from a source checkout:
+Single-file public executable path:
 
 ```bash
 git clone https://github.com/marekhotshot/amof.git
 cd amof
-./scripts/install-amof.sh
-./.venv/bin/amof check
-./.venv/bin/amof doctor
+./scripts/build-standalone-amof.sh
+./dist/amof check
+./dist/amof doctor
 ```
 
 What this gives you:
 
-- a generated executable CLI at `./.venv/bin/amof`
-- local dependencies installed into the checkout virtualenv
+- a generated single-file executable at `./dist/amof`
+- no checkout-local virtualenv is required just to run the artifact
 - no `pipx`, `node`, `npm`, or `npx` required
 
-This is not yet a single-file standalone binary or `pyz`. The current public
-no-pipx path is a checkout-local Python virtualenv that produces a normal
-executable `amof` shim inside `.venv/bin`.
+The standalone artifact is not a native binary. It is a single-file Python
+executable built locally with `PEX`, and it still requires a compatible
+`python3` runtime on the host unless proven otherwise for your environment.
 
 ## Install Paths
 
-### Primary no-pipx path
+### Standalone artifact
 
-Use this if you want a self-executable CLI without pipx:
+Use this if you want a single-file public executable without pipx:
+
+```bash
+git clone https://github.com/marekhotshot/amof.git
+cd amof
+./scripts/build-standalone-amof.sh
+./dist/amof --version
+```
+
+The generated artifact:
+
+- lives at `./dist/amof`
+- is a single file built locally from the AMOF checkout
+- is not a native binary
+- still requires `python3` on the host
+
+For a focused walkthrough, see `docs/runbooks/install.md`.
+
+### Checkout-local fallback
+
+Use this if you want the existing source-checkout install path:
 
 ```bash
 git clone https://github.com/marekhotshot/amof.git
@@ -128,14 +152,15 @@ cd amof
 ./.venv/bin/amof --version
 ```
 
-For a focused walkthrough, see `docs/runbooks/install.md`.
+This fallback remains supported for local development and for users who prefer
+an explicit checkout-local virtualenv.
 
 ### Optional pipx path
 
 Use this if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.5.2"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.6.0"
 ```
 
 This installs the `amof` CLI from the public GitHub tag into a pipx-managed
@@ -164,7 +189,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v2.5.2
+amof update --version v2.6.0
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -221,7 +246,7 @@ Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.5.2"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.6.0"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
@@ -239,7 +264,7 @@ message rather than fail on missing `--ecosystem/-e`.
 
 ## Bounded Worker Execution
 
-AMOF v2.5.2 includes a public default `code` runner for bounded
+AMOF v2.6.0 includes a public default `code` runner for bounded
 `amof agent --plan-execute` demos in adopted repositories. The default runner is
 limited to repository read/write tools and does not include shell, delete,
 checkpoint, commit, or push tools.
@@ -393,7 +418,7 @@ Additional public docs retained in this repo include:
 
 ## Release State
 
-- `v2.5.2` is the current public release.
+- `v2.6.0` is the current public release candidate target for this slice.
 - Public install and no-key adoption smoke passed from the GitHub tag.
 - Bounded worker execution is public/demoable, but output must be reviewed as a
   Git diff before commit.
