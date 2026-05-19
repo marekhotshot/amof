@@ -10,20 +10,39 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v2.5.1-0A7FFF.svg" alt="release v2.5.1" />
+  <img src="https://img.shields.io/badge/release-v2.5.2-0A7FFF.svg" alt="release v2.5.2" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
-AMOF v2.5.1 is published on canonical `main` as a public installable CLI for
-repository adoption, bootstrap validation, provider setup, read-only planning,
-and bounded worker execution.
+AMOF v2.5.2 is a local-first CLI for adopting a repo into an evidence-first
+agent workflow. It validates the workstation, stores app-data and run evidence
+outside the target repo, records provider profile references, and can run
+read-only planning or explicitly requested bounded execution.
 
-## What AMOF Does
+AMOF is meant for platform/DevOps engineers who want an auditable local agent
+surface without pretending the tool is magic, a CI/CD replacement, or a hidden
+runtime control plane.
 
-AMOF is a local-first CLI for turning a repository or workspace into a
-governed agentic operations surface. It validates prerequisites, exposes
-bootstrap contracts, produces evidence bundles, and keeps automation
-boundaries explicit before an orchestrator or agent acts on a codebase.
+## What AMOF Is
+
+AMOF turns a repository into a governed local agent surface:
+
+- `amof check` and `amof doctor` verify the workstation and app-data layout.
+- `amof init --adopt .` binds an existing Git repo into AMOF app-data.
+- `amof setup provider ...` stores provider references, not raw secrets.
+- `amof agent --plan` is read-only planning.
+- `amof agent --plan-execute` is bounded execution that still requires human
+  review of the resulting Git diff.
+
+## Why Evidence-First
+
+AMOF keeps evidence and runtime state in app-data instead of spraying files into
+the target repo. The goal is to make agent actions reviewable:
+
+- the target repo stays clean until you explicitly ask for mutation
+- provider setup records secret references only
+- journals, runs, contexts, and bootstrap records live in AMOF app-data
+- AMOF does not mutate, commit, or push unless you explicitly ask it to do so
 
 ## What AMOF Does Not Do
 
@@ -33,7 +52,7 @@ Those belong outside the public product tree.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v2.5.1 surface:
+This public `main` intentionally keeps a narrow, installable v2.5.2 surface:
 
 - `./scripts/install-amof.sh`
 - `amof check`
@@ -47,7 +66,7 @@ This public `main` intentionally keeps a narrow, installable v2.5.1 surface:
 
 ## Released Public CLI Surface
 
-What works in v2.5.1:
+What works in v2.5.2:
 
 - `./scripts/install-amof.sh`
 - `./scripts/install-local.sh`
@@ -74,15 +93,53 @@ What is intentionally not included on this canonical main:
 - infrastructure, runtime adapters, and embedded workspace trees
 - demo UIs, cloud/prod deployment stacks, and runtime operator surfaces
 
-## Quick Install
+## 60-Second Quickstart
+
+Primary no-pipx path from a source checkout:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.5.1"
+git clone https://github.com/marekhotshot/amof.git
+cd amof
+./scripts/install-amof.sh
+./.venv/bin/amof check
+./.venv/bin/amof doctor
 ```
 
-This is the recommended public install path for end users. It installs the
-`amof` CLI from the public GitHub tag without requiring a manual AMOF source
-checkout.
+What this gives you:
+
+- a generated executable CLI at `./.venv/bin/amof`
+- local dependencies installed into the checkout virtualenv
+- no `pipx`, `node`, `npm`, or `npx` required
+
+This is not yet a single-file standalone binary or `pyz`. The current public
+no-pipx path is a checkout-local Python virtualenv that produces a normal
+executable `amof` shim inside `.venv/bin`.
+
+## Install Paths
+
+### Primary no-pipx path
+
+Use this if you want a self-executable CLI without pipx:
+
+```bash
+git clone https://github.com/marekhotshot/amof.git
+cd amof
+./scripts/install-amof.sh
+./.venv/bin/amof --version
+```
+
+For a focused walkthrough, see `docs/runbooks/install.md`.
+
+### Optional pipx path
+
+Use this if you prefer an isolated user install:
+
+```bash
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.5.2"
+```
+
+This installs the `amof` CLI from the public GitHub tag into a pipx-managed
+environment.
 
 After a `pipx install`, use the `amof` command installed by pipx:
 
@@ -107,7 +164,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v2.5.1
+amof update --version v2.5.2
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -144,13 +201,27 @@ environment it may still report optional warnings for Git identity, SSH keys,
 or provider setup depending on the workflows you plan to use. Those warnings do
 not block basic public install, `doctor`, or bootstrap evidence commands.
 
+## After Install
+
+The normal public path after install is:
+
+1. adopt a repo with `amof init --adopt .`
+2. inspect app-data health with `amof doctor`
+3. configure a provider profile with `amof setup provider ...`
+4. run read-only planning with `amof agent --plan`
+5. only use `--plan-execute` when you are ready to review a bounded diff
+
+AMOF stores repo bindings, contexts, journals, run logs, and provider-profile
+references in app-data. It does not write `.amof`, `ecosystems`, or `context`
+directories into the adopted target repo by default.
+
 ## Adopt A Repo For Agent Planning
 
 Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.5.1"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.5.2"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
@@ -168,7 +239,7 @@ message rather than fail on missing `--ecosystem/-e`.
 
 ## Bounded Worker Execution
 
-AMOF v2.5.1 includes a public default `code` runner for bounded
+AMOF v2.5.2 includes a public default `code` runner for bounded
 `amof agent --plan-execute` demos in adopted repositories. The default runner is
 limited to repository read/write tools and does not include shell, delete,
 checkpoint, commit, or push tools.
@@ -183,7 +254,8 @@ amof agent --provider openrouter --plan-execute \
 
 Bounded worker execution must still be treated as draft output. Inspect
 `git status`, review the diff, and run relevant tests before committing. AMOF
-must not auto-commit or push worker changes.
+does not mutate, commit, or push unless you explicitly ask it to do so, and
+bounded worker output must still be reviewed as a Git diff.
 
 ## Configure A Provider Profile
 
@@ -307,6 +379,7 @@ that directory as a flat app-data root.
 
 Additional public docs retained in this repo include:
 
+- `docs/runbooks/install.md`
 - `docs/runbooks/happy-path-agent-workflow.md`
 - `docs/runbooks/installed-cli-bedrock.md`
 - `docs/operations/amof-269-operator-supplied-bedrock-live-smoke.md`
@@ -320,7 +393,7 @@ Additional public docs retained in this repo include:
 
 ## Release State
 
-- `v2.5.1` is the current public release.
+- `v2.5.2` is the current public release.
 - Public install and no-key adoption smoke passed from the GitHub tag.
 - Bounded worker execution is public/demoable, but output must be reviewed as a
   Git diff before commit.

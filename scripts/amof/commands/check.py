@@ -9,8 +9,10 @@ from typing import Any, Dict, List, Tuple
 
 from ..utils import run_command
 
+VERSION_PROBE_TIMEOUT_SECONDS = 3.0
 
-def check_command_exists(cmd: str) -> Tuple[bool, str]:
+
+def check_command_exists(cmd: str, *, probe_timeout_seconds: float = VERSION_PROBE_TIMEOUT_SECONDS) -> Tuple[bool, str]:
     """Check if a command exists and return version if found."""
     path = shutil.which(cmd)
     if not path:
@@ -18,7 +20,9 @@ def check_command_exists(cmd: str) -> Tuple[bool, str]:
     
     # Try common version flags
     for flag in ["--version", "-v", "version"]:
-        code, out = run_command([cmd, flag])
+        code, out = run_command([cmd, flag], timeout_seconds=probe_timeout_seconds)
+        if code == 124:
+            return True, f"installed (version probe timed out: {cmd} {flag})"
         if code == 0 and out:
             # Extract first line of version output
             version = out.split("\n")[0].strip()[:50]
@@ -109,9 +113,12 @@ def cmd_check(manifest: Dict[str, Any]) -> int:
     
     for tool, description in optional_tools:
         found, version = check_command_exists(tool)
-        status = "✓" if found else "○"
+        timed_out = "version probe timed out" in version
+        status = "○" if timed_out or not found else "✓"
         color_version = version if found else f"not found ({description})"
         print(f"  {status} {tool:<12} {color_version}")
+        if timed_out:
+            optional_warning_count += 1
     
     # Git configuration
     print("\n🔧 Git Configuration:")

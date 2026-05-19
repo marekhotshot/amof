@@ -8,6 +8,36 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.5.2] - 2026-05-19
+
+### Fixed
+
+- `amof check` version probes now time out instead of hanging indefinitely on optional tools such as `cursor` in WSL/corporate environments.
+
+### Changed
+
+- Public first-touch docs now explain what AMOF is, why it is evidence-first, and what happens after install in a short platform-engineer-focused quickstart.
+- Public install guidance now treats the source-checkout no-pipx path as a primary install option, with pipx kept as an optional isolated path.
+
+### Notes
+
+- The primary no-pipx path is a checkout-local virtualenv install that produces an executable `amof` shim at `.venv/bin/amof`.
+- This release does not claim a standalone `pyz` or single-file executable artifact yet.
+
+### Validation
+
+- `git diff --check` passed.
+- `python3 -m unittest tests.test_check` passed.
+- Full unit test suite passed.
+- `./scripts/smoke-no-pipx-install.sh` passed, including:
+  - no-pipx install
+  - `amof --version`
+  - bounded `amof check` with a fake hanging `cursor`
+  - `amof doctor`
+  - `amof setup provider --list`
+  - `amof setup provider bedrock --print-template`
+  - clean adopted target repo with no source pollution
+
 ## [2.5.1] - 2026-05-18
 
 ### Fixed

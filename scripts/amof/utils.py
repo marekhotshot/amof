@@ -10,16 +10,28 @@ from pathlib import Path
 from typing import Iterable, List, Tuple
 
 
-def run_command(args: List[str], cwd: Path | None = None) -> Tuple[int, str]:
+def run_command(
+    args: List[str],
+    cwd: Path | None = None,
+    timeout_seconds: float | None = None,
+) -> Tuple[int, str]:
     """Run a shell command and return (exit_code, output)."""
-    process = subprocess.run(
-        args,
-        cwd=str(cwd) if cwd else None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    return process.returncode, process.stdout.strip()
+    try:
+        process = subprocess.run(
+            args,
+            cwd=str(cwd) if cwd else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout_seconds,
+        )
+        return process.returncode, process.stdout.strip()
+    except subprocess.TimeoutExpired as exc:
+        output = str(exc.stdout or "").strip()
+        timeout_note = f"timed out after {timeout_seconds:g}s" if timeout_seconds else "timed out"
+        if output:
+            return 124, f"{output}\n{timeout_note}".strip()
+        return 124, timeout_note
 
 
 def run_with_retry(
