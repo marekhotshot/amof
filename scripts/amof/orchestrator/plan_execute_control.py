@@ -51,11 +51,21 @@ _WRITABLE_ROOT_RE = re.compile(
     r"outside writable roots",
     re.IGNORECASE,
 )
-_ABS_PATH_RE = re.compile(
-    r"(?<![\w/.-])(/[\w./-]+\.(?:md|markdown|py|json|yaml|yml|txt|sh|log|csv|html))"
+_ABS_PATH_RE = re.compile(r"(?<![\w/.-])(/[\w./-]+)")
+_REPORT_FILE_RE = re.compile(
+    r"(?<![\w/.-])(/[\w./-]*(?:report|reports|matrix)[\w./-]*\.(?:md|markdown))\b",
+    re.IGNORECASE,
 )
-_REPORT_DIR_RE = re.compile(
-    r"(/[\w./-]*(?:report|reports|matrix)[\w./-]*)",
+_MARKDOWN_FILE_RE = re.compile(
+    r"(?<![\w/.-])(/[\w./-]+\.(?:md|markdown))\b",
+    re.IGNORECASE,
+)
+_REPORT_ROOT_RE = re.compile(
+    r"(?<![\w/.-])(/[\w./-]*(?:report|reports|matrix)[\w./-]*)",
+    re.IGNORECASE,
+)
+_REPORT_GLOB_RE = re.compile(
+    r"(?<![\w/.-])(/[\w./-]*(?:report|reports|matrix)[\w./-]*)/\*\.(?:md|markdown)\b",
     re.IGNORECASE,
 )
 
@@ -75,6 +85,27 @@ _WRITE_INTENT_RE = re.compile(
     r"\b(write|report|output|save to|matrix-reports)\b",
     re.IGNORECASE,
 )
+_JENKINS_INTENT_RE = re.compile(
+    r"\b(jenkins|trigger\.sh|jenkins[_ -]?job|job url)\b|https?://[^\s]+jenkins[^\s]*",
+    re.IGNORECASE,
+)
+_K8S_INTENT_RE = re.compile(
+    r"\b(kubectl|kubeconfig|kubernetes|helm)\b",
+    re.IGNORECASE,
+)
+_HELM_RENDER_INTENT_RE = re.compile(
+    r"\b(helm\s+(template|lint|diff)|validate\s+helm|chart diff|values validation)\b",
+    re.IGNORECASE,
+)
+_HELM_DEPLOY_INTENT_RE = re.compile(
+    r"\b(helm\s+(upgrade|install|uninstall)|upgrade --install|deploy|deployment|"
+    r"rollout restart|post-deploy|operation\s*=\s*(install|uninstall))\b",
+    re.IGNORECASE,
+)
+_CODE_EDIT_INTENT_RE = re.compile(
+    r"\b(edit|modify|patch|change|write code|update file|strreplace|insert)\b",
+    re.IGNORECASE,
+)
 
 _TRUST_BOUNDARY_TO_FATAL = {
     "capability_not_authorized_by_trusted_intent": "capability_not_authorized_by_trusted_intent",
@@ -82,6 +113,104 @@ _TRUST_BOUNDARY_TO_FATAL = {
     "network_access_from_untrusted_context": "trust_boundary_denied",
     "write_not_authorized_by_trusted_intent": "trust_boundary_denied",
 }
+
+
+@dataclass(frozen=True)
+class ToolPack:
+    name: str
+    tools: List[str]
+    capabilities: List[str]
+    readable_roots: List[str] = field(default_factory=list)
+    writable_roots: List[str] = field(default_factory=list)
+    executable_paths: List[str] = field(default_factory=list)
+    command_policy: List[str] = field(default_factory=list)
+    approval_required_capabilities: List[str] = field(default_factory=list)
+    description: str = ""
+
+
+@dataclass
+class ToolPackRequirements:
+    packs: Set[str] = field(default_factory=set)
+    capabilities: Set[str] = field(default_factory=set)
+    writable_roots: Set[str] = field(default_factory=set)
+    executable_paths: Set[str] = field(default_factory=set)
+    command_policy: Dict[str, List[str]] = field(default_factory=dict)
+    controlled_execution_packs: Set[str] = field(default_factory=set)
+
+
+CORE_TOOL_PACKS: Dict[str, ToolPack] = {
+    "core-read": ToolPack(
+        name="core-read",
+        tools=["Read", "LS", "Glob", "Grep", "InspectFiles"],
+        capabilities=["read"],
+        description="Read-only repository inspection tools.",
+    ),
+    "reports": ToolPack(
+        name="reports",
+        tools=["Write"],
+        capabilities=["write"],
+        description="Write report/checkpoint output under approved writable roots.",
+    ),
+    "code-edit": ToolPack(
+        name="code-edit",
+        tools=["Write", "StrReplace", "InsertAfter", "ReadLints"],
+        capabilities=["read", "write"],
+        description="Bounded code editing tools.",
+    ),
+    "ops-jenkins": ToolPack(
+        name="ops-jenkins",
+        tools=["JenkinsTrigger", "ShellRestricted"],
+        capabilities=["network", "secret", "jenkins", "shell_limited"],
+        approval_required_capabilities=["secret"],
+        description="Jenkins trigger/check helper execution with limited shell policy.",
+    ),
+    "ops-k8s": ToolPack(
+        name="ops-k8s",
+        tools=["K8sInspect", "HelmRelease", "ShellRestricted"],
+        capabilities=["network", "secret", "k8s", "shell_limited"],
+        command_policy=[
+            "kubectl get",
+            "kubectl logs",
+            "kubectl describe",
+            "kubectl top",
+            "helm status",
+            "helm ls",
+            "helm uninstall",
+        ],
+        approval_required_capabilities=["secret"],
+        description="Kubernetes/Helm inspection and bounded remediation commands.",
+    ),
+    "ops-helm-render": ToolPack(
+        name="ops-helm-render",
+        tools=["HelmTemplate", "HelmLint", "HelmDiff", "ShellRestricted"],
+        capabilities=["read", "shell_limited"],
+        command_policy=[
+            "helm template",
+            "helm lint",
+            "helm dependency build",
+            "helm dependency update",
+            "helm diff",
+        ],
+        description="Non-mutating Helm render, lint, validate, and diff checks.",
+    ),
+    "ops-helm-deploy": ToolPack(
+        name="ops-helm-deploy",
+        tools=["HelmDeploy", "K8sMutate", "ShellRestricted"],
+        capabilities=["network", "secret", "write", "k8s_mutation", "shell_limited"],
+        command_policy=[
+            "helm upgrade --install",
+            "helm uninstall",
+            "kubectl rollout restart",
+        ],
+        approval_required_capabilities=["secret"],
+        description="Approved Helm/Kubernetes mutation workflow with report output.",
+    ),
+}
+
+DEFAULT_ENABLED_TOOL_PACKS: frozenset[str] = frozenset(
+    {"core-read", "reports", "code-edit"}
+)
+VALID_TOOL_PACKS: frozenset[str] = frozenset(CORE_TOOL_PACKS)
 
 
 @dataclass
@@ -144,6 +273,8 @@ class PlanExecuteCheckpoint:
     resume_command: str
     continue_on_failure: bool = False
     capability_elevation: Optional[Dict[str, Any]] = None
+    tool_pack_approvals: List[str] = field(default_factory=list)
+    writable_root_approvals: List[str] = field(default_factory=list)
     budget_limit: Optional[float] = None
     spent_cost: Optional[float] = None
     budget_added: float = 0.0
@@ -166,6 +297,10 @@ class PlanExecuteCheckpoint:
         }
         if self.capability_elevation is not None:
             payload["capability_elevation"] = self.capability_elevation
+        if self.tool_pack_approvals:
+            payload["tool_pack_approvals"] = list(self.tool_pack_approvals)
+        if self.writable_root_approvals:
+            payload["writable_root_approvals"] = list(self.writable_root_approvals)
         if self.budget_limit is not None:
             payload["budget_limit"] = self.budget_limit
         if self.spent_cost is not None:
@@ -194,15 +329,184 @@ def _plan_text(plan: ExecutionPlan, task_context: Optional[str] = None) -> str:
     return "\n".join(parts)
 
 
-def extract_report_paths(text: str) -> List[str]:
+def _normalize_write_root(path: str) -> str:
+    return str(path).rstrip("/")
+
+
+def _report_write_roots(text: str) -> Set[str]:
+    roots: Set[str] = set()
+    blob = text or ""
+    for match in _REPORT_GLOB_RE.finditer(blob):
+        roots.add(_normalize_write_root(match.group(1)))
+    for match in _REPORT_FILE_RE.finditer(blob):
+        roots.add(_normalize_write_root(str(Path(match.group(1)).parent)))
+    if _WRITE_INTENT_RE.search(blob):
+        for match in _MARKDOWN_FILE_RE.finditer(blob):
+            roots.add(_normalize_write_root(str(Path(match.group(1)).parent)))
+    for match in _REPORT_ROOT_RE.finditer(blob):
+        candidate = _normalize_write_root(match.group(1))
+        if "." not in Path(candidate).name:
+            roots.add(candidate)
+    return {root for root in roots if root.startswith("/")}
+
+
+def _jenkins_executables(text: str) -> Set[str]:
     paths: Set[str] = set()
+    if not _JENKINS_INTENT_RE.search(text or ""):
+        return paths
     for match in _ABS_PATH_RE.finditer(text or ""):
-        paths.add(match.group(1))
-    for match in _REPORT_DIR_RE.finditer(text or ""):
-        candidate = match.group(1).rstrip("/")
-        if candidate.startswith("/"):
-            paths.add(candidate)
-    return sorted(paths)
+        path = match.group(1).rstrip('.,;)"\'')
+        if Path(path).name in {"trigger.sh", "k8s.sh", "monitor-deployment.sh"}:
+            paths.add(path)
+    return paths
+
+
+def _runner_tool_names(runner_factory: Any, runner: str) -> Set[str]:
+    if runner_factory is None:
+        return set()
+    if hasattr(runner_factory, "runner_tool_names"):
+        return set(runner_factory.runner_tool_names(runner))
+    if hasattr(runner_factory, "_runners"):
+        cfg = getattr(runner_factory, "_runners", {}).get(runner)
+        if cfg is not None:
+            return set(getattr(cfg, "tool_names", []) or [])
+    return set()
+
+
+def resolve_controlled_execution(
+    plan: ExecutionPlan,
+    *,
+    runner_factory: Any,
+    parent_tool_names: Set[str],
+) -> Dict[str, Any]:
+    controlled_tools = {
+        "Shell",
+        "ShellRestricted",
+        "JenkinsTrigger",
+        "K8sInspect",
+        "HelmRelease",
+        "HelmTemplate",
+        "HelmLint",
+        "HelmDiff",
+        "HelmDeploy",
+        "K8sMutate",
+    }
+    parent_available = bool(controlled_tools & parent_tool_names)
+    delegated: Dict[str, bool] = {}
+    for st in plan.subtasks:
+        runner = (st.runner or "code").strip().lower()
+        delegated[runner] = bool(controlled_tools & _runner_tool_names(runner_factory, runner))
+    return {
+        "parent_available": parent_available,
+        "delegated": delegated,
+        "available": parent_available or any(delegated.values()),
+    }
+
+
+def derive_tool_pack_requirements(goal: str, plan: ExecutionPlan) -> ToolPackRequirements:
+    """Derive plan-execute readiness requirements as tool packs."""
+    text = _plan_text(plan, goal)
+    lowered = text.lower()
+    req = ToolPackRequirements(packs={"core-read"})
+
+    report_roots = _report_write_roots(text)
+    if report_roots or "report" in lowered or "matrix" in lowered:
+        req.packs.add("reports")
+        req.writable_roots.update(report_roots)
+
+    if _CODE_EDIT_INTENT_RE.search(text):
+        req.packs.add("code-edit")
+
+    if _JENKINS_INTENT_RE.search(text):
+        req.packs.add("ops-jenkins")
+        req.controlled_execution_packs.add("ops-jenkins")
+        req.executable_paths.update(_jenkins_executables(text))
+
+    if _K8S_INTENT_RE.search(text):
+        req.packs.add("ops-k8s")
+        req.controlled_execution_packs.add("ops-k8s")
+        req.command_policy["ops-k8s"] = list(CORE_TOOL_PACKS["ops-k8s"].command_policy)
+
+    if _HELM_RENDER_INTENT_RE.search(text):
+        req.packs.add("ops-helm-render")
+        req.controlled_execution_packs.add("ops-helm-render")
+        req.command_policy["ops-helm-render"] = list(
+            CORE_TOOL_PACKS["ops-helm-render"].command_policy
+        )
+
+    if _HELM_DEPLOY_INTENT_RE.search(text):
+        req.packs.add("ops-helm-deploy")
+        req.controlled_execution_packs.add("ops-helm-deploy")
+        req.command_policy["ops-helm-deploy"] = list(
+            CORE_TOOL_PACKS["ops-helm-deploy"].command_policy
+        )
+
+    for st in plan.subtasks:
+        runner = (st.runner or "code").strip().lower()
+        if runner == "code" and _CODE_EDIT_INTENT_RE.search(f"{st.title}\n{st.description}"):
+            req.packs.add("code-edit")
+
+    for pack_name in req.packs:
+        req.capabilities.update(CORE_TOOL_PACKS[pack_name].capabilities)
+    return req
+
+
+def extract_report_paths(text: str) -> List[str]:
+    """Report write roots only; helper scripts are modeled by tool packs."""
+    return sorted(_report_write_roots(text))
+
+
+def parse_tool_pack_names(names: Optional[List[str]]) -> Set[str]:
+    parsed: Set[str] = set()
+    if not names:
+        return parsed
+    for raw in names:
+        for part in str(raw).split(","):
+            name = part.strip().lower()
+            if not name:
+                continue
+            if name not in VALID_TOOL_PACKS:
+                raise ValueError(
+                    f"Unknown tool pack {name!r}. "
+                    f"Allowed: {', '.join(sorted(VALID_TOOL_PACKS))}"
+                )
+            parsed.add(name)
+    return parsed
+
+
+def parse_writable_root_paths(raw: Optional[List[str]]) -> List[str]:
+    """Parse and validate plan-scoped writable root paths from CLI flags."""
+    roots: List[str] = []
+    if not raw:
+        return roots
+    for entry in raw:
+        for part in str(entry).split(","):
+            path = part.strip()
+            if not path:
+                continue
+            if not path.startswith("/"):
+                raise ValueError(
+                    f"Writable root must be an absolute path (got {path!r})."
+                )
+            roots.append(_normalize_write_root(path))
+    return roots
+
+
+def _path_covered_by_writable_roots(path: str, roots: List[Path]) -> bool:
+    if not roots:
+        return False
+    target = Path(path)
+    try:
+        resolved = target.resolve()
+    except OSError:
+        resolved = target
+    for root in roots:
+        try:
+            resolved.relative_to(root.resolve())
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def derive_required_capabilities(text: str) -> Set[Capability]:
@@ -274,6 +578,28 @@ def readiness_is_capability_only_failure(result: ExecutionReadinessResult) -> bo
         "missing_required_secret_access",
         "capability_not_authorized_by_trusted_intent",
     }
+
+
+def readiness_is_writable_root_only_failure(result: ExecutionReadinessResult) -> bool:
+    if result.ok or not result.issues:
+        return False
+    return all(issue.kind == "writable_root" for issue in result.issues)
+
+
+def apply_writable_root_elevation(guardrails: Any, roots: List[str]) -> List[str]:
+    """Append plan-scoped writable roots to guardrails for this session only."""
+    approved: List[str] = []
+    for raw in roots:
+        root = Path(raw).resolve()
+        existing = [Path(r).resolve() for r in getattr(guardrails, "writable_roots", []) or []]
+        if root not in existing:
+            guardrails.writable_roots.append(root)
+        approved.append(str(root))
+    return approved
+
+
+def apply_tool_pack_approval(plan: ExecutionPlan, approved_tool_packs: Set[str]) -> None:
+    plan.tool_pack_approvals = sorted(approved_tool_packs)  # type: ignore[attr-defined]
 
 
 def apply_capability_elevation(
@@ -425,13 +751,25 @@ def assess_execution_readiness(
     runner_factory: Any,
     guardrails: Any,
     parent_tool_names: Optional[Set[str]] = None,
+    approved_writable_roots: Optional[Set[str]] = None,
+    approved_tool_packs: Optional[Set[str]] = None,
 ) -> ExecutionReadinessResult:
     text = _plan_text(plan, goal)
     issues: List[ExecutionReadinessIssue] = []
+    requirements = derive_tool_pack_requirements(goal, plan)
+    approved_packs = set(approved_tool_packs or [])
+    enabled_packs = set(DEFAULT_ENABLED_TOOL_PACKS) | approved_packs
+    parent_tools = set(parent_tool_names or [])
 
     required_caps = derive_required_capabilities(text)
+    required_caps.update(
+        cap
+        for cap in requirements.capabilities
+        if cap in VALID_CAPABILITIES
+    )
     trusted = set(trust_state.trusted_intent_caps if trust_state else {"read"})
     missing_caps = sorted(set(required_caps) - trusted)
+    failure_type = "invalid_execution_preconditions"
     if missing_caps:
         issues.append(
             ExecutionReadinessIssue(
@@ -445,30 +783,62 @@ def assess_execution_readiness(
             )
         )
         if "secret" in missing_caps:
-            cap_failure = "missing_required_secret_access"
+            failure_type = "missing_required_secret_access"
         else:
-            cap_failure = "capability_not_authorized_by_trusted_intent"
-        return ExecutionReadinessResult(
-            ok=False,
-            failure_type=cap_failure,
-            issues=issues,
-        )
+            failure_type = "capability_not_authorized_by_trusted_intent"
 
-    failure_type = "invalid_execution_preconditions"
-    required_tools = derive_required_tools(text, plan)
-    available_runners = set(getattr(runner_factory, "runner_names", []) or [])
-    parent_tools = parent_tool_names or set()
-    for tool in sorted(required_tools):
-        if tool == "Shell" and "Shell" not in parent_tools:
-            issues.append(
-                ExecutionReadinessIssue(
-                    kind="missing_tool",
-                    message="Required tool: Shell (not in runner registry)",
-                    detail={"tool": "Shell"},
-                )
+    for pack_name in sorted(requirements.packs - enabled_packs):
+        pack = CORE_TOOL_PACKS[pack_name]
+        suggested = [f"--approve-tool-pack {pack_name}"]
+        if pack.approval_required_capabilities:
+            suggested.append(
+                "--approve-capabilities "
+                + ",".join(sorted(pack.approval_required_capabilities))
             )
+        issues.append(
+            ExecutionReadinessIssue(
+                kind="missing_tool_pack",
+                message=f"Required tool pack: {pack_name}",
+                detail={
+                    "pack": pack_name,
+                    "status": "not approved",
+                    "needs": sorted(pack.capabilities),
+                    "tools": sorted(pack.tools),
+                    "suggested_approval": " ".join(suggested),
+                },
+            )
+        )
+        failure_type = "missing_required_tool"
+
+    controlled = resolve_controlled_execution(
+        plan,
+        runner_factory=runner_factory,
+        parent_tool_names=parent_tools,
+    )
+    for pack_name in sorted(requirements.controlled_execution_packs & enabled_packs):
+        if controlled["available"]:
+            continue
+        issues.append(
+            ExecutionReadinessIssue(
+                kind="missing_controlled_execution",
+                message=f"Controlled execution unavailable for tool pack: {pack_name}",
+                detail={
+                    "pack": pack_name,
+                    "status": "missing",
+                    "parent_registry": controlled["parent_available"],
+                    "delegated_runners": controlled["delegated"],
+                },
+            )
+        )
+        if failure_type != "missing_required_secret_access":
             failure_type = "missing_required_tool"
-        elif tool.startswith("runner:"):
+
+    available_runners = set(getattr(runner_factory, "runner_names", []) or [])
+    required_tools = derive_required_tools(text, plan)
+    for tool in sorted(required_tools):
+        if tool == "Shell":
+            continue
+        if tool.startswith("runner:"):
             runner_name = tool.split(":", 1)[1]
             if runner_name not in available_runners:
                 issues.append(
@@ -480,46 +850,72 @@ def assess_execution_readiness(
                 )
                 failure_type = "missing_required_tool"
 
-    if trust_state and "secret" in required_caps and "secret" not in trusted:
-        issues.append(
-            ExecutionReadinessIssue(
-                kind="trust_boundary",
-                message="Shell/tool secret access denied by trust boundary",
-                detail={
-                    "requested": ["secret"],
-                    "allowed_ceiling": sorted(trusted),
-                },
-            )
-        )
+    base_writable = [
+        Path(root).resolve()
+        for root in getattr(guardrails, "writable_roots", []) or []
+    ]
+    extra_writable = [
+        Path(root).resolve()
+        for root in sorted(approved_writable_roots or [])
+    ]
+    all_writable = base_writable + extra_writable
 
-    for path in extract_report_paths(text):
-        if guardrails is None:
+    for write_target in sorted(requirements.writable_roots):
+        if _path_covered_by_writable_roots(write_target, all_writable):
             continue
-        err = guardrails.check_write(path)
-        if err:
+        guard_err = guardrails.check_write(write_target) if guardrails is not None else None
+        if guard_err:
+            suggestion = (
+                f"Use a writable report directory under an allowed root, or approve "
+                f"writable root with --approve-writable-root {write_target}"
+            )
             issues.append(
                 ExecutionReadinessIssue(
                     kind="writable_root",
-                    message=f"Required report path not writable: {path}",
+                    message=f"Required write root: {write_target}",
                     detail={
-                        "path": path,
-                        "guardrail": err,
-                        "writable_roots": [
-                            str(root)
-                            for root in getattr(guardrails, "writable_roots", []) or []
-                        ],
+                        "path": write_target,
+                        "status": "not approved",
+                        "guardrail": guard_err,
+                        "writable_roots": [str(root) for root in base_writable],
+                        "approved_writable_roots": [str(root) for root in extra_writable],
+                        "suggestion": suggestion,
                     },
                 )
             )
             failure_type = "writable_root_denied"
 
-    if not issues:
-        return ExecutionReadinessResult(ok=True)
-    return ExecutionReadinessResult(
-        ok=False,
-        failure_type=failure_type,
-        issues=issues,
-    )
+    for path in sorted(requirements.executable_paths):
+        issues.append(
+            ExecutionReadinessIssue(
+                kind="required_executable",
+                message=f"Required executable: {path}",
+                detail={
+                    "path": path,
+                    "tool_pack": "ops-jenkins",
+                    "status": "approved"
+                    if "ops-jenkins" in enabled_packs
+                    else "not approved",
+                },
+            )
+        )
+
+    blocking_kinds = {
+        "missing_capability",
+        "missing_tool_pack",
+        "missing_controlled_execution",
+        "missing_runner",
+        "trust_boundary",
+        "writable_root",
+    }
+    blocking = [issue for issue in issues if issue.kind in blocking_kinds]
+    if blocking:
+        return ExecutionReadinessResult(
+            ok=False,
+            failure_type=failure_type,
+            issues=issues,
+        )
+    return ExecutionReadinessResult(ok=True, issues=issues)
 
 
 def build_checkpoint(
@@ -571,6 +967,8 @@ def build_checkpoint(
         resume_command=resume_command,
         continue_on_failure=getattr(plan, "continue_on_failure", False),
         capability_elevation=getattr(plan, "capability_elevation", None),
+        tool_pack_approvals=list(getattr(plan, "tool_pack_approvals", []) or []),
+        writable_root_approvals=list(getattr(plan, "writable_root_approvals", []) or []),
         budget_limit=budget_limit,
         spent_cost=spent_cost,
     )
@@ -587,6 +985,46 @@ def save_plan_checkpoint(checkpoint: PlanExecuteCheckpoint, checkpoints_dir: Pat
 def format_readiness_failure(result: ExecutionReadinessResult) -> str:
     lines = ["Execution readiness failed:"]
     for issue in result.issues:
+        if issue.kind == "missing_tool_pack":
+            lines.append(f"- Required tool pack: {issue.detail.get('pack', issue.message)}")
+            lines.append(f"  Status: {issue.detail.get('status', 'not approved')}")
+            if issue.detail.get("needs"):
+                lines.append(f"  Needs: {', '.join(issue.detail['needs'])}")
+            if issue.detail.get("suggested_approval"):
+                lines.append(
+                    f"  Suggested approval: {issue.detail['suggested_approval']}"
+                )
+            continue
+        if issue.kind == "missing_controlled_execution":
+            lines.append(f"- Tool pack: {issue.detail.get('pack', issue.message)}")
+            lines.append("  Requires: controlled execution")
+            lines.append("  Status: Shell/controlled runner missing")
+            lines.append(
+                "  Shell available in parent registry: "
+                + ("yes" if issue.detail.get("parent_registry") else "no")
+            )
+            delegated = issue.detail.get("delegated_runners") or {}
+            if delegated:
+                delegated_text = ", ".join(
+                    f"{name}={'yes' if available else 'no'}"
+                    for name, available in sorted(delegated.items())
+                )
+                lines.append(f"  Shell available in delegated runners: {delegated_text}")
+            continue
+        if issue.kind == "writable_root":
+            lines.append(f"- Required writable root: {issue.detail.get('path', issue.message)}")
+            lines.append(f"  Status: {issue.detail.get('status', 'not approved')}")
+            if issue.detail.get("suggestion"):
+                lines.append(f"  Suggested approval: {issue.detail['suggestion']}")
+            if issue.detail.get("writable_roots"):
+                lines.append(
+                    f"  Allowed writable roots: {', '.join(issue.detail['writable_roots'])}"
+                )
+            continue
+        if issue.kind == "required_executable":
+            lines.append(f"- Required executable: {issue.detail.get('path', '')}")
+            lines.append(f"  Tool pack: {issue.detail.get('tool_pack', '-')}")
+            continue
         lines.append(f"- {issue.message}")
         if issue.kind == "missing_capability" and issue.detail:
             lines.append(
@@ -602,11 +1040,30 @@ def format_readiness_failure(result: ExecutionReadinessResult) -> str:
                     required_caps=set(required),
                 ).items():
                     lines.append(f"  Why {cap} is needed: {reason}")
-        if issue.kind == "writable_root" and issue.detail.get("writable_roots"):
-            lines.append(
-                f"  Writable roots: {', '.join(issue.detail['writable_roots'])}"
-            )
     lines.append("No subtasks executed.")
+    return "\n".join(lines)
+
+
+def format_readiness_success(
+    *,
+    approved_tool_packs: Set[str],
+    approved_capabilities: Set[str],
+    approved_writable_roots: Set[str],
+) -> str:
+    packs = sorted(DEFAULT_ENABLED_TOOL_PACKS | set(approved_tool_packs))
+    lines = [
+        "Execution readiness passed:",
+        f"- Approved tool packs: {', '.join(packs) or '(none)'}",
+        f"- Approved capabilities: {', '.join(sorted(approved_capabilities)) or '(none)'}",
+        (
+            "- Approved writable roots: "
+            + (", ".join(sorted(approved_writable_roots)) or "(none)")
+        ),
+        "- Shell mode: shell_limited only"
+        if any(p in approved_tool_packs for p in {"ops-jenkins", "ops-k8s"})
+        else "- Shell mode: none",
+        "- No unrestricted shell enabled",
+    ]
     return "\n".join(lines)
 
 
