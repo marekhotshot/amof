@@ -12,7 +12,24 @@ from typing import Any, Dict, List, Optional, Set
 from .planner import ExecutionPlan, Subtask
 from .trust_boundary import Capability, TrustState, derive_trusted_intent_caps
 
-VALID_CAPABILITIES: frozenset[str] = frozenset({"read", "write", "network", "secret"})
+VALID_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "read",
+        "write",
+        "network",
+        "secret",
+        "shell_limited",
+        "jenkins",
+        "k8s",
+        "k8s_mutation",
+    }
+)
+CORE_TRUST_CAPABILITIES: frozenset[str] = frozenset(
+    {"read", "write", "network", "secret"}
+)
+TOOL_PACK_SCOPED_CAPABILITIES: frozenset[str] = frozenset(
+    {"shell_limited", "jenkins", "k8s", "k8s_mutation"}
+)
 
 _CAPABILITY_RATIONALE: Dict[str, str] = {
     "read": "Inspect repository files, configs, and plan context.",
@@ -175,7 +192,6 @@ CORE_TOOL_PACKS: Dict[str, ToolPack] = {
             "kubectl top",
             "helm status",
             "helm ls",
-            "helm uninstall",
         ],
         approval_required_capabilities=["secret"],
         description="Kubernetes/Helm inspection and bounded remediation commands.",
@@ -198,9 +214,10 @@ CORE_TOOL_PACKS: Dict[str, ToolPack] = {
         tools=["HelmDeploy", "K8sMutate", "ShellRestricted"],
         capabilities=["network", "secret", "write", "k8s_mutation", "shell_limited"],
         command_policy=[
+            "helm install",
             "helm upgrade --install",
             "helm uninstall",
-            "kubectl rollout restart",
+            "helm status",
         ],
         approval_required_capabilities=["secret"],
         description="Approved Helm/Kubernetes mutation workflow with report output.",
@@ -373,14 +390,122 @@ def _runner_tool_names(runner_factory: Any, runner: str) -> Set[str]:
     return set()
 
 
+def tool_pack_scoped_capabilities(approved_tool_packs: Set[str]) -> Set[str]:
+    """Capabilities that a tool-pack approval grants only inside that pack."""
+    scoped: Set[str] = set()
+    for pack_name in approved_tool_packs:
+        pack = CORE_TOOL_PACKS.get(pack_name)
+        if not pack:
+            continue
+        scoped.update(
+            cap
+            for cap in pack.capabilities
+            if cap in TOOL_PACK_SCOPED_CAPABILITIES
+        )
+    return scoped
+
+
+def _has_namespace_scope(text: str) -> bool:
+    return bool(re.search(r"(--namespace|-n)\s+\S+|\bnamespace\b", text or "", re.IGNORECASE))
+
+
+def _has_release_scope(text: str) -> bool:
+    return bool(re.search(r"\brelease\b|helm\s+(?:status|install|uninstall|upgrade)\s+\S+", text or "", re.IGNORECASE))
+
+
+def _controlled_policy_status(
+    pack_name: str,
+    *,
+    text: str,
+    executable_paths: Set[str],
+) -> Dict[str, Any]:
+    lowered = (text or "").lower()
+    dangerous = ["bash -c", "sh -c", "rm -rf", "&& rm", "| sh", "| bash"]
+    matched_danger = next((item for item in dangerous if item in lowered), None)
+    if matched_danger:
+        return {
+            "ok": False,
+            "reason": f"unbounded shell fragment is not allowed: {matched_danger}",
+        }
+
+    if pack_name == "ops-jenkins":
+        helpers = {
+            path for path in executable_paths
+            if Path(path).name == "trigger.sh"
+        }
+        if not helpers:
+            return {
+                "ok": False,
+                "reason": "expected approved Jenkins helper path ending in trigger.sh",
+            }
+        return {"ok": True, "reason": "approved Jenkins trigger helper"}
+
+    if pack_name == "ops-k8s":
+        allowed = [
+            "kubectl get",
+            "kubectl logs",
+            "kubectl describe",
+            "kubectl top",
+            "helm status",
+            "helm ls",
+        ]
+        disallowed = [
+            "kubectl apply",
+            "kubectl delete",
+            "kubectl exec",
+            "kubectl port-forward",
+            "helm upgrade",
+            "helm install",
+            "helm uninstall",
+        ]
+        blocked = next((cmd for cmd in disallowed if cmd in lowered), None)
+        if blocked:
+            return {"ok": False, "reason": f"{blocked} is outside ops-k8s inspection policy"}
+        if not any(cmd in lowered for cmd in allowed):
+            return {"ok": False, "reason": "no allowed kubectl/helm inspection command found"}
+        if not _has_namespace_scope(text):
+            return {"ok": False, "reason": "namespace scope is required for ops-k8s"}
+        return {"ok": True, "reason": "namespace-scoped K8s/Helm inspection"}
+
+    if pack_name == "ops-helm-deploy":
+        allowed = [
+            "helm upgrade --install",
+            "helm install",
+            "helm uninstall",
+            "helm status",
+        ]
+        disallowed = [
+            "kubectl delete",
+            "kubectl apply",
+            "kubectl exec",
+            "kubectl port-forward",
+        ]
+        blocked = next((cmd for cmd in disallowed if cmd in lowered), None)
+        if blocked:
+            return {"ok": False, "reason": f"{blocked} is outside ops-helm-deploy policy"}
+        if not any(cmd in lowered for cmd in allowed):
+            return {"ok": False, "reason": "no allowed Helm deploy/status command found"}
+        if not _has_namespace_scope(text):
+            return {"ok": False, "reason": "namespace scope is required for ops-helm-deploy"}
+        if not _has_release_scope(text):
+            return {"ok": False, "reason": "release scope is required for ops-helm-deploy"}
+        return {"ok": True, "reason": "namespace/release-scoped Helm operation"}
+
+    return {"ok": True, "reason": "no additional controlled shell policy"}
+
+
 def resolve_controlled_execution(
     plan: ExecutionPlan,
     *,
     runner_factory: Any,
     parent_tool_names: Set[str],
+    approved_tool_packs: Set[str],
+    effective_capabilities: Set[str],
+    requirements: ToolPackRequirements,
+    text: str,
 ) -> Dict[str, Any]:
     controlled_tools = {
-        "Shell",
+        "ControlledShell",
         "ShellRestricted",
         "JenkinsTrigger",
         "K8sInspect",
@@ -396,10 +521,28 @@ def resolve_controlled_execution(
     for st in plan.subtasks:
         runner = (st.runner or "code").strip().lower()
         delegated[runner] = bool(controlled_tools & _runner_tool_names(runner_factory, runner))
+    synthesized: Dict[str, Dict[str, Any]] = {}
+    for pack_name in sorted(requirements.controlled_execution_packs & approved_tool_packs):
+        pack = CORE_TOOL_PACKS[pack_name]
+        missing_caps = sorted(set(pack.capabilities) - effective_capabilities)
+        policy = _controlled_policy_status(
+            pack_name,
+            text=text,
+            executable_paths=requirements.executable_paths,
+        )
+        synthesized[pack_name] = {
+            "available": not missing_caps and bool(policy.get("ok")),
+            "missing_capabilities": missing_caps,
+            "policy_ok": bool(policy.get("ok")),
+            "policy_reason": policy.get("reason", ""),
+        }
     return {
         "parent_available": parent_available,
         "delegated": delegated,
-        "available": parent_available or any(delegated.values()),
+        "available": parent_available or any(delegated.values()) or any(
+            item["available"] for item in synthesized.values()
+        ),
+        "synthesized": synthesized,
     }
 
 
@@ -572,7 +715,14 @@ def explain_capability_gaps(
 def readiness_is_capability_only_failure(result: ExecutionReadinessResult) -> bool:
     if result.ok or not result.issues:
         return False
-    if not all(issue.kind == "missing_capability" for issue in result.issues):
+    blocking_issues = [
+        issue
+        for issue in result.issues
+        if issue.kind not in {"capability_summary", "path_summary"}
+    ]
+    if not blocking_issues:
+        return False
+    if not all(issue.kind == "missing_capability" for issue in blocking_issues):
         return False
     return result.failure_type in {
         "missing_required_secret_access",
@@ -753,6 +903,8 @@ def assess_execution_readiness(
     parent_tool_names: Optional[Set[str]] = None,
     approved_writable_roots: Optional[Set[str]] = None,
     approved_tool_packs: Optional[Set[str]] = None,
+    approved_capabilities: Optional[Set[str]] = None,
+    base_capability_ceiling: Optional[Set[str]] = None,
 ) -> ExecutionReadinessResult:
     text = _plan_text(plan, goal)
     issues: List[ExecutionReadinessIssue] = []
@@ -760,16 +912,38 @@ def assess_execution_readiness(
     approved_packs = set(approved_tool_packs or [])
     enabled_packs = set(DEFAULT_ENABLED_TOOL_PACKS) | approved_packs
     parent_tools = set(parent_tool_names or [])
+    plan_approved_caps = set(approved_capabilities or [])
+    plan_approved_caps.update(
+        getattr(plan, "capability_elevation", {}).get("approved_capabilities", [])
+        if isinstance(getattr(plan, "capability_elevation", None), dict)
+        else []
+    )
+    plan_approved_caps.update(tool_pack_scoped_capabilities(approved_packs))
 
     required_caps = derive_required_capabilities(text)
-    required_caps.update(
-        cap
-        for cap in requirements.capabilities
-        if cap in VALID_CAPABILITIES
+    required_caps.update(cap for cap in requirements.capabilities if cap in VALID_CAPABILITIES)
+    base_ceiling = set(
+        base_capability_ceiling
+        if base_capability_ceiling is not None
+        else (trust_state.trusted_intent_caps if trust_state else {"read"})
     )
-    trusted = set(trust_state.trusted_intent_caps if trust_state else {"read"})
-    missing_caps = sorted(set(required_caps) - trusted)
+    effective_ceiling = base_ceiling | plan_approved_caps
+    missing_caps = sorted(set(required_caps) - effective_ceiling)
     failure_type = "invalid_execution_preconditions"
+    issues.append(
+        ExecutionReadinessIssue(
+            kind="capability_summary",
+            message="Capability readiness",
+            detail={
+                "required": sorted(required_caps),
+                "base_ceiling": sorted(base_ceiling),
+                "approved_capabilities": sorted(plan_approved_caps),
+                "effective_ceiling": sorted(effective_ceiling),
+                "missing_capabilities": missing_caps,
+                "status": "approved" if not missing_caps else "missing",
+            },
+        )
+    )
     if missing_caps:
         issues.append(
             ExecutionReadinessIssue(
@@ -777,7 +951,11 @@ def assess_execution_readiness(
                 message=f"Required capability: {', '.join(missing_caps)}",
                 detail={
                     "required": sorted(required_caps),
-                    "allowed_ceiling": sorted(trusted),
+                    "allowed_ceiling": sorted(effective_ceiling),
+                    "base_ceiling": sorted(base_ceiling),
+                    "approved_capabilities": sorted(plan_approved_caps),
+                    "effective_ceiling": sorted(effective_ceiling),
+                    "missing_capabilities": missing_caps,
                     "plan_text": text[:2000],
                 },
             )
@@ -814,9 +992,30 @@ def assess_execution_readiness(
         plan,
         runner_factory=runner_factory,
         parent_tool_names=parent_tools,
+        approved_tool_packs=approved_packs,
+        effective_capabilities=set(effective_ceiling),
+        requirements=requirements,
+        text=text,
     )
     for pack_name in sorted(requirements.controlled_execution_packs & enabled_packs):
-        if controlled["available"]:
+        if (
+            pack_name == "ops-k8s"
+            and "ops-helm-deploy" in enabled_packs
+            and _HELM_DEPLOY_INTENT_RE.search(text)
+        ):
+            continue
+        synthesized = controlled["synthesized"].get(pack_name, {})
+        mechanism_available = bool(
+            controlled["parent_available"]
+            or any(controlled["delegated"].values())
+            or synthesized.get("available")
+        )
+        pack_controlled = bool(
+            mechanism_available
+            and not synthesized.get("missing_capabilities")
+            and synthesized.get("policy_ok", True)
+        )
+        if pack_controlled:
             continue
         issues.append(
             ExecutionReadinessIssue(
@@ -827,6 +1026,7 @@ def assess_execution_readiness(
                     "status": "missing",
                     "parent_registry": controlled["parent_available"],
                     "delegated_runners": controlled["delegated"],
+                    "synthesized_runner": controlled["synthesized"].get(pack_name, {}),
                 },
             )
         )
@@ -859,10 +1059,13 @@ def assess_execution_readiness(
         for root in sorted(approved_writable_roots or [])
     ]
     all_writable = base_writable + extra_writable
+    writable_status: Dict[str, str] = {}
 
     for write_target in sorted(requirements.writable_roots):
         if _path_covered_by_writable_roots(write_target, all_writable):
+            writable_status[write_target] = "approved"
             continue
+        writable_status[write_target] = "not approved"
         guard_err = guardrails.check_write(write_target) if guardrails is not None else None
         if guard_err:
             suggestion = (
@@ -884,6 +1087,24 @@ def assess_execution_readiness(
                 )
             )
             failure_type = "writable_root_denied"
+
+    issues.append(
+        ExecutionReadinessIssue(
+            kind="path_summary",
+            message="Path readiness",
+            detail={
+                "read_paths": sorted(
+                    root
+                    for pack_name in requirements.packs
+                    for root in CORE_TOOL_PACKS[pack_name].readable_roots
+                ),
+                "executable_paths": sorted(requirements.executable_paths),
+                "writable_roots": sorted(requirements.writable_roots),
+                "writable_root_status": writable_status,
+                "approved_writable_roots": [str(root) for root in extra_writable],
+            },
+        )
+    )
 
     for path in sorted(requirements.executable_paths):
         issues.append(
@@ -985,6 +1206,22 @@ def save_plan_checkpoint(checkpoint: PlanExecuteCheckpoint, checkpoints_dir: Pat
 def format_readiness_failure(result: ExecutionReadinessResult) -> str:
     lines = ["Execution readiness failed:"]
     for issue in result.issues:
+        if issue.kind == "capability_summary":
+            lines.append("- Capabilities:")
+            lines.append(
+                f"  Base ceiling: {', '.join(issue.detail.get('base_ceiling', [])) or '(none)'}"
+            )
+            lines.append(
+                "  Approved for this plan: "
+                + (", ".join(issue.detail.get("approved_capabilities", [])) or "(none)")
+            )
+            lines.append(
+                "  Effective ceiling: "
+                + (", ".join(issue.detail.get("effective_ceiling", [])) or "(none)")
+            )
+            missing = issue.detail.get("missing_capabilities") or []
+            lines.append("  Status: " + ("missing " + ", ".join(missing) if missing else "approved"))
+            continue
         if issue.kind == "missing_tool_pack":
             lines.append(f"- Required tool pack: {issue.detail.get('pack', issue.message)}")
             lines.append(f"  Status: {issue.detail.get('status', 'not approved')}")
@@ -1010,6 +1247,19 @@ def format_readiness_failure(result: ExecutionReadinessResult) -> str:
                     for name, available in sorted(delegated.items())
                 )
                 lines.append(f"  Shell available in delegated runners: {delegated_text}")
+            synthesized = issue.detail.get("synthesized_runner") or {}
+            if synthesized:
+                lines.append(
+                    "  Controlled tool-pack runner: "
+                    + ("yes" if synthesized.get("available") else "no")
+                )
+                if synthesized.get("missing_capabilities"):
+                    lines.append(
+                        "  Missing capabilities: "
+                        + ", ".join(synthesized["missing_capabilities"])
+                    )
+                if synthesized.get("policy_reason"):
+                    lines.append(f"  Policy: {synthesized['policy_reason']}")
             continue
         if issue.kind == "writable_root":
             lines.append(f"- Required writable root: {issue.detail.get('path', issue.message)}")
@@ -1025,13 +1275,40 @@ def format_readiness_failure(result: ExecutionReadinessResult) -> str:
             lines.append(f"- Required executable: {issue.detail.get('path', '')}")
             lines.append(f"  Tool pack: {issue.detail.get('tool_pack', '-')}")
             continue
+        if issue.kind == "path_summary":
+            lines.append("- Paths:")
+            read_paths = issue.detail.get("read_paths") or []
+            executable_paths = issue.detail.get("executable_paths") or []
+            writable_roots = issue.detail.get("writable_roots") or []
+            lines.append(f"  Read paths: {', '.join(read_paths) or '(none)'}")
+            lines.append(
+                f"  Executable paths: {', '.join(executable_paths) or '(none)'}"
+            )
+            if writable_roots:
+                status = issue.detail.get("writable_root_status") or {}
+                lines.append(
+                    "  Writable roots: "
+                    + ", ".join(f"{root} ({status.get(root, 'unknown')})" for root in writable_roots)
+                )
+            else:
+                lines.append("  Writable roots: (none)")
+            continue
         lines.append(f"- {issue.message}")
         if issue.kind == "missing_capability" and issue.detail:
             lines.append(
-                f"  Allowed ceiling: {', '.join(issue.detail.get('allowed_ceiling', []))}"
+                f"  Base ceiling: {', '.join(issue.detail.get('base_ceiling', []))}"
+            )
+            lines.append(
+                "  Approved for this plan: "
+                + (", ".join(issue.detail.get("approved_capabilities", [])) or "(none)")
+            )
+            lines.append(
+                f"  Effective ceiling: {', '.join(issue.detail.get('effective_ceiling', []))}"
             )
             required = issue.detail.get("required") or []
-            missing = sorted(set(required) - set(issue.detail.get("allowed_ceiling", [])))
+            missing = issue.detail.get("missing_capabilities") or sorted(
+                set(required) - set(issue.detail.get("effective_ceiling", []))
+            )
             if missing:
                 text_detail = issue.detail.get("plan_text", "")
                 for cap, reason in explain_capability_gaps(
@@ -1049,18 +1326,25 @@ def format_readiness_success(
     approved_tool_packs: Set[str],
     approved_capabilities: Set[str],
     approved_writable_roots: Set[str],
+    base_capability_ceiling: Optional[Set[str]] = None,
 ) -> str:
     packs = sorted(DEFAULT_ENABLED_TOOL_PACKS | set(approved_tool_packs))
+    scoped_caps = tool_pack_scoped_capabilities(set(approved_tool_packs))
+    plan_caps = set(approved_capabilities) | scoped_caps
+    base_caps = set(base_capability_ceiling or set())
+    effective_caps = base_caps | plan_caps
     lines = [
         "Execution readiness passed:",
         f"- Approved tool packs: {', '.join(packs) or '(none)'}",
-        f"- Approved capabilities: {', '.join(sorted(approved_capabilities)) or '(none)'}",
+        f"- Base capability ceiling: {', '.join(sorted(base_caps)) or '(none)'}",
+        f"- Approved capabilities for this plan: {', '.join(sorted(plan_caps)) or '(none)'}",
+        f"- Effective capability ceiling: {', '.join(sorted(effective_caps)) or '(none)'}",
         (
             "- Approved writable roots: "
             + (", ".join(sorted(approved_writable_roots)) or "(none)")
         ),
         "- Shell mode: shell_limited only"
-        if any(p in approved_tool_packs for p in {"ops-jenkins", "ops-k8s"})
+        if any(p in approved_tool_packs for p in {"ops-jenkins", "ops-k8s", "ops-helm-deploy"})
         else "- Shell mode: none",
         "- No unrestricted shell enabled",
     ]
@@ -1077,12 +1361,15 @@ def format_capability_elevation_prompt(
     issue = next((i for i in result.issues if i.kind == "missing_capability"), None)
     detail = issue.detail if issue else {}
     missing = sorted(
-        set(detail.get("required") or []) - set(detail.get("allowed_ceiling") or [])
+        set(detail.get("required") or []) - set(detail.get("effective_ceiling") or detail.get("allowed_ceiling") or [])
     )
     lines = [
         "Execution readiness requires capability elevation for this plan only:",
         f"  Required: {', '.join(missing)}",
-        f"  Current ceiling: {', '.join(detail.get('allowed_ceiling', []))}",
+        f"  Base ceiling: {', '.join(detail.get('base_ceiling', []))}",
+        "  Approved for this plan: "
+        + (", ".join(detail.get("approved_capabilities", [])) or "(none)"),
+        f"  Effective ceiling: {', '.join(detail.get('effective_ceiling', detail.get('allowed_ceiling', [])))}",
     ]
     for cap, reason in explain_capability_gaps(
         missing,
