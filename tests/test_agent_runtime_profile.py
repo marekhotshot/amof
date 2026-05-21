@@ -2108,7 +2108,8 @@ Inspect the repo.
                             )
 
         self.assertEqual(result, 1, stderr.getvalue())
-        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+        self.assertIn("Fatal stop: provider_network", stdout.getvalue())
+        self.assertIn("Checkpoint saved:", stdout.getvalue())
 
     def test_plan_execute_unsafe_strreplace_returns_nonzero_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-unsafe-strreplace-") as td:
@@ -2168,8 +2169,8 @@ Attempt one unsafe replacement.
         self.assertEqual(result, 1, stderr.getvalue())
         self.assertEqual(after, before)
         self.assertEqual(git_status.stdout.strip(), "")
-        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
-        self.assertIn("failed_tool_calls=1", stdout.getvalue())
+        self.assertIn("Fatal stop: tool_failed", stdout.getvalue())
+        self.assertIn("Checkpoint saved:", stdout.getvalue())
 
     def test_plan_execute_failed_subtask_returns_nonzero(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-failed-subtask-") as td:
@@ -2218,7 +2219,8 @@ Run one worker subtask.
                             )
 
         self.assertEqual(result, 1, stderr.getvalue())
-        self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
+        self.assertIn("Fatal stop: max_iterations", stdout.getvalue())
+        self.assertIn("Checkpoint saved:", stdout.getvalue())
 
     def test_plan_execute_diff_guard_failure_returns_nonzero(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-diff-guard-fail-") as td:
@@ -2275,6 +2277,7 @@ Add code and test.
         self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
         self.assertIn("diff_guard_status=fail", stdout.getvalue())
         self.assertIn("requested_paths_missing:tests/test_app.py", stdout.getvalue())
+        self.assertNotIn("Execution readiness failed", stdout.getvalue())
 
     def test_plan_execute_invalid_python_edit_returns_nonzero_with_compile_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-invalid-python-") as td:
@@ -2529,6 +2532,257 @@ Add a function.
 
         self.assertEqual(result, 0)
         self.assertEqual(fake_agent.run_calls, 0)
+
+
+class _SequentialRunnerFactory:
+    """Runs subtasks in order; records stop reasons per call."""
+
+    runner_names = ["code"]
+
+    def __init__(self, outcomes: list[tuple[bool, str]]) -> None:
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def run_runner(self, name, task, context=None, parent_telemetry=None):
+        from amof.orchestrator.runners import RunnerResult
+        from amof.orchestrator.telemetry import SessionTelemetry
+
+        idx = min(self.calls, len(self.outcomes) - 1)
+        success, stop_reason = self.outcomes[idx]
+        self.calls += 1
+        return RunnerResult(
+            runner_name=name,
+            success=success,
+            response="ok" if success else "failed",
+            stop_reason=stop_reason,
+            telemetry=SessionTelemetry(),
+        )
+
+
+class PlanExecuteFatalStopTests(unittest.TestCase):
+    def _five_subtask_plan(self) -> "ExecutionPlan":
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        subtasks = [
+            Subtask(id=str(i), title=f"Task {i}", description=f"Do {i}", runner="code")
+            for i in range(1, 6)
+        ]
+        return ExecutionPlan(
+            analysis="matrix replay",
+            subtasks=subtasks,
+            execution_order=[st.id for st in subtasks],
+        )
+
+    def test_plan_execute_stops_on_cost_exceeded(self) -> None:
+        from amof.orchestrator.executor import SubtaskExecutor
+
+        plan = self._five_subtask_plan()
+        factory = _SequentialRunnerFactory([(False, "cost_exceeded")] + [(True, "completed")] * 4)
+        SubtaskExecutor(runner_factory=factory).execute_plan(plan)
+
+        self.assertEqual(factory.calls, 1)
+        self.assertEqual(plan.subtasks[0].status, "failed")
+        self.assertEqual(plan.subtasks[0].error, "cost_exceeded")
+        for st in plan.subtasks[1:]:
+            self.assertEqual(st.status, "skipped")
+        self.assertIsNotNone(getattr(plan, "fatal_stop", None))
+        checkpoint = __import__(
+            "amof.orchestrator.plan_execute_control", fromlist=["build_checkpoint"]
+        ).build_checkpoint(
+            plan,
+            session_id="sess-1",
+            failure_type="cost_exceeded",
+            failure_message="budget",
+            failed_subtask_id="1",
+            goal="run matrix",
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = __import__(
+                "amof.orchestrator.plan_execute_control", fromlist=["save_plan_checkpoint"]
+            ).save_plan_checkpoint(checkpoint, Path(td))
+            self.assertTrue(path.exists())
+
+    def test_plan_execute_stops_on_trust_boundary_denied(self) -> None:
+        from amof.orchestrator.executor import SubtaskExecutor
+
+        plan = self._five_subtask_plan()
+        denial = (
+            "POLICY DENIED [capability_not_authorized_by_trusted_intent]: "
+            "Requested capabilities ['secret'] are outside the trusted top-level task ceiling "
+            "['network', 'read', 'write']."
+        )
+        factory = _SequentialRunnerFactory([(False, denial)] + [(True, "completed")] * 4)
+        SubtaskExecutor(runner_factory=factory).execute_plan(plan)
+
+        self.assertEqual(factory.calls, 1)
+        self.assertEqual(
+            getattr(plan, "fatal_stop", None).failure_type,
+            "capability_not_authorized_by_trusted_intent",
+        )
+        self.assertEqual(plan.subtasks[1].status, "skipped")
+
+    def test_execution_readiness_detects_missing_secret_capability(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Trigger Jenkins with API token from .env and kubectl using kubeconfig"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Preflight", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        trust = create_trust_state("verify Jenkins endpoint and read repository")
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_RecordingRunnerFactory(),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_type, "missing_required_secret_access")
+        self.assertTrue(any(i.kind == "missing_capability" for i in result.issues))
+
+    def test_execution_readiness_detects_missing_required_tool(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Run deploy.sh via shell and use the k8s runner for cluster checks"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="K8s", description=goal, runner="k8s")],
+            execution_order=["1"],
+        )
+        trust = create_trust_state("inspect repository files and write a report")
+        factory = _RecordingRunnerFactory()
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=factory,
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+            parent_tool_names={"Read", "Write"},
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_type, "missing_required_tool")
+        self.assertTrue(any(i.kind in {"missing_tool", "missing_runner"} for i in result.issues))
+
+    def test_writable_root_denied_is_preflight_failure(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            goal = "Write report to /tmp/delivery-3663-matrix-reports/00-preflight.md"
+            plan = ExecutionPlan(
+                analysis=goal,
+                subtasks=[Subtask(id="1", title="Report", description=goal, runner="code")],
+                execution_order=["1"],
+            )
+            trust = create_trust_state(goal)
+            guardrails = Guardrails(
+                mode="build",
+                config=GuardrailConfig.public_defaults(),
+                writable_roots=[repo],
+            )
+            result = assess_execution_readiness(
+                goal,
+                plan,
+                trust_state=trust,
+                runner_factory=_RecordingRunnerFactory(),
+                guardrails=guardrails,
+            )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_type, "writable_root_denied")
+
+    def test_nonfatal_optional_subtask_can_continue(self) -> None:
+        from amof.orchestrator.executor import SubtaskExecutor
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        plan = ExecutionPlan(
+            analysis="optional preflight",
+            subtasks=[
+                Subtask(id="1", title="Optional", description="x", runner="code", optional=True),
+                Subtask(id="2", title="Main", description="y", runner="code"),
+            ],
+            execution_order=["1", "2"],
+            continue_on_failure=True,
+        )
+        factory = _SequentialRunnerFactory([(False, "tool_failed"), (True, "completed")])
+        SubtaskExecutor(runner_factory=factory).execute_plan(plan)
+
+        self.assertEqual(factory.calls, 2)
+        self.assertEqual(plan.subtasks[0].status, "failed")
+        self.assertEqual(plan.subtasks[1].status, "completed")
+        self.assertIsNone(getattr(plan, "fatal_stop", None))
+
+    def test_fatal_failure_overrides_continue_on_failure(self) -> None:
+        from amof.orchestrator.executor import SubtaskExecutor
+
+        plan = self._five_subtask_plan()
+        plan.continue_on_failure = True
+        factory = _SequentialRunnerFactory([(False, "cost_exceeded")] + [(True, "completed")] * 4)
+        SubtaskExecutor(runner_factory=factory).execute_plan(plan)
+
+        self.assertEqual(factory.calls, 1)
+        self.assertEqual(plan.subtasks[1].status, "skipped")
+
+    def test_resume_checkpoint_contains_remaining_subtasks(self) -> None:
+        from amof.orchestrator.plan_execute_control import build_checkpoint
+
+        plan = self._five_subtask_plan()
+        plan.subtasks[0].status = "failed"
+        plan.subtasks[0].error = "cost_exceeded"
+        for st in plan.subtasks[1:]:
+            st.status = "skipped"
+            st.error = "Skipped: cost_exceeded"
+
+        checkpoint = build_checkpoint(
+            plan,
+            session_id="20260521-110057",
+            failure_type="cost_exceeded",
+            failure_message="Cost limit exceeded",
+            failed_subtask_id="1",
+            goal="DELIVERY-3663 matrix replay",
+        )
+        self.assertEqual(checkpoint.completed_subtasks, [])
+        self.assertEqual(checkpoint.failed_subtask_id, "1")
+        self.assertEqual(len(checkpoint.remaining_subtasks), 5)
+        self.assertIn("amof agent --plan-execute", checkpoint.resume_command)
+        self.assertEqual(checkpoint.skip_reason, "skipped_budget_blocked")
+
+    def test_budget_approval_resume_does_not_restart_completed_subtasks(self) -> None:
+        from amof.orchestrator.executor import SubtaskExecutor
+        from amof.orchestrator.plan_execute_control import build_checkpoint
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        plan = ExecutionPlan(
+            analysis="resume after budget",
+            subtasks=[
+                Subtask(id="1", title="Done", description="a", runner="code"),
+                Subtask(id="2", title="Blocked", description="b", runner="code"),
+            ],
+            execution_order=["1", "2"],
+        )
+        plan.subtasks[0].status = "completed"
+        factory = _SequentialRunnerFactory([(False, "cost_exceeded")])
+        SubtaskExecutor(runner_factory=factory).execute_plan(plan)
+
+        checkpoint = build_checkpoint(
+            plan,
+            session_id="sess-budget",
+            failure_type="cost_exceeded",
+            failure_message="over budget",
+            failed_subtask_id="2",
+            goal="resume task",
+        )
+        self.assertEqual(checkpoint.completed_subtasks, ["1"])
+        self.assertIn("2", checkpoint.remaining_subtasks)
+        self.assertNotIn("1", checkpoint.remaining_subtasks)
 
 
 if __name__ == "__main__":
