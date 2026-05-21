@@ -26,6 +26,13 @@ from typing import Any, Dict, List, Optional
 from .agent import Agent
 from .events import EventLog
 from .llm.base import LLMClient
+from .plan_execute_control import (
+    PlanExecuteStop,
+    is_fatal_failure,
+    normalize_subtask_failure,
+    skip_remaining_subtasks,
+    skip_status_for_failure,
+)
 from .planner import ExecutionPlan, Subtask
 from .prompt_loader import load_prompt
 from .session import Session
@@ -140,8 +147,38 @@ class SubtaskExecutor:
             The plan with all subtasks updated.
         """
         logger.info("Executing plan: %d subtasks", len(plan.subtasks))
+        plan.fatal_stop = None  # type: ignore[attr-defined]
 
         while not plan.is_complete:
+            if self._parent_telemetry is not None and self._parent_telemetry.cost_exceeded:
+                failed = plan.subtasks[0] if plan.subtasks else None
+                for st in plan.subtasks:
+                    if st.status in {"running", "pending"}:
+                        failed = st
+                        break
+                if failed is not None and failed.status == "pending":
+                    failed.status = "failed"
+                    failed.error = "cost_exceeded"
+                stop = PlanExecuteStop(
+                    fatal=True,
+                    failure_type="cost_exceeded",
+                    failure_message=(
+                        f"Cost limit exceeded "
+                        f"(${self._parent_telemetry.total_cost:.4f} "
+                        f">= ${self._parent_telemetry.max_cost:.2f})."
+                    ),
+                    failed_subtask_id=failed.id if failed else None,
+                    skip_status=skip_status_for_failure("cost_exceeded"),
+                )
+                skip_remaining_subtasks(
+                    plan,
+                    skip_status=stop.skip_status,
+                    skip_message=f"Skipped: {stop.failure_type}",
+                    after_task_id=stop.failed_subtask_id,
+                )
+                plan.fatal_stop = stop  # type: ignore[attr-defined]
+                break
+
             # Get next batch of runnable subtasks
             batch = plan.runnable_batch()
             if not batch:
@@ -173,11 +210,44 @@ class SubtaskExecutor:
                 if subtask.status == "completed":
                     plan.mark_task_complete(subtask.id)
 
-                # If a subtask fails, check if any remaining subtasks depend on it
-                if subtask.status == "failed":
-                    logger.warning(
-                        "Subtask %s failed: %s", subtask.id, subtask.error,
-                    )
+                if subtask.status != "failed":
+                    continue
+
+                failure_type = normalize_subtask_failure(subtask.error, subtask.error)
+                if (
+                    self._parent_telemetry is not None
+                    and self._parent_telemetry.cost_exceeded
+                ):
+                    failure_type = "cost_exceeded"
+                    subtask.error = "cost_exceeded"
+
+                logger.warning("Subtask %s failed: %s", subtask.id, failure_type)
+
+                if not is_fatal_failure(
+                    failure_type,
+                    subtask_optional=subtask.optional,
+                    continue_on_failure=getattr(plan, "continue_on_failure", False),
+                ):
+                    continue
+
+                stop = PlanExecuteStop(
+                    fatal=True,
+                    failure_type=failure_type,
+                    failure_message=subtask.error or failure_type,
+                    failed_subtask_id=subtask.id,
+                    skip_status=skip_status_for_failure(failure_type),
+                )
+                skip_remaining_subtasks(
+                    plan,
+                    skip_status=stop.skip_status,
+                    skip_message=f"Skipped: {stop.failure_type}",
+                    after_task_id=subtask.id,
+                )
+                plan.fatal_stop = stop  # type: ignore[attr-defined]
+                break
+
+            if getattr(plan, "fatal_stop", None) is not None:
+                break
 
         # Log final status
         completed = sum(1 for st in plan.subtasks if st.status == "completed")

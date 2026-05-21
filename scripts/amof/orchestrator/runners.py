@@ -29,6 +29,7 @@ from .model_router import ModelRouter
 from .prompt_loader import load_prompt
 from .session import Session
 from .telemetry import SessionTelemetry
+from .plan_execute_control import FATAL_STOP_REASONS, normalize_subtask_failure
 from .tools.base import Guardrails, Tool, ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -390,10 +391,14 @@ class RunnerFactory:
             for tool_name, metrics in telemetry.tool_metrics.items()
             if tool_name in {"Write", "StrReplace", "Delete"}
         )
-        runner_success = agent.stop_reason == "completed" and failed_tool_calls == 0
-        stop_reason = agent.stop_reason
-        if agent.stop_reason == "completed" and failed_tool_calls:
-            stop_reason = "tool_failed"
+        stop_reason = agent.stop_reason or "tool_failed"
+        if stop_reason in FATAL_STOP_REASONS:
+            runner_success = False
+        elif stop_reason == "completed" and failed_tool_calls:
+            stop_reason = normalize_subtask_failure("tool_failed", events=events)
+            runner_success = False
+        else:
+            runner_success = stop_reason == "completed" and failed_tool_calls == 0
 
         return RunnerResult(
             runner_name=name,

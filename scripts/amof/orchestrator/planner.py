@@ -51,6 +51,7 @@ class Subtask:
     description: str
     runner: str = "code"
     depends_on: List[str] = field(default_factory=list)
+    optional: bool = False
     # Filled after execution
     status: str = "pending"  # pending, running, completed, failed, skipped
     result: Optional[str] = None
@@ -72,6 +73,7 @@ class ExecutionPlan:
     planning_cost: float = 0.0
     planning_latency_ms: int = 0
     file_path: Optional[Path] = None  # path to persisted .md file
+    continue_on_failure: bool = False
 
     def next_runnable(self) -> Optional[Subtask]:
         """Return the next subtask that can run (dependencies met).

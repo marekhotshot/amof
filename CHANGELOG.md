@@ -8,6 +8,27 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.6.2] - 2026-05-21
+
+### Fixed
+
+- plan-execute now stops immediately on fatal subtask failures such as `cost_exceeded`, trust-boundary denial, missing required tools, writable-root denial, and invalid execution preconditions.
+- Remaining subtasks are skipped instead of attempted after a fatal failure.
+- Execution-readiness preflight detects missing tools/capabilities before expensive execution.
+- Fatal stop reasons are preserved and checkpoints are saved for resume/manual approval.
+
+### Notes
+
+- Checkpoint/resume guidance is saved on fatal stop; full automatic resume from checkpoint is not claimed in this release.
+
+### Validation
+
+- `python3 -m unittest tests.test_agent_runtime_profile.PlanExecuteFatalStopTests` passed (9 tests).
+- `python3 -m unittest tests.test_agent_runtime_profile` passed (79 tests).
+- `python3 -m unittest` passed (155 tests, 2 skipped).
+- `python3 -m compileall scripts/amof -q` passed.
+- `git diff --check` passed.
+
 ## [2.6.1] - 2026-05-20
 
 ### Fixed

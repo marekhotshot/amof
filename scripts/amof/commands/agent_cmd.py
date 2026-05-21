@@ -686,6 +686,117 @@ def _validate_runner_factory_for_plan(runner_factory: Any, plan: Any) -> str | N
     return None
 
 
+def _agent_plan_checkpoints_dir(manifest: Dict[str, Any], workspace_root: Path) -> Path:
+    return _agent_plans_dir(manifest, workspace_root) / "checkpoints"
+
+
+def _run_plan_execute_readiness(
+    goal: str,
+    plan: Any,
+    *,
+    trust_state: Any,
+    runner_factory: Any,
+    guardrails: Any,
+    tool_registry: Any,
+) -> Any:
+    from ..orchestrator.plan_execute_control import assess_execution_readiness
+
+    parent_tools = set(getattr(tool_registry, "_tools", {}).keys())
+    return assess_execution_readiness(
+        goal,
+        plan,
+        trust_state=trust_state,
+        runner_factory=runner_factory,
+        guardrails=guardrails,
+        parent_tool_names=parent_tools,
+    )
+
+
+def _handle_plan_execute_fatal_stop(
+    plan: Any,
+    *,
+    session: Any,
+    telemetry: Any,
+    events: Any,
+    manifest: Dict[str, Any],
+    workspace_root: Path,
+    goal: str,
+    stop: Any,
+    no_follow_up: bool,
+    continue_budget: float,
+) -> int:
+    from ..orchestrator.plan_execute_control import (
+        build_checkpoint,
+        format_fatal_stop_summary,
+        save_plan_checkpoint,
+    )
+
+    skipped_count = sum(1 for st in plan.subtasks if st.status == "skipped")
+    checkpoint = build_checkpoint(
+        plan,
+        session_id=session.id,
+        failure_type=stop.failure_type,
+        failure_message=stop.failure_message,
+        failed_subtask_id=stop.failed_subtask_id,
+        goal=goal,
+    )
+    checkpoint_path = save_plan_checkpoint(
+        checkpoint,
+        _agent_plan_checkpoints_dir(manifest, workspace_root),
+    )
+    try:
+        if plan.file_path:
+            plan.save_as_markdown(plan.file_path, session_id=session.id)
+    except Exception:
+        pass
+
+    events.session_end(telemetry.to_dict())
+    _save_session(session, telemetry, events, workspace_root)
+    _generate_journal(
+        session,
+        goal,
+        stop.failure_type,
+        telemetry,
+        events,
+        manifest,
+        workspace_root,
+        plan,
+    )
+
+    print(
+        format_fatal_stop_summary(
+            stop,
+            skipped_count=skipped_count,
+            checkpoint_path=checkpoint_path,
+        )
+    )
+    print(f"\nResume later:\n  {checkpoint.resume_command}")
+
+    if no_follow_up or not sys.stdin.isatty():
+        return 1
+
+    try:
+        choice = input("> ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return 1
+
+    if choice in ("c", "continue"):
+        telemetry.extend_budget(continue_budget)
+        print(
+            f"[plan-execute] Budget extended by ${continue_budget:.2f} "
+            f"(new limit: ${telemetry.max_cost:.2f}). "
+            f"Re-run: {checkpoint.resume_command}"
+        )
+        return 1
+    if choice in ("e", "edit"):
+        print(f"[plan-execute] Edit plan file: {plan.file_path}")
+        return 1
+    if choice in ("r", "resume"):
+        print(f"[plan-execute] Checkpoint: {checkpoint_path}")
+        return 1
+    return 1
+
+
 def _plan_has_mutation_intent(goal: str, plan: Any) -> bool:
     if MUTATION_INTENT_RE.search(goal or ""):
         return True
@@ -1834,6 +1945,45 @@ def cmd_agent(
             sys.stderr.write(f"[plan-execute] {runner_error}\n")
             return 1
 
+        readiness = _run_plan_execute_readiness(
+            goal,
+            plan,
+            trust_state=trust_state,
+            runner_factory=runner_factory,
+            guardrails=guardrails,
+            tool_registry=tools,
+        )
+        if not readiness.ok:
+            from ..orchestrator.plan_execute_control import (
+                PlanExecuteStop,
+                build_checkpoint,
+                format_readiness_failure,
+                save_plan_checkpoint,
+            )
+
+            print(format_readiness_failure(readiness))
+            stop = PlanExecuteStop(
+                fatal=True,
+                failure_type=readiness.failure_type,
+                failure_message=readiness.issues[0].message if readiness.issues else readiness.failure_type,
+            )
+            checkpoint = build_checkpoint(
+                plan,
+                session_id=session.id,
+                failure_type=stop.failure_type,
+                failure_message=stop.failure_message,
+                failed_subtask_id=None,
+                goal=goal,
+            )
+            checkpoint_path = save_plan_checkpoint(
+                checkpoint,
+                _agent_plan_checkpoints_dir(manifest, workspace_root),
+            )
+            print(f"Checkpoint saved: {checkpoint_path}")
+            events.session_end(telemetry.to_dict())
+            _save_session(session, telemetry, events, workspace_root)
+            return 1
+
         # Record planning cost in telemetry
         if plan.planning_cost > 0:
             from ..orchestrator.llm.base import Usage
@@ -1857,6 +2007,20 @@ def cmd_agent(
 
         print("[plan-execute] Executing subtasks...")
         plan = executor.execute_plan(plan, task_context=goal)
+        fatal_stop = getattr(plan, "fatal_stop", None)
+        if fatal_stop is not None:
+            return _handle_plan_execute_fatal_stop(
+                plan,
+                session=session,
+                telemetry=telemetry,
+                events=events,
+                manifest=manifest,
+                workspace_root=workspace_root,
+                goal=goal,
+                stop=fatal_stop,
+                no_follow_up=bool(no_follow_up),
+                continue_budget=continue_budget,
+            )
         git_after = _git_probe(workspace_root)
         diff_changed = git_before.get("diff") != git_after.get("diff")
         has_after_diff = bool(git_after.get("numstat") or git_after.get("diff"))
