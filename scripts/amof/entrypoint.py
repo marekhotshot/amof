@@ -437,6 +437,13 @@ def main() -> None:
             model=getattr(args, "model", None),
             verbose=getattr(args, "verbose", None),
             max_cost=getattr(args, "max_cost", None),
+            budget=getattr(args, "budget", None),
+            cost_limit=getattr(args, "cost_limit", None),
+            subtask_budget=getattr(args, "subtask_budget", None),
+            add_budget=getattr(args, "add_budget", None),
+            require_budget_approval=getattr(args, "require_budget_approval", None),
+            budget_strict=getattr(args, "budget_strict", None),
+            budget_status=getattr(args, "budget_status", None),
             model_ladder=getattr(args, "model_ladder", None),
             fast_model=getattr(args, "fast_model", None),
             strong_model=getattr(args, "strong_model", None),
@@ -444,10 +451,13 @@ def main() -> None:
             planner_model=getattr(args, "planner_model", None),
             provider=getattr(args, "provider", None),
             resume_session=getattr(args, "resume", None),
+            follow_up=getattr(args, "follow_up", None),
+            follow_up_file=getattr(args, "follow_up_file", None),
             plan_file=getattr(args, "plan_file", None),
             no_follow_up=getattr(args, "no_follow_up", None),
             continue_budget=getattr(args, "continue_budget", None),
             approve_plan=getattr(args, "approve_plan", None),
+            approve_capabilities=getattr(args, "approve_capabilities", None),
         ))
 
     if args.command == "director-action":

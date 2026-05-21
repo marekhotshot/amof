@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -2752,7 +2753,7 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
         self.assertEqual(checkpoint.completed_subtasks, [])
         self.assertEqual(checkpoint.failed_subtask_id, "1")
         self.assertEqual(len(checkpoint.remaining_subtasks), 5)
-        self.assertIn("amof agent --plan-execute", checkpoint.resume_command)
+        self.assertIn("amof agent --resume 20260521-110057", checkpoint.resume_command)
         self.assertEqual(checkpoint.skip_reason, "skipped_budget_blocked")
 
     def test_budget_approval_resume_does_not_restart_completed_subtasks(self) -> None:
@@ -2783,6 +2784,372 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
         self.assertEqual(checkpoint.completed_subtasks, ["1"])
         self.assertIn("2", checkpoint.remaining_subtasks)
         self.assertNotIn("1", checkpoint.remaining_subtasks)
+
+
+class PlanCapabilityElevationTests(unittest.TestCase):
+    def _secret_plan(self, goal: str):
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        return ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Preflight", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+
+    def test_readiness_fails_when_secret_required_and_not_approved(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Read JENKINS_TOKEN and kubeconfig from .env for preflight"
+        plan = self._secret_plan(goal)
+        trust = create_trust_state("inspect repository and write report")
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_RecordingRunnerFactory(),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_type, "missing_required_secret_access")
+
+    def test_cli_approve_capabilities_allows_readiness(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            apply_capability_elevation,
+            assess_execution_readiness,
+            build_plan_capability_elevation,
+        )
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Read JENKINS_TOKEN and kubeconfig from .env for preflight"
+        plan = self._secret_plan(goal)
+        trust = create_trust_state("inspect repository and write report")
+        base = set(trust.trusted_intent_caps)
+        elevation = build_plan_capability_elevation(
+            session_id="sess-a",
+            plan=plan,
+            goal=goal,
+            missing_caps=["secret"],
+            base_ceiling=base,
+            approval_source="cli_flag",
+            parent_tool_names={"Read", "Write"},
+        )
+        apply_capability_elevation(trust, elevation)
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_RecordingRunnerFactory(),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+            parent_tool_names={"Read", "Write"},
+        )
+        self.assertTrue(result.ok)
+        self.assertIn("secret", trust.trusted_intent_caps)
+
+    def test_interactive_approval_records_scoped_elevation(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            apply_capability_elevation,
+            assess_execution_readiness,
+            build_plan_capability_elevation,
+            readiness_is_capability_only_failure,
+        )
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Read JENKINS_TOKEN and kubeconfig from .env for preflight"
+        plan = self._secret_plan(goal)
+        trust = create_trust_state("inspect repository and write report")
+        before = set(trust.trusted_intent_caps)
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_RecordingRunnerFactory(),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+        )
+        self.assertTrue(readiness_is_capability_only_failure(result))
+        missing = ["secret"]
+        elevation = build_plan_capability_elevation(
+            session_id="sess-b",
+            plan=plan,
+            goal=goal,
+            missing_caps=missing,
+            base_ceiling=before,
+            approval_source="interactive",
+        )
+        apply_capability_elevation(trust, elevation)
+        plan.capability_elevation = elevation.to_dict()
+        retry = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_RecordingRunnerFactory(),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+        )
+        self.assertTrue(retry.ok)
+        self.assertEqual(elevation.session_id, "sess-b")
+        self.assertIn("secret", elevation.approved_capabilities)
+        import json as json_mod
+
+        self.assertNotIn("super-secret-value", json_mod.dumps(elevation.to_dict()))
+
+    def test_rejection_checkpoint_has_no_secret_values(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            build_checkpoint,
+            checkpoint_contains_secret_values,
+        )
+
+        goal = "Use provider credentials from environment file and kubeconfig"
+        plan = self._secret_plan(goal)
+        checkpoint = build_checkpoint(
+            plan,
+            session_id="sess-c",
+            failure_type="missing_required_secret_access",
+            failure_message="Capability elevation rejected.",
+            failed_subtask_id=None,
+            goal=goal,
+        )
+        payload = checkpoint.to_dict()
+        self.assertFalse(checkpoint_contains_secret_values(payload))
+        import json as json_mod
+
+        self.assertNotIn("super-secret-value", json_mod.dumps(payload))
+
+    def test_global_trust_ceiling_unchanged_for_new_session(self) -> None:
+        from amof.orchestrator.plan_execute_control import apply_capability_elevation, build_plan_capability_elevation
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Read JENKINS_TOKEN from .env"
+        plan = self._secret_plan(goal)
+        trust_a = create_trust_state("inspect repository")
+        elevation = build_plan_capability_elevation(
+            session_id="sess-d",
+            plan=plan,
+            goal=goal,
+            missing_caps=["secret"],
+            base_ceiling=set(trust_a.trusted_intent_caps),
+            approval_source="interactive",
+        )
+        apply_capability_elevation(trust_a, elevation)
+        trust_b = create_trust_state("inspect repository")
+        self.assertNotIn("secret", trust_b.trusted_intent_caps)
+
+    def test_unrelated_plan_metadata_does_not_auto_elevate(self) -> None:
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        trust = create_trust_state("inspect repository")
+        trust.trusted_intent_caps  # default ceiling
+        session_meta = {
+            "plan_capability_elevation": {
+                "plan_id": "/plans/plan-a.md",
+                "approved_capabilities": ["secret"],
+            }
+        }
+        other_plan_id = "/plans/plan-b.md"
+        stored = session_meta.get("plan_capability_elevation", {})
+        self.assertNotEqual(stored.get("plan_id"), other_plan_id)
+        self.assertNotIn("secret", trust.trusted_intent_caps)
+
+    def test_parse_approve_capabilities_rejects_unknown(self) -> None:
+        from amof.orchestrator.plan_execute_control import parse_capability_names
+
+        with self.assertRaises(ValueError):
+            parse_capability_names(["secret", "sudo"])
+
+
+class ResumeFollowupAndBudgetTests(unittest.TestCase):
+    def _plan_with_completed_first(self):
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        plan = ExecutionPlan(
+            analysis="original goal unchanged",
+            subtasks=[
+                Subtask(id="1", title="Done", description="a", runner="code"),
+                Subtask(id="2", title="Retry", description="b", runner="code"),
+            ],
+            execution_order=["1", "2"],
+        )
+        plan.subtasks[0].status = "completed"
+        plan.subtasks[1].status = "failed"
+        plan.subtasks[1].error = "cost_exceeded"
+        return plan
+
+    def test_resume_accepts_inline_followup(self) -> None:
+        from amof.orchestrator.resume_control import append_followup_to_context, load_resume_followup
+
+        followup, err = load_resume_followup(inline="Retry only failed preflight.", file_path=None)
+        self.assertIsNone(err)
+        ctx = append_followup_to_context("original goal unchanged", followup)
+        self.assertIn("original goal unchanged", ctx)
+        self.assertIn("Operator follow-up", ctx)
+        self.assertIn("Retry only failed preflight", ctx)
+
+    def test_resume_accepts_followup_file(self) -> None:
+        from amof.orchestrator.resume_control import load_resume_followup
+
+        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+            fh.write("Continue from checkpoint.")
+            path = fh.name
+        try:
+            followup, err = load_resume_followup(
+                inline=None,
+                file_path=path,
+                readable_roots=[Path(path).parent],
+            )
+        finally:
+            Path(path).unlink(missing_ok=True)
+        self.assertIsNone(err)
+        self.assertEqual(followup.source, "file")
+        self.assertEqual(len(followup.sha256), 64)
+        event = followup.to_event_dict("sess-1")
+        self.assertEqual(event["source"], "file")
+        self.assertEqual(event["chars"], len("Continue from checkpoint."))
+
+    def test_resume_rejects_missing_followup_file(self) -> None:
+        from amof.orchestrator.resume_control import load_resume_followup
+
+        followup, err = load_resume_followup(
+            inline=None,
+            file_path="/tmp/does-not-exist-amof-followup.md",
+        )
+        self.assertIsNone(followup)
+        self.assertIn("not found", err or "")
+
+    def test_resume_followup_does_not_reset_checkpoint(self) -> None:
+        from amof.orchestrator.resume_control import append_followup_to_context, prepare_plan_for_resume
+
+        plan = self._plan_with_completed_first()
+        checkpoint = {
+            "completed_subtasks": ["1"],
+            "failed_subtask_id": "2",
+        }
+        next_id = prepare_plan_for_resume(plan, checkpoint)
+        ctx = append_followup_to_context("original goal unchanged", None)
+        self.assertEqual(plan.subtasks[0].status, "completed")
+        self.assertEqual(plan.subtasks[1].status, "pending")
+        self.assertEqual(next_id, "2")
+        self.assertEqual(ctx, "original goal unchanged")
+
+    def test_resume_add_budget_updates_checkpoint_budget(self) -> None:
+        from amof.orchestrator.resume_control import update_checkpoint_budget
+
+        checkpoint = {
+            "session_id": "sess-budget",
+            "plan_path": "/plans/plan.md",
+            "budget_added": 0.0,
+        }
+        with tempfile.TemporaryDirectory() as td:
+            cp_path = Path(td) / "checkpoint.json"
+            cp_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+            update_checkpoint_budget(cp_path, checkpoint, add_budget=1.0, new_limit=6.0)
+            saved = json.loads(cp_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["budget_limit"], 6.0)
+        self.assertEqual(saved["budget_added"], 1.0)
+        self.assertIn("--resume sess-budget", saved["resume_command"])
+
+    def test_budget_and_cost_limit_conflict_rejected(self) -> None:
+        from amof.orchestrator.resume_control import BudgetOptions, resolve_run_budget
+
+        opts = BudgetOptions(budget=1.0, cost_limit=2.0)
+        limit, err = resolve_run_budget(opts)
+        self.assertIsNone(limit)
+        self.assertIn("different values", err or "")
+
+    def test_invalid_budget_values_rejected(self) -> None:
+        from amof.orchestrator.resume_control import parse_positive_budget
+
+        for bad in (0, -1, "abc"):
+            with self.assertRaises(ValueError):
+                parse_positive_budget(bad, flag="--budget")
+
+    def test_budget_strict_blocks_over_budget_plan_before_provider_call(self) -> None:
+        from amof.orchestrator.resume_control import BudgetOptions, check_budget_before_execution
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.telemetry import SessionTelemetry
+
+        plan = ExecutionPlan(
+            analysis="x",
+            subtasks=[Subtask(id="1", title="t", description="d", runner="code")],
+            execution_order=["1"],
+        )
+        telemetry = SessionTelemetry(max_cost=0.01)
+        telemetry._restored_cost = 0.009
+        opts = BudgetOptions(budget_strict=True)
+        msg = check_budget_before_execution(
+            telemetry, plan, opts, noninteractive=True
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("budget", msg.lower())
+
+    def test_budget_status_prints_and_exits_without_provider_call(self) -> None:
+        from amof.orchestrator.resume_control import format_budget_status
+        from amof.orchestrator.telemetry import SessionTelemetry
+
+        telemetry = SessionTelemetry(max_cost=5.0)
+        telemetry._restored_cost = 1.25
+        text = format_budget_status(
+            "sess-9",
+            telemetry,
+            {
+                "failure_type": "cost_exceeded",
+                "failed_subtask_id": "2",
+                "remaining_subtasks": ["2", "3"],
+                "resume_command": "amof agent --resume sess-9 --add-budget 1.00",
+            },
+        )
+        self.assertIn("sess-9", text)
+        self.assertIn("Spent", text)
+        self.assertIn("Remaining", text)
+        self.assertIn("cost_exceeded", text)
+
+    def test_resume_with_followup_and_capability_approval(self) -> None:
+        from amof.orchestrator.events import EventLog
+        from amof.orchestrator.plan_execute_control import (
+            apply_capability_elevation,
+            build_plan_capability_elevation,
+            parse_capability_names,
+        )
+        from amof.orchestrator.resume_control import append_followup_to_context, load_resume_followup
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        caps = parse_capability_names(["secret"])
+        self.assertEqual(caps, {"secret"})
+        followup, _ = load_resume_followup(
+            inline="Approve secret for preflight only.",
+            file_path=None,
+        )
+        ctx = append_followup_to_context("Inspect repo", followup)
+        self.assertNotIn("super-secret-token-value", ctx)
+        trust = create_trust_state("inspect repo")
+        plan = self._plan_with_completed_first()
+        elevation = build_plan_capability_elevation(
+            session_id="sess-x",
+            plan=plan,
+            goal="Inspect repo",
+            missing_caps=["secret"],
+            base_ceiling=set(trust.trusted_intent_caps),
+            approval_source="cli_flag",
+        )
+        apply_capability_elevation(trust, elevation)
+        with tempfile.TemporaryDirectory() as td:
+            events = EventLog(session_id="sess-x", runs_dir=Path(td))
+            events.resume_followup(
+                session_id="sess-x",
+                source=followup.source,
+                chars=followup.char_count,
+                sha256=followup.sha256,
+                preview=followup.preview,
+            )
+            events.capability_elevation(
+                session_id="sess-x",
+                plan_id="plan-a",
+                approved_capabilities=["secret"],
+                base_ceiling=list(trust.trusted_intent_caps),
+                approval_source="cli_flag",
+            )
+            log_text = events.log_path.read_text(encoding="utf-8")
+        self.assertIn("resume_followup", log_text)
+        self.assertIn("capability_elevation", log_text)
+        self.assertNotIn("super-secret-token-value", log_text)
 
 
 if __name__ == "__main__":

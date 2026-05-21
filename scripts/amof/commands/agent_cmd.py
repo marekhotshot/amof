@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from ..app_paths import get_app_paths, indexes_dir, runs_dir, vector_store_dir
@@ -712,6 +712,344 @@ def _run_plan_execute_readiness(
     )
 
 
+def _parse_approve_capabilities(raw: Optional[List[str]]) -> set[str]:
+    from ..orchestrator.plan_execute_control import parse_capability_names
+
+    if not raw:
+        return set()
+    return set(parse_capability_names(list(raw)))
+
+
+def _parse_budget_cli_flags(
+    *,
+    max_cost: Optional[float],
+    budget: Optional[float],
+    cost_limit: Optional[float],
+    subtask_budget: Optional[float],
+    add_budget: Optional[float],
+    require_budget_approval: Optional[bool],
+    budget_strict: Optional[bool],
+    budget_status: Optional[bool],
+) -> tuple[Any, Optional[str]]:
+    """Validate budget CLI flags; return (BudgetOptions, error_message)."""
+    from ..orchestrator.resume_control import BudgetOptions, parse_positive_budget
+
+    try:
+        parsed_budget = parse_positive_budget(budget, flag="--budget") if budget is not None else None
+        parsed_limit = (
+            parse_positive_budget(cost_limit, flag="--cost-limit") if cost_limit is not None else None
+        )
+        parsed_subtask = (
+            parse_positive_budget(subtask_budget, flag="--subtask-budget")
+            if subtask_budget is not None
+            else None
+        )
+        parsed_add = (
+            parse_positive_budget(add_budget, flag="--add-budget") if add_budget is not None else None
+        )
+    except ValueError as exc:
+        return None, str(exc)
+
+    if max_cost is not None and max_cost <= 0:
+        return None, "--max-cost must be greater than zero."
+    if max_cost is not None and parsed_budget is not None and abs(max_cost - parsed_budget) > 1e-9:
+        return None, "Cannot use --max-cost and --budget with different values."
+    if max_cost is not None and parsed_limit is not None and abs(max_cost - parsed_limit) > 1e-9:
+        return None, "Cannot use --max-cost and --cost-limit with different values."
+
+    opts = BudgetOptions(
+        budget=parsed_budget,
+        cost_limit=parsed_limit,
+        subtask_budget=parsed_subtask,
+        add_budget=parsed_add,
+        require_budget_approval=bool(require_budget_approval),
+        budget_strict=bool(budget_strict),
+        budget_status=bool(budget_status),
+    )
+    return opts, None
+
+
+def _resolve_effective_max_cost(
+    max_cost: Optional[float],
+    budget_options: Any,
+) -> tuple[Optional[float], Optional[str]]:
+    from ..orchestrator.resume_control import resolve_run_budget
+
+    hard_budget, err = resolve_run_budget(budget_options)
+    if err:
+        return None, err
+    if hard_budget is not None:
+        return hard_budget, None
+    if max_cost is not None:
+        return max_cost, None
+    return None, None
+
+
+def _resume_readable_roots(workspace_root: Path, manifest: Dict[str, Any]) -> List[Path]:
+    roots = [workspace_root.resolve()]
+    if _is_appdata_adopted_manifest(manifest):
+        roots.append(get_app_paths().data_root.resolve())
+    return roots
+
+
+def _load_resume_followup_for_session(
+    *,
+    resume_session: Optional[str],
+    follow_up: Optional[str],
+    follow_up_file: Optional[str],
+    workspace_root: Path,
+    manifest: Dict[str, Any],
+) -> tuple[Any, Optional[str]]:
+    from ..orchestrator.resume_control import load_resume_followup
+
+    if not resume_session and (follow_up or follow_up_file):
+        return None, "--follow-up and --follow-up-file require --resume."
+    if not follow_up and not follow_up_file:
+        return None, None
+    return load_resume_followup(
+        inline=follow_up,
+        file_path=follow_up_file,
+        readable_roots=_resume_readable_roots(workspace_root, manifest),
+    )
+
+
+def _log_resume_followup(events: Any, session: Any, followup: Any) -> None:
+    payload = followup.to_event_dict(session.id)
+    session.metadata["resume_followup"] = payload
+    events.resume_followup(
+        session_id=payload["session_id"],
+        source=payload["source"],
+        chars=payload["chars"],
+        sha256=payload["sha256"],
+        preview=payload["preview"],
+    )
+
+
+def _save_readiness_checkpoint(
+    plan: Any,
+    *,
+    session: Any,
+    manifest: Dict[str, Any],
+    workspace_root: Path,
+    goal: str,
+    failure_type: str,
+    failure_message: str,
+    events: Any,
+    telemetry: Any,
+) -> Path:
+    from ..orchestrator.plan_execute_control import build_checkpoint, save_plan_checkpoint
+
+    checkpoint = build_checkpoint(
+        plan,
+        session_id=session.id,
+        failure_type=failure_type,
+        failure_message=failure_message,
+        failed_subtask_id=None,
+        goal=goal,
+        budget_limit=telemetry.max_cost,
+        spent_cost=telemetry.total_cost,
+    )
+    checkpoint_path = save_plan_checkpoint(
+        checkpoint,
+        _agent_plan_checkpoints_dir(manifest, workspace_root),
+    )
+    events.session_end(telemetry.to_dict())
+    _save_session(session, telemetry, events, workspace_root)
+    return checkpoint_path
+
+
+def _gate_plan_execute_readiness(
+    goal: str,
+    plan: Any,
+    *,
+    session: Any,
+    trust_state: Any,
+    runner_factory: Any,
+    guardrails: Any,
+    tool_registry: Any,
+    events: Any,
+    telemetry: Any,
+    manifest: Dict[str, Any],
+    workspace_root: Path,
+    approve_capabilities: Optional[List[str]] = None,
+    no_follow_up: bool = False,
+) -> tuple[Any, int | None]:
+    """Run readiness; optionally elevate capabilities for this plan/session."""
+    from ..orchestrator.plan_execute_control import (
+        apply_capability_elevation,
+        assess_execution_readiness,
+        build_plan_capability_elevation,
+        format_capability_elevation_prompt,
+        format_elevation_scope,
+        format_readiness_failure,
+        parse_capability_names,
+        readiness_is_capability_only_failure,
+    )
+
+    parent_tools = set(getattr(tool_registry, "_tools", {}).keys())
+    cli_caps: set[str] = set()
+    if approve_capabilities:
+        try:
+            cli_caps = set(parse_capability_names(list(approve_capabilities)))
+        except ValueError as exc:
+            sys.stderr.write(f"[plan-execute] {exc}\n")
+            return None, 1
+        if cli_caps:
+            print(
+                "[plan-execute] CLI pre-approved capabilities for this run: "
+                f"{', '.join(sorted(cli_caps))}"
+            )
+
+    base_ceiling = set(trust_state.trusted_intent_caps) if trust_state else {"read"}
+
+    while True:
+        readiness = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust_state,
+            runner_factory=runner_factory,
+            guardrails=guardrails,
+            parent_tool_names=parent_tools,
+        )
+        if readiness.ok:
+            return readiness, None
+
+        if not readiness_is_capability_only_failure(readiness):
+            print(format_readiness_failure(readiness))
+            checkpoint_path = _save_readiness_checkpoint(
+                plan,
+                session=session,
+                manifest=manifest,
+                workspace_root=workspace_root,
+                goal=goal,
+                failure_type=readiness.failure_type,
+                failure_message=(
+                    readiness.issues[0].message if readiness.issues else readiness.failure_type
+                ),
+                events=events,
+                telemetry=telemetry,
+            )
+            print(f"Checkpoint saved: {checkpoint_path}")
+            return readiness, 1
+
+        issue = next(i for i in readiness.issues if i.kind == "missing_capability")
+        missing = sorted(
+            set(issue.detail.get("required") or [])
+            - set(issue.detail.get("allowed_ceiling") or [])
+        )
+        if missing and set(missing).issubset(cli_caps) and trust_state is not None:
+            elevation = build_plan_capability_elevation(
+                session_id=session.id,
+                plan=plan,
+                goal=goal,
+                missing_caps=missing,
+                base_ceiling=base_ceiling,
+                approval_source="cli_flag",
+                parent_tool_names=parent_tools,
+            )
+            apply_capability_elevation(trust_state, elevation)
+            plan.capability_elevation = elevation.to_dict()  # type: ignore[attr-defined]
+            session.metadata["plan_capability_elevation"] = elevation.to_dict()
+            events.capability_elevation(
+                session_id=elevation.session_id,
+                plan_id=elevation.plan_id,
+                approved_capabilities=elevation.approved_capabilities,
+                base_ceiling=elevation.base_ceiling,
+                approved_tools=elevation.approved_tools,
+                approved_paths=elevation.approved_paths,
+                approval_source=elevation.approval_source,
+            )
+            print(format_elevation_scope(elevation))
+            continue
+
+        print(format_capability_elevation_prompt(readiness, goal=goal, plan=plan))
+
+        if no_follow_up or not sys.stdin.isatty():
+            checkpoint_path = _save_readiness_checkpoint(
+                plan,
+                session=session,
+                manifest=manifest,
+                workspace_root=workspace_root,
+                goal=goal,
+                failure_type=readiness.failure_type,
+                failure_message="Capability elevation required but not approved.",
+                events=events,
+                telemetry=telemetry,
+            )
+            print(f"Checkpoint saved: {checkpoint_path}")
+            print(
+                "Re-run with explicit approval, e.g.: "
+                f"--approve-capabilities {','.join(missing)}"
+            )
+            return readiness, 1
+
+        try:
+            choice = input("> ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return readiness, 1
+
+        if choice in ("y", "yes", "approve"):
+            if trust_state is None:
+                return readiness, 1
+            elevation = build_plan_capability_elevation(
+                session_id=session.id,
+                plan=plan,
+                goal=goal,
+                missing_caps=missing,
+                base_ceiling=base_ceiling,
+                approval_source="interactive",
+                parent_tool_names=parent_tools,
+            )
+            apply_capability_elevation(trust_state, elevation)
+            plan.capability_elevation = elevation.to_dict()  # type: ignore[attr-defined]
+            session.metadata["plan_capability_elevation"] = elevation.to_dict()
+            events.capability_elevation(
+                session_id=elevation.session_id,
+                plan_id=elevation.plan_id,
+                approved_capabilities=elevation.approved_capabilities,
+                base_ceiling=elevation.base_ceiling,
+                approved_tools=elevation.approved_tools,
+                approved_paths=elevation.approved_paths,
+                approval_source=elevation.approval_source,
+            )
+            print(format_elevation_scope(elevation))
+            continue
+
+        if choice in ("e", "edit"):
+            print(f"[plan-execute] Edit plan file: {plan.file_path}")
+            return readiness, 1
+
+        if choice in ("r", "resume"):
+            checkpoint_path = _save_readiness_checkpoint(
+                plan,
+                session=session,
+                manifest=manifest,
+                workspace_root=workspace_root,
+                goal=goal,
+                failure_type=readiness.failure_type,
+                failure_message="Capability elevation not approved.",
+                events=events,
+                telemetry=telemetry,
+            )
+            print(f"Checkpoint saved: {checkpoint_path}")
+            return readiness, 1
+
+        # reject / default
+        checkpoint_path = _save_readiness_checkpoint(
+            plan,
+            session=session,
+            manifest=manifest,
+            workspace_root=workspace_root,
+            goal=goal,
+            failure_type=readiness.failure_type,
+            failure_message="Capability elevation rejected.",
+            events=events,
+            telemetry=telemetry,
+        )
+        print(f"Checkpoint saved: {checkpoint_path}")
+        return readiness, 1
+
+
 def _handle_plan_execute_fatal_stop(
     plan: Any,
     *,
@@ -739,6 +1077,8 @@ def _handle_plan_execute_fatal_stop(
         failure_message=stop.failure_message,
         failed_subtask_id=stop.failed_subtask_id,
         goal=goal,
+        budget_limit=telemetry.max_cost,
+        spent_cost=telemetry.total_cost,
     )
     checkpoint_path = save_plan_checkpoint(
         checkpoint,
@@ -1156,6 +1496,13 @@ def cmd_agent(
     model: Optional[str] = None,
     verbose: Optional[bool] = None,
     max_cost: Optional[float] = None,
+    budget: Optional[float] = None,
+    cost_limit: Optional[float] = None,
+    subtask_budget: Optional[float] = None,
+    add_budget: Optional[float] = None,
+    require_budget_approval: Optional[bool] = None,
+    budget_strict: Optional[bool] = None,
+    budget_status: Optional[bool] = None,
     model_ladder: Optional[bool] = None,
     fast_model: Optional[str] = None,
     strong_model: Optional[str] = None,
@@ -1163,10 +1510,13 @@ def cmd_agent(
     planner_model: Optional[str] = None,
     provider: Optional[str] = None,
     resume_session: Optional[str] = None,
+    follow_up: Optional[str] = None,
+    follow_up_file: Optional[str] = None,
     plan_file: Optional[str] = None,
     no_follow_up: Optional[bool] = None,
     continue_budget: Optional[float] = None,
     approve_plan: Optional[bool] = None,
+    approve_capabilities: Optional[List[str]] = None,
 ) -> int:
     """Run the AMOF coding agent.
 
@@ -1212,6 +1562,38 @@ def cmd_agent(
         approve_plan = False
     if continue_budget is None:
         continue_budget = 1.0
+
+    budget_options, budget_err = _parse_budget_cli_flags(
+        max_cost=max_cost,
+        budget=budget,
+        cost_limit=cost_limit,
+        subtask_budget=subtask_budget,
+        add_budget=add_budget,
+        require_budget_approval=require_budget_approval,
+        budget_strict=budget_strict,
+        budget_status=budget_status,
+    )
+    if budget_err:
+        sys.stderr.write(f"[agent] {budget_err}\n")
+        return 1
+    max_cost, max_cost_err = _resolve_effective_max_cost(max_cost, budget_options)
+    if max_cost_err:
+        sys.stderr.write(f"[agent] {max_cost_err}\n")
+        return 1
+    if add_budget is not None and not resume_session:
+        sys.stderr.write("[agent] --add-budget requires --resume.\n")
+        return 1
+
+    followup_obj, followup_err = _load_resume_followup_for_session(
+        resume_session=resume_session,
+        follow_up=follow_up,
+        follow_up_file=follow_up_file,
+        workspace_root=workspace_root,
+        manifest=manifest,
+    )
+    if followup_err:
+        sys.stderr.write(f"[agent] {followup_err}\n")
+        return 1
 
     # Export thinking budget from config (picked up by AnthropicClient)
     thinking_budget = cfg.get("thinking_budget")
@@ -1425,7 +1807,7 @@ def cmd_agent(
     _configure_guardrails(guardrails, workspace_root)
 
     # Create components
-    session = Session(mode=mode)
+    session = Session(session_id=resume_session, mode=mode)
     session.ecosystem = manifest.get("ecosystem")
     budget_thresholds = cfg.get("budget_warning_thresholds", [0.50, 0.75, 0.90])
     telemetry = SessionTelemetry(
@@ -1566,6 +1948,8 @@ def cmd_agent(
     runners_config_path = _agent_rules_path(workspace_root, "runners.yaml")
     runner_cost_fraction = float(cfg.get("runner_cost_fraction", 0.3))
     runner_max_cost = (max_cost or 5.0) * runner_cost_fraction
+    if budget_options.subtask_budget is not None:
+        runner_max_cost = min(runner_max_cost, budget_options.subtask_budget)
 
     should_load_runners = runners_config_path.exists() or bool(plan_execute)
     if should_load_runners:
@@ -1760,6 +2144,7 @@ def cmd_agent(
     signal.signal(signal.SIGTERM, _handle_signal)
 
     # ---- Resume from previous session ----
+    resume_checkpoint: Optional[Dict[str, Any]] = None
     if resume_session:
         session_dir = _resolve_session_dir(workspace_root, resume_session)
         messages_path = session_dir / "messages.jsonl"
@@ -1769,12 +2154,62 @@ def cmd_agent(
             if verbose:
                 sys.stderr.write(f"[agent] Resumed session {resume_session} ({session.turn_count} turns)\n")
         if telemetry_path.exists():
-            _load_telemetry(telemetry, telemetry_path)
+            from ..orchestrator.telemetry import SessionTelemetry as _SessionTelemetry
+
+            restored = _SessionTelemetry.load(telemetry_path)
+            telemetry.max_cost = restored.max_cost
+            telemetry._restored_cost = restored._restored_cost
             if verbose:
-                sys.stderr.write(f"[agent] Restored telemetry (${telemetry.total_cost:.4f} spent)\n")
+                sys.stderr.write(
+                    f"[agent] Restored telemetry (${telemetry.total_cost:.4f} spent, "
+                    f"limit ${telemetry.max_cost or 0:.2f})\n"
+                )
+        if followup_obj:
+            _log_resume_followup(events, session, followup_obj)
+        if add_budget is not None:
+            telemetry.extend_budget(add_budget)
+            events.budget_approval(
+                session_id=session.id,
+                amount=add_budget,
+                new_limit=float(telemetry.max_cost or add_budget),
+                source="cli_flag",
+            )
+        from ..orchestrator.resume_control import (
+            find_latest_plan_checkpoint,
+            format_budget_status,
+            update_checkpoint_budget,
+        )
+
+        resume_checkpoint = find_latest_plan_checkpoint(
+            _agent_plan_checkpoints_dir(manifest, workspace_root),
+            resume_session,
+        )
+        if add_budget is not None and resume_checkpoint is not None:
+            cp_path = Path(resume_checkpoint["_checkpoint_path"])
+            update_checkpoint_budget(
+                cp_path,
+                resume_checkpoint,
+                add_budget=add_budget,
+                new_limit=float(telemetry.max_cost or 0),
+            )
+        if budget_options.budget_status:
+            print(
+                format_budget_status(
+                    resume_session,
+                    telemetry,
+                    resume_checkpoint,
+                    subtask_budget=budget_options.subtask_budget,
+                )
+            )
+            return 0
+        if followup_obj and not resume_checkpoint:
+            session.add_user_message(f"[Operator resume follow-up]\n{followup_obj.text}")
 
     # ---- Plan-execute mode ----
-    if plan_execute and goal:
+    plan_execute_resume = bool(resume_session and resume_checkpoint)
+    if plan_execute_resume and not plan_execute:
+        plan_execute = True
+    if plan_execute and (goal or plan_execute_resume):
         from ..orchestrator.planner import TaskPlanner, ExecutionPlan
         from ..orchestrator.executor import SubtaskExecutor
         from ..orchestrator.llm.base import ProviderError
@@ -1790,11 +2225,19 @@ def cmd_agent(
         if verbose:
             sys.stderr.write(f"[agent] Plan-execute mode | Planner: {planner_model_id}\n")
 
+        if plan_execute_resume and resume_checkpoint:
+            goal = goal or str(resume_checkpoint.get("goal") or "") or (session.goal or "")
+        if not goal:
+            sys.stderr.write("[plan-execute] Goal is required.\n")
+            return 1
+
         events.session_start(mode="plan-execute", goal=goal, ecosystem=session.ecosystem)
 
         # Check if we're resuming from a plan file
         plan = None
         plans_dir = _agent_plans_dir(manifest, workspace_root)
+        plan_execute_task_context = goal
+        resume_next_subtask = ""
 
         if plan_file:
             plan_path = Path(plan_file)
@@ -1804,6 +2247,76 @@ def cmd_agent(
                 print(f"[plan-execute] Resumed plan from {plan_path} ({completed}/{len(plan.subtasks)} tasks done)")
             else:
                 sys.stderr.write(f"[plan-execute] Plan file not found: {plan_file}\n")
+                return 1
+
+        if plan is None and plan_execute_resume and resume_checkpoint:
+            from ..orchestrator.resume_control import (
+                append_followup_to_context,
+                check_budget_before_execution,
+                format_resume_summary,
+                prepare_plan_for_resume,
+            )
+
+            cp_plan = plan_file or resume_checkpoint.get("plan_path")
+            if not cp_plan:
+                sys.stderr.write("[plan-execute] Resume checkpoint has no plan_path.\n")
+                return 1
+            cp_path = Path(cp_plan)
+            if not cp_path.is_file():
+                sys.stderr.write(f"[plan-execute] Plan file not found: {cp_path}\n")
+                return 1
+            plan = ExecutionPlan.load_from_markdown(cp_path)
+            resume_next_subtask = prepare_plan_for_resume(plan, resume_checkpoint)
+            plan_execute_task_context = append_followup_to_context(goal, followup_obj)
+            completed_count = len(resume_checkpoint.get("completed_subtasks") or [])
+            remaining_count = sum(1 for st in plan.subtasks if st.status == "pending")
+            print(
+                format_resume_summary(
+                    session_id=session.id,
+                    checkpoint=resume_checkpoint,
+                    followup=followup_obj,
+                    add_budget=add_budget,
+                    telemetry=telemetry,
+                    next_subtask_id=resume_next_subtask,
+                    completed_count=completed_count,
+                    remaining_count=remaining_count,
+                )
+            )
+            elev = resume_checkpoint.get("capability_elevation")
+            if elev and trust_state is not None:
+                from ..orchestrator.plan_execute_control import (
+                    PlanCapabilityElevation,
+                    apply_capability_elevation,
+                )
+
+                elevation = PlanCapabilityElevation(
+                    session_id=str(elev.get("session_id") or session.id),
+                    plan_id=str(elev.get("plan_id") or ""),
+                    approved_capabilities=list(elev.get("approved_capabilities") or []),
+                    base_ceiling=list(elev.get("base_ceiling") or []),
+                    approved_tools=list(elev.get("approved_tools") or []),
+                    approved_paths=list(elev.get("approved_paths") or []),
+                    rationales=dict(elev.get("rationales") or {}),
+                    approval_source=str(elev.get("approval_source") or "checkpoint"),
+                )
+                apply_capability_elevation(trust_state, elevation)
+                plan.capability_elevation = elev  # type: ignore[attr-defined]
+            budget_block = check_budget_before_execution(
+                telemetry,
+                plan,
+                budget_options,
+                noninteractive=_plan_execute_noninteractive(no_follow_up, approve_plan),
+            )
+            if budget_block == "__prompt__":
+                try:
+                    choice = input("Estimated cost exceeds budget. Continue? [y/N] > ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    return 1
+                if choice not in ("y", "yes"):
+                    sys.stderr.write("[plan-execute] Execution not approved.\n")
+                    return 1
+            elif budget_block:
+                sys.stderr.write(f"[plan-execute] {budget_block}\n")
                 return 1
 
         if plan is None:
@@ -1945,44 +2458,51 @@ def cmd_agent(
             sys.stderr.write(f"[plan-execute] {runner_error}\n")
             return 1
 
-        readiness = _run_plan_execute_readiness(
+        if plan is not None and followup_obj and not plan_execute_resume:
+            from ..orchestrator.resume_control import append_followup_to_context
+
+            plan_execute_task_context = append_followup_to_context(goal, followup_obj)
+
+        budget_block = None
+        if plan is not None:
+            from ..orchestrator.resume_control import check_budget_before_execution
+
+            budget_block = check_budget_before_execution(
+                telemetry,
+                plan,
+                budget_options,
+                noninteractive=_plan_execute_noninteractive(no_follow_up, approve_plan),
+            )
+            if budget_block == "__prompt__":
+                try:
+                    choice = input("Estimated cost exceeds budget. Continue? [y/N] > ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    return 1
+                if choice not in ("y", "yes"):
+                    sys.stderr.write("[plan-execute] Execution not approved.\n")
+                    return 1
+                budget_block = None
+            elif budget_block:
+                sys.stderr.write(f"[plan-execute] {budget_block}\n")
+                return 1
+
+        _, readiness_exit = _gate_plan_execute_readiness(
             goal,
             plan,
+            session=session,
             trust_state=trust_state,
             runner_factory=runner_factory,
             guardrails=guardrails,
             tool_registry=tools,
+            events=events,
+            telemetry=telemetry,
+            manifest=manifest,
+            workspace_root=workspace_root,
+            approve_capabilities=approve_capabilities,
+            no_follow_up=bool(no_follow_up),
         )
-        if not readiness.ok:
-            from ..orchestrator.plan_execute_control import (
-                PlanExecuteStop,
-                build_checkpoint,
-                format_readiness_failure,
-                save_plan_checkpoint,
-            )
-
-            print(format_readiness_failure(readiness))
-            stop = PlanExecuteStop(
-                fatal=True,
-                failure_type=readiness.failure_type,
-                failure_message=readiness.issues[0].message if readiness.issues else readiness.failure_type,
-            )
-            checkpoint = build_checkpoint(
-                plan,
-                session_id=session.id,
-                failure_type=stop.failure_type,
-                failure_message=stop.failure_message,
-                failed_subtask_id=None,
-                goal=goal,
-            )
-            checkpoint_path = save_plan_checkpoint(
-                checkpoint,
-                _agent_plan_checkpoints_dir(manifest, workspace_root),
-            )
-            print(f"Checkpoint saved: {checkpoint_path}")
-            events.session_end(telemetry.to_dict())
-            _save_session(session, telemetry, events, workspace_root)
-            return 1
+        if readiness_exit is not None:
+            return readiness_exit
 
         # Record planning cost in telemetry
         if plan.planning_cost > 0:
@@ -2006,7 +2526,9 @@ def cmd_agent(
         )
 
         print("[plan-execute] Executing subtasks...")
-        plan = executor.execute_plan(plan, task_context=goal)
+        if resume_next_subtask:
+            print(f"[plan-execute] Next subtask: {resume_next_subtask}")
+        plan = executor.execute_plan(plan, task_context=plan_execute_task_context)
         fatal_stop = getattr(plan, "fatal_stop", None)
         if fatal_stop is not None:
             return _handle_plan_execute_fatal_stop(
