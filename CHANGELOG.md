@@ -13,19 +13,23 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 ### Fixed
 
 - plan-execute now stops immediately on fatal subtask failures such as `cost_exceeded`, trust-boundary denial, missing required tools, writable-root denial, and invalid execution preconditions.
-- Remaining subtasks are skipped instead of attempted after a fatal failure.
-- Execution-readiness preflight detects missing tools/capabilities before expensive execution.
-- Fatal stop reasons are preserved and checkpoints are saved for resume/manual approval.
+- remaining subtasks are skipped instead of attempted after fatal failure.
+- execution-readiness preflight detects missing tools/capabilities before expensive execution.
+- plan-scoped capability elevation allows explicit approval of required capabilities such as `secret` without weakening global guardrails.
+- resume supports optional operator follow-up via inline text or file.
+- budget controls are explicit via `--budget`, `--cost-limit`, `--subtask-budget`, `--add-budget`, `--require-budget-approval`, `--budget-strict`, and `--budget-status`.
+- fatal stop reasons, budget approvals, follow-up metadata, and capability elevation metadata are recorded without storing raw secrets.
 
 ### Notes
 
-- Checkpoint/resume guidance is saved on fatal stop; full automatic resume from checkpoint is not claimed in this release.
+- Checkpoint-guided resume restores completed subtasks and retries the failed subtask; full automatic resume without a checkpoint is not claimed.
 
 ### Validation
 
 - `python3 -m unittest tests.test_agent_runtime_profile.PlanExecuteFatalStopTests` passed (9 tests).
-- `python3 -m unittest tests.test_agent_runtime_profile` passed (79 tests).
-- `python3 -m unittest` passed (155 tests, 2 skipped).
+- `python3 -m unittest tests.test_agent_runtime_profile.ResumeFollowupAndBudgetTests` passed (10 tests).
+- `python3 -m unittest tests.test_agent_runtime_profile` passed (96 tests).
+- `python3 -m unittest` passed (172 tests, 2 skipped).
 - `python3 -m compileall scripts/amof -q` passed.
 - `git diff --check` passed.
 
