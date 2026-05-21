@@ -159,6 +159,36 @@ class EventLog:
             source=source,
         )
 
+    def writable_root_approval(
+        self,
+        *,
+        session_id: str,
+        path: str,
+        approval_source: str = "cli_flag",
+    ) -> Dict[str, Any]:
+        """Log plan-scoped writable root approval (path only; no secrets)."""
+        return self.log(
+            "writable_root_approval",
+            session_id=session_id,
+            path=path,
+            approval_source=approval_source,
+        )
+
+    def tool_pack_approval(
+        self,
+        *,
+        session_id: str,
+        tool_pack: str,
+        approval_source: str = "cli_flag",
+    ) -> Dict[str, Any]:
+        """Log plan-scoped tool-pack approval."""
+        return self.log(
+            "tool_pack_approval",
+            session_id=session_id,
+            tool_pack=tool_pack,
+            approval_source=approval_source,
+        )
+
     def policy_gate(
         self,
         *,

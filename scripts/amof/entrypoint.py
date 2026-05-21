@@ -458,6 +458,8 @@ def main() -> None:
             continue_budget=getattr(args, "continue_budget", None),
             approve_plan=getattr(args, "approve_plan", None),
             approve_capabilities=getattr(args, "approve_capabilities", None),
+            approve_tool_packs=getattr(args, "approve_tool_packs", None),
+            approve_writable_roots=getattr(args, "approve_writable_roots", None),
         ))
 
     if args.command == "director-action":

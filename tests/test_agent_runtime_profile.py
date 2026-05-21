@@ -2642,8 +2642,9 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
             guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
         )
         self.assertFalse(result.ok)
-        self.assertEqual(result.failure_type, "missing_required_secret_access")
+        self.assertEqual(result.failure_type, "missing_required_tool")
         self.assertTrue(any(i.kind == "missing_capability" for i in result.issues))
+        self.assertTrue(any(i.kind == "missing_tool_pack" for i in result.issues))
 
     def test_execution_readiness_detects_missing_required_tool(self) -> None:
         from amof.orchestrator.plan_execute_control import assess_execution_readiness
@@ -2786,6 +2787,666 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
         self.assertNotIn("1", checkpoint.remaining_subtasks)
 
 
+class _StubRunnerFactory:
+    """Minimal runner factory stub for readiness tests."""
+
+    def __init__(self, runners_tools: dict[str, list[str]]) -> None:
+        self._runners_tools = runners_tools
+
+    @property
+    def runner_names(self) -> list[str]:
+        return list(self._runners_tools.keys())
+
+    def runner_tool_names(self, name: str) -> set[str]:
+        return set(self._runners_tools.get(name, []))
+
+
+class BudgetAliasCliTests(unittest.TestCase):
+    def _parse(self, **kwargs):
+        defaults = {
+            "max_cost": None,
+            "budget": None,
+            "cost_limit": None,
+            "subtask_budget": None,
+            "add_budget": None,
+            "require_budget_approval": None,
+            "budget_strict": None,
+            "budget_status": None,
+        }
+        defaults.update(kwargs)
+        return agent_cmd._parse_budget_cli_flags(**defaults)
+
+    def test_budget_only_works(self) -> None:
+        opts, err = self._parse(budget=10.0)
+        self.assertIsNone(err)
+        self.assertEqual(opts.budget, 10.0)
+
+    def test_max_cost_only_works(self) -> None:
+        opts, err = self._parse(max_cost=10.0)
+        self.assertIsNone(err)
+        self.assertEqual(opts.budget, 10.0)
+
+    def test_cost_limit_only_works(self) -> None:
+        opts, err = self._parse(cost_limit=10.0)
+        self.assertIsNone(err)
+        self.assertEqual(opts.budget, 10.0)
+
+    def test_same_alias_values_accepted(self) -> None:
+        opts, err = self._parse(budget=10.0, max_cost=10.0, cost_limit=10.0)
+        self.assertIsNone(err)
+        self.assertEqual(opts.budget, 10.0)
+
+    def test_different_explicit_alias_values_rejected(self) -> None:
+        opts, err = self._parse(budget=10.0, max_cost=2.0)
+        self.assertIsNone(opts)
+        self.assertIn("Conflicting budget aliases", err or "")
+
+    def test_config_default_does_not_create_false_conflict(self) -> None:
+        opts, err = self._parse(budget=10.0)
+        self.assertIsNone(err)
+        effective, effective_err = agent_cmd._resolve_effective_max_cost(None, opts)
+        self.assertIsNone(effective_err)
+        self.assertEqual(effective, 10.0)
+
+    def test_agent_help_examples_do_not_combine_max_cost_and_budget(self) -> None:
+        cli_text = (SCRIPTS_ROOT / "amof" / "cli.py").read_text(encoding="utf-8")
+        self.assertNotIn("--max-cost 10.00 --budget", cli_text)
+        self.assertIn("--budget 10.00 --budget-strict", cli_text)
+
+
+class PlanExecuteToolPackReadinessTests(unittest.TestCase):
+    def test_jenkins_url_helper_derives_ops_jenkins(self) -> None:
+        from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = (
+            "Trigger Jenkins job https://jenkins.example/job/demo using "
+            "/work/amof/scripts/tools/jenkins/trigger.sh"
+        )
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+        self.assertIn("ops-jenkins", req.packs)
+        self.assertIn("/work/amof/scripts/tools/jenkins/trigger.sh", req.executable_paths)
+
+    def test_kubectl_helm_kubeconfig_derives_ops_k8s(self) -> None:
+        from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = "Use kubeconfig to run kubectl get pods and helm status"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="K8s", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+        self.assertIn("ops-k8s", req.packs)
+        self.assertIn("kubectl get", req.command_policy["ops-k8s"])
+
+    def test_helm_render_derives_ops_helm_render(self) -> None:
+        from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = "Run helm template and helm lint for chart validation"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Render", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+        self.assertIn("ops-helm-render", req.packs)
+        self.assertIn("helm template", req.command_policy["ops-helm-render"])
+
+    def test_helm_deploy_derives_ops_helm_deploy(self) -> None:
+        from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = "Deploy release with helm upgrade --install and record report"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Deploy", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+        self.assertIn("ops-helm-deploy", req.packs)
+        self.assertIn("k8s_mutation", req.capabilities)
+
+    def test_report_md_under_tmp_derives_reports(self) -> None:
+        from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = "Write /tmp/delivery-3663-matrix-reports/00-preflight.md"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Report", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+        self.assertIn("reports", req.packs)
+        self.assertIn("/tmp/delivery-3663-matrix-reports", req.writable_roots)
+
+    def test_tmp_report_dir_is_write_path(self) -> None:
+        from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = (
+            "Write report files to /tmp/delivery-3663-matrix-reports "
+            "including /tmp/delivery-3663-matrix-reports/*.md"
+        )
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Report", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+        self.assertIn("/tmp/delivery-3663-matrix-reports", req.writable_roots)
+
+    def test_helper_scripts_are_not_classified_as_write_paths(self) -> None:
+        from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = (
+            "Run /home/gaspem1/work/labs/amof/scripts/tools/jenkins/trigger.sh "
+            "and /home/gaspem1/work/labs/amof/scripts/tools/debug/k8s.sh"
+        )
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Helpers", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+        self.assertIn(
+            "/home/gaspem1/work/labs/amof/scripts/tools/jenkins/trigger.sh",
+            req.executable_paths,
+        )
+        self.assertIn(
+            "/home/gaspem1/work/labs/amof/scripts/tools/debug/k8s.sh",
+            req.executable_paths,
+        )
+        self.assertFalse(any("trigger.sh" in root for root in req.writable_roots))
+        self.assertFalse(any("k8s.sh" in root for root in req.writable_roots))
+
+    def test_code_edit_plan_derives_code_edit(self) -> None:
+        from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = "Modify app.py and update tests"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Edit code", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+        self.assertIn("code-edit", req.packs)
+
+    def test_writable_root_requires_approval(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            goal = "Write report to /tmp/delivery-3663-matrix-reports/00-preflight.md"
+            plan = ExecutionPlan(
+                analysis=goal,
+                subtasks=[Subtask(id="1", title="Report", description=goal, runner="code")],
+                execution_order=["1"],
+            )
+            trust = create_trust_state(goal)
+            guardrails = Guardrails(
+                mode="build",
+                config=GuardrailConfig.public_defaults(),
+                writable_roots=[repo],
+            )
+            result = assess_execution_readiness(
+                goal,
+                plan,
+                trust_state=trust,
+                runner_factory=_StubRunnerFactory({"code": ["Read", "Write"]}),
+                guardrails=guardrails,
+            )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_type, "writable_root_denied")
+        wr = next(i for i in result.issues if i.kind == "writable_root")
+        self.assertIn("approve-writable-root", wr.detail.get("suggestion", ""))
+
+    def test_missing_ops_jenkins_blocks_execution(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Trigger Jenkins job using /work/amof/scripts/tools/jenkins/trigger.sh"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        trust = create_trust_state("inspect repository and use Jenkins network")
+        trust.trusted_intent_caps.add("secret")
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_StubRunnerFactory({"code": ["Read", "Write"]}),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+        )
+        self.assertFalse(result.ok)
+        self.assertTrue(any(i.detail.get("pack") == "ops-jenkins" for i in result.issues))
+
+    def test_approving_ops_jenkins_without_secret_still_blocks(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Trigger Jenkins job with token from .env"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        trust = create_trust_state("inspect repository and use Jenkins network")
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_StubRunnerFactory({"code": ["Read", "Write"]}),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+            approved_tool_packs={"ops-jenkins"},
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_type, "missing_required_secret_access")
+
+    def test_approving_ops_jenkins_and_secret_passes(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Trigger Jenkins job with token from .env"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        trust = create_trust_state(goal)
+        trust.trusted_intent_caps.add("secret")
+        trust.trusted_intent_caps.add("write")
+        trust.trusted_intent_caps.add("network")
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_StubRunnerFactory({"code": ["Read", "Write"]}),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+            approved_tool_packs={"ops-jenkins"},
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_type, "missing_required_tool")
+
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_StubRunnerFactory({"code": ["Read", "Shell"]}),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+            approved_tool_packs={"ops-jenkins"},
+        )
+        self.assertTrue(result.ok)
+
+    def test_approving_ops_k8s_and_secret_passes(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Use kubeconfig and run kubectl get pods"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="K8s", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        trust = create_trust_state(goal)
+        trust.trusted_intent_caps.add("secret")
+        trust.trusted_intent_caps.add("write")
+        trust.trusted_intent_caps.add("network")
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_StubRunnerFactory({"code": ["Read", "Write"]}),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+            approved_tool_packs={"ops-k8s"},
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_type, "missing_required_tool")
+
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_StubRunnerFactory({"code": ["Read", "ShellRestricted"]}),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+            approved_tool_packs={"ops-k8s"},
+        )
+        self.assertTrue(result.ok)
+
+    def test_ops_k8s_does_not_allow_arbitrary_shell_or_unrestricted_shell(self) -> None:
+        from amof.orchestrator.plan_execute_control import CORE_TOOL_PACKS
+
+        pack = CORE_TOOL_PACKS["ops-k8s"]
+        self.assertIn("shell_limited", pack.capabilities)
+        self.assertNotIn("shell_unrestricted", pack.capabilities)
+        self.assertIn("kubectl get", pack.command_policy)
+        self.assertNotIn("bash -c", pack.command_policy)
+
+    def test_readiness_uses_delegated_code_runner_shell(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Trigger Jenkins job with token from .env"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        trust = create_trust_state(goal)
+        trust.trusted_intent_caps.update({"network", "secret", "write"})
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_StubRunnerFactory({"code": ["Read", "Shell"]}),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+            approved_tool_packs={"ops-jenkins"},
+        )
+        self.assertTrue(result.ok)
+
+    def test_readiness_fails_when_shell_missing_everywhere(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Trigger Jenkins job with token from .env"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        trust = create_trust_state(goal)
+        trust.trusted_intent_caps.update({"network", "secret", "write"})
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_StubRunnerFactory({"code": ["Read", "Write"]}),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+            approved_tool_packs={"ops-jenkins"},
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_type, "missing_required_tool")
+        self.assertTrue(any(i.kind == "missing_controlled_execution" for i in result.issues))
+
+    def test_tool_pack_approval_checkpoint_has_no_raw_secret(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            apply_tool_pack_approval,
+            build_checkpoint,
+            checkpoint_contains_secret_values,
+        )
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = "Trigger Jenkins using secret token (value is not included)"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        apply_tool_pack_approval(plan, {"ops-jenkins"})
+        checkpoint = build_checkpoint(
+            plan,
+            session_id="sess-toolpack",
+            failure_type="missing_required_secret_access",
+            failure_message="secret approval required",
+            failed_subtask_id=None,
+            goal=goal,
+        )
+        payload = checkpoint.to_dict()
+        self.assertIn("ops-jenkins", payload["tool_pack_approvals"])
+        self.assertFalse(checkpoint_contains_secret_values(payload))
+
+    def test_approved_writable_root_allows_report_outputs(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            report_root = Path(td) / "delivery-reports"
+            goal = f"Write report to {report_root}/00-preflight.md"
+            plan = ExecutionPlan(
+                analysis=goal,
+                subtasks=[Subtask(id="1", title="Report", description=goal, runner="code")],
+                execution_order=["1"],
+            )
+            trust = create_trust_state(goal)
+            guardrails = Guardrails(
+                mode="build",
+                config=GuardrailConfig.public_defaults(),
+                writable_roots=[repo],
+            )
+            result = assess_execution_readiness(
+                goal,
+                plan,
+                trust_state=trust,
+                runner_factory=_StubRunnerFactory({"code": ["Read", "Write"]}),
+                guardrails=guardrails,
+                approved_writable_roots={str(report_root)},
+            )
+            self.assertTrue(result.ok)
+
+            other = Path(td) / "other-reports"
+            goal2 = f"Write report to {other}/bad.md"
+            plan2 = ExecutionPlan(
+                analysis=goal2,
+                subtasks=[Subtask(id="1", title="Report", description=goal2, runner="code")],
+                execution_order=["1"],
+            )
+            denied = assess_execution_readiness(
+                goal2,
+                plan2,
+                trust_state=trust,
+                runner_factory=_StubRunnerFactory({"code": ["Read", "Write"]}),
+                guardrails=guardrails,
+                approved_writable_roots={str(report_root)},
+            )
+            self.assertFalse(denied.ok)
+            self.assertEqual(denied.failure_type, "writable_root_denied")
+
+    def test_approved_writable_root_does_not_allow_unrelated_tmp_paths(self) -> None:
+        from amof.orchestrator.plan_execute_control import assess_execution_readiness
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Write report to /tmp/other/00-preflight.md"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Report", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        trust = create_trust_state(goal)
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            guardrails = Guardrails(
+                mode="build",
+                config=GuardrailConfig.public_defaults(),
+                writable_roots=[repo],
+            )
+            result = assess_execution_readiness(
+                goal,
+                plan,
+                trust_state=trust,
+                runner_factory=_StubRunnerFactory({"code": ["Read", "Write"]}),
+                guardrails=guardrails,
+                approved_writable_roots={"/tmp/delivery-3663-matrix-reports"},
+            )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_type, "writable_root_denied")
+
+    def test_approving_secret_without_ops_jenkins_still_blocks(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            apply_capability_elevation,
+            assess_execution_readiness,
+            build_plan_capability_elevation,
+        )
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Read JENKINS_TOKEN from .env and run trigger.sh via shell"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Preflight", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        trust = create_trust_state("inspect repository")
+        elevation = build_plan_capability_elevation(
+            session_id="sess-shell",
+            plan=plan,
+            goal=goal,
+            missing_caps=["secret"],
+            base_ceiling=set(trust.trusted_intent_caps),
+            approval_source="cli_flag",
+        )
+        apply_capability_elevation(trust, elevation)
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_StubRunnerFactory({"code": ["Read", "Write"]}),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+            parent_tool_names={"Read", "Delegate"},
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_type, "missing_required_tool")
+        self.assertTrue(
+            any(i.detail.get("pack") == "ops-jenkins" for i in result.issues)
+        )
+
+    def test_capability_approval_does_not_grant_shell(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            apply_capability_elevation,
+            assess_execution_readiness,
+            build_plan_capability_elevation,
+        )
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = "Trigger Jenkins job with token from .env"
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        trust = create_trust_state(goal)
+        elevation = build_plan_capability_elevation(
+            session_id="sess-shell-cap",
+            plan=plan,
+            goal=goal,
+            missing_caps=["secret"],
+            base_ceiling=set(trust.trusted_intent_caps),
+            approval_source="cli_flag",
+        )
+        apply_capability_elevation(trust, elevation)
+        trust.trusted_intent_caps.update({"network", "write"})
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=_StubRunnerFactory({"code": ["Read", "Write"]}),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+            approved_tool_packs={"ops-jenkins"},
+        )
+        self.assertFalse(result.ok)
+        self.assertTrue(any(i.kind == "missing_controlled_execution" for i in result.issues))
+
+    def test_delivery3663_tool_pack_inference(self) -> None:
+        from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = (
+            "DELIVERY-3663 preflight: run Jenkins helper "
+            "/home/gaspem1/work/labs/amof/scripts/tools/jenkins/trigger.sh, "
+            "inspect Kubernetes with /home/gaspem1/work/labs/amof/scripts/tools/debug/k8s.sh, "
+            "render helm template, deploy with helm upgrade --install, and write "
+            "/tmp/delivery-3663-matrix-reports/00-preflight.md"
+        )
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Delivery", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+        self.assertIn("ops-jenkins", req.packs)
+        self.assertIn("ops-k8s", req.packs)
+        self.assertIn("ops-helm-render", req.packs)
+        self.assertIn("ops-helm-deploy", req.packs)
+        self.assertIn("reports", req.packs)
+        self.assertIn("/tmp/delivery-3663-matrix-reports", req.writable_roots)
+        self.assertIn(
+            "/home/gaspem1/work/labs/amof/scripts/tools/jenkins/trigger.sh",
+            req.executable_paths,
+        )
+        self.assertIn(
+            "/home/gaspem1/work/labs/amof/scripts/tools/debug/k8s.sh",
+            req.executable_paths,
+        )
+
+    def test_readiness_message_separates_read_exec_write_paths(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            assess_execution_readiness,
+            format_readiness_failure,
+        )
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            helper = Path(td) / "trigger.sh"
+            helper.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+            helper.chmod(0o755)
+            goal = (
+                f"Run Jenkins helper {helper} and write "
+                "/tmp/delivery-3663-matrix-reports/00-preflight.md"
+            )
+            plan = ExecutionPlan(
+                analysis=goal,
+                subtasks=[Subtask(id="1", title="Run", description=goal, runner="code")],
+                execution_order=["1"],
+            )
+            trust = create_trust_state(goal)
+            guardrails = Guardrails(
+                mode="build",
+                config=GuardrailConfig.public_defaults(),
+                writable_roots=[repo],
+            )
+            result = assess_execution_readiness(
+                goal,
+                plan,
+                trust_state=trust,
+                runner_factory=_StubRunnerFactory({"code": ["Read"]}),
+                guardrails=guardrails,
+            )
+        text = format_readiness_failure(result)
+        self.assertIn("Required tool pack: ops-jenkins", text)
+        self.assertIn("Required writable root:", text)
+        self.assertIn("Required executable:", text)
+        self.assertNotIn("Required report path not writable", text)
+
+
 class PlanCapabilityElevationTests(unittest.TestCase):
     def _secret_plan(self, goal: str):
         from amof.orchestrator.planner import ExecutionPlan, Subtask
@@ -2800,7 +3461,7 @@ class PlanCapabilityElevationTests(unittest.TestCase):
         from amof.orchestrator.plan_execute_control import assess_execution_readiness
         from amof.orchestrator.trust_boundary import create_trust_state
 
-        goal = "Read JENKINS_TOKEN and kubeconfig from .env for preflight"
+        goal = "Read secret token from .env for a local report"
         plan = self._secret_plan(goal)
         trust = create_trust_state("inspect repository and write report")
         result = assess_execution_readiness(
@@ -2821,7 +3482,7 @@ class PlanCapabilityElevationTests(unittest.TestCase):
         )
         from amof.orchestrator.trust_boundary import create_trust_state
 
-        goal = "Read JENKINS_TOKEN and kubeconfig from .env for preflight"
+        goal = "Read secret token from .env for a local report"
         plan = self._secret_plan(goal)
         trust = create_trust_state("inspect repository and write report")
         base = set(trust.trusted_intent_caps)
@@ -2855,7 +3516,7 @@ class PlanCapabilityElevationTests(unittest.TestCase):
         )
         from amof.orchestrator.trust_boundary import create_trust_state
 
-        goal = "Read JENKINS_TOKEN and kubeconfig from .env for preflight"
+        goal = "Read secret token from .env for a local report"
         plan = self._secret_plan(goal)
         trust = create_trust_state("inspect repository and write report")
         before = set(trust.trusted_intent_caps)

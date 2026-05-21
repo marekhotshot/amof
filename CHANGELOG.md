@@ -8,6 +8,17 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.6.3] - 2026-05-21
+
+### Fixed
+
+- plan-execute readiness now understands tool packs for Jenkins, K8s, Helm render/deploy, reports, and code-edit workflows.
+- readiness accounts for delegated runner Shell availability instead of checking only parent tools.
+- helper scripts are classified as read/executable inputs, not writable report paths.
+- scoped writable-root approval supports report output directories without globally authorizing `/tmp`.
+- plan-scoped tool-pack and secret approvals remain explicit and non-global.
+- budget aliases are handled consistently across `--budget`, `--max-cost`, and `--cost-limit`.
+
 ## [2.6.2] - 2026-05-21
 
 ### Fixed

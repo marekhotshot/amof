@@ -734,11 +734,17 @@ def _parse_budget_cli_flags(
     """Validate budget CLI flags; return (BudgetOptions, error_message)."""
     from ..orchestrator.resume_control import BudgetOptions, parse_positive_budget
 
+    alias_values: list[tuple[str, float]] = []
     try:
-        parsed_budget = parse_positive_budget(budget, flag="--budget") if budget is not None else None
-        parsed_limit = (
-            parse_positive_budget(cost_limit, flag="--cost-limit") if cost_limit is not None else None
-        )
+        if budget is not None:
+            alias_values.append(("--budget", parse_positive_budget(budget, flag="--budget")))
+        if max_cost is not None:
+            alias_values.append(("--max-cost", parse_positive_budget(max_cost, flag="--max-cost")))
+        if cost_limit is not None:
+            alias_values.append((
+                "--cost-limit",
+                parse_positive_budget(cost_limit, flag="--cost-limit"),
+            ))
         parsed_subtask = (
             parse_positive_budget(subtask_budget, flag="--subtask-budget")
             if subtask_budget is not None
@@ -750,16 +756,29 @@ def _parse_budget_cli_flags(
     except ValueError as exc:
         return None, str(exc)
 
-    if max_cost is not None and max_cost <= 0:
-        return None, "--max-cost must be greater than zero."
-    if max_cost is not None and parsed_budget is not None and abs(max_cost - parsed_budget) > 1e-9:
-        return None, "Cannot use --max-cost and --budget with different values."
-    if max_cost is not None and parsed_limit is not None and abs(max_cost - parsed_limit) > 1e-9:
-        return None, "Cannot use --max-cost and --cost-limit with different values."
+    canonical_budget: Optional[float] = None
+    if alias_values:
+        canonical_budget = alias_values[0][1]
+        conflicts = [
+            (flag, value)
+            for flag, value in alias_values
+            if abs(value - canonical_budget) > 1e-9
+        ]
+        if conflicts:
+            all_values = ", ".join(f"{flag}={value:.2f}" for flag, value in alias_values)
+            return None, f"Conflicting budget aliases: {all_values}"
+        if len(alias_values) > 1:
+            aliases = ", ".join(flag for flag, _ in alias_values if flag != "--budget")
+            if aliases:
+                verb = "is an alias" if "," not in aliases else "are aliases"
+                sys.stderr.write(
+                    f"[agent] {aliases} {verb} for --budget; "
+                    f"using {canonical_budget:.2f}\n"
+                )
 
     opts = BudgetOptions(
-        budget=parsed_budget,
-        cost_limit=parsed_limit,
+        budget=canonical_budget,
+        cost_limit=None,
         subtask_budget=parsed_subtask,
         add_budget=parsed_add,
         require_budget_approval=bool(require_budget_approval),
@@ -872,17 +891,24 @@ def _gate_plan_execute_readiness(
     manifest: Dict[str, Any],
     workspace_root: Path,
     approve_capabilities: Optional[List[str]] = None,
+    approve_tool_packs: Optional[List[str]] = None,
+    approve_writable_roots: Optional[List[str]] = None,
     no_follow_up: bool = False,
 ) -> tuple[Any, int | None]:
     """Run readiness; optionally elevate capabilities for this plan/session."""
     from ..orchestrator.plan_execute_control import (
         apply_capability_elevation,
+        apply_tool_pack_approval,
+        apply_writable_root_elevation,
         assess_execution_readiness,
         build_plan_capability_elevation,
         format_capability_elevation_prompt,
         format_elevation_scope,
         format_readiness_failure,
+        format_readiness_success,
+        parse_tool_pack_names,
         parse_capability_names,
+        parse_writable_root_paths,
         readiness_is_capability_only_failure,
     )
 
@@ -900,7 +926,51 @@ def _gate_plan_execute_readiness(
                 f"{', '.join(sorted(cli_caps))}"
             )
 
+    cli_writable_roots: set[str] = set()
+    if approve_writable_roots:
+        try:
+            cli_writable_roots = set(parse_writable_root_paths(list(approve_writable_roots)))
+        except ValueError as exc:
+            sys.stderr.write(f"[plan-execute] {exc}\n")
+            return None, 1
+        if cli_writable_roots:
+            approved = apply_writable_root_elevation(guardrails, sorted(cli_writable_roots))
+            session.metadata["plan_writable_roots"] = approved
+            plan.writable_root_approvals = approved  # type: ignore[attr-defined]
+            if hasattr(events, "writable_root_approval"):
+                for root in approved:
+                    events.writable_root_approval(
+                        session_id=session.id,
+                        path=root,
+                        approval_source="cli_flag",
+                    )
+            print(
+                "[plan-execute] CLI pre-approved writable roots for this run: "
+                + ", ".join(approved)
+            )
+
     base_ceiling = set(trust_state.trusted_intent_caps) if trust_state else {"read"}
+    cli_tool_packs: set[str] = set()
+    if approve_tool_packs:
+        try:
+            cli_tool_packs = set(parse_tool_pack_names(list(approve_tool_packs)))
+        except ValueError as exc:
+            sys.stderr.write(f"[plan-execute] {exc}\n")
+            return None, 1
+        if cli_tool_packs:
+            apply_tool_pack_approval(plan, cli_tool_packs)
+            session.metadata["plan_tool_packs"] = sorted(cli_tool_packs)
+            if hasattr(events, "tool_pack_approval"):
+                for pack in sorted(cli_tool_packs):
+                    events.tool_pack_approval(
+                        session_id=session.id,
+                        tool_pack=pack,
+                        approval_source="cli_flag",
+                    )
+            print(
+                "[plan-execute] CLI pre-approved tool packs for this run: "
+                + ", ".join(sorted(cli_tool_packs))
+            )
 
     while True:
         readiness = assess_execution_readiness(
@@ -910,8 +980,18 @@ def _gate_plan_execute_readiness(
             runner_factory=runner_factory,
             guardrails=guardrails,
             parent_tool_names=parent_tools,
+            approved_writable_roots=cli_writable_roots,
+            approved_tool_packs=cli_tool_packs,
         )
         if readiness.ok:
+            if cli_tool_packs or cli_caps or cli_writable_roots:
+                print(
+                    format_readiness_success(
+                        approved_tool_packs=cli_tool_packs,
+                        approved_capabilities=cli_caps,
+                        approved_writable_roots=cli_writable_roots,
+                    )
+                )
             return readiness, None
 
         if not readiness_is_capability_only_failure(readiness):
@@ -1517,6 +1597,8 @@ def cmd_agent(
     continue_budget: Optional[float] = None,
     approve_plan: Optional[bool] = None,
     approve_capabilities: Optional[List[str]] = None,
+    approve_tool_packs: Optional[List[str]] = None,
+    approve_writable_roots: Optional[List[str]] = None,
 ) -> int:
     """Run the AMOF coding agent.
 
@@ -1533,13 +1615,14 @@ def cmd_agent(
     cfg = _load_agent_config(workspace_root)
     explicit_provider = provider is not None
     provider_profile: dict[str, Any] | None = None
+    raw_default_max_cost = cfg.get("default_max_cost")
+    config_default_max_cost = (
+        float(raw_default_max_cost) if raw_default_max_cost is not None else None
+    )
 
     # Apply config defaults where CLI args were not explicitly set (None)
     if verbose is None:
         verbose = cfg.get("verbose", False)
-    if max_cost is None:
-        raw = cfg.get("default_max_cost")
-        max_cost = float(raw) if raw is not None else None
     if model_ladder is None:
         model_ladder = cfg.get("model_ladder", False)
     if provider is None:
@@ -1580,6 +1663,8 @@ def cmd_agent(
     if max_cost_err:
         sys.stderr.write(f"[agent] {max_cost_err}\n")
         return 1
+    if max_cost is None:
+        max_cost = config_default_max_cost
     if add_budget is not None and not resume_session:
         sys.stderr.write("[agent] --add-budget requires --resume.\n")
         return 1
@@ -2499,6 +2584,8 @@ def cmd_agent(
             manifest=manifest,
             workspace_root=workspace_root,
             approve_capabilities=approve_capabilities,
+            approve_tool_packs=approve_tool_packs,
+            approve_writable_roots=approve_writable_roots,
             no_follow_up=bool(no_follow_up),
         )
         if readiness_exit is not None:

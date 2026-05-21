@@ -541,6 +541,8 @@ def parse_args() -> argparse.Namespace:
             "  amof agent --resume 20260521-115444 --add-budget 1.00 "
             "--approve-capabilities secret --follow-up \"Do not rerun completed subtasks.\"\n"
             "  amof agent --plan-execute \"goal\" --budget 2.00 --budget-strict\n"
+            "  amof agent --plan-execute \"goal\" --budget 10.00 --budget-strict "
+            "--approve-capabilities secret --approve-tool-pack ops-jenkins\n"
             "  amof agent --resume 20260521-115444 --budget-status\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -712,6 +714,28 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Explicitly approve extra trusted capabilities for this plan-execute run only "
             "(repeatable; e.g. --approve-capabilities secret). Does not persist globally."
+        ),
+    )
+    agent_parser.add_argument(
+        "--approve-tool-pack",
+        dest="approve_tool_packs",
+        action="append",
+        default=None,
+        metavar="PACK",
+        help=(
+            "Approve a plan-scoped tool pack (repeatable; e.g. "
+            "--approve-tool-pack ops-jenkins). Does not persist globally."
+        ),
+    )
+    agent_parser.add_argument(
+        "--approve-writable-root",
+        dest="approve_writable_roots",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Approve an additional writable root for this plan-execute run only "
+            "(repeatable; e.g. --approve-writable-root /tmp/delivery-3663-matrix-reports)."
         ),
     )
 
