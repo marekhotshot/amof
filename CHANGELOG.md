@@ -8,6 +8,27 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.6.4] - 2026-05-22
+
+### Fixed
+
+- plan-execute now stops immediately on fatal subtask failures such as `cost_exceeded`, trust-boundary denial, missing required tools, writable-root denial, and invalid execution preconditions.
+- remaining subtasks are skipped instead of attempted after fatal failure.
+- execution-readiness preflight detects missing tools/capabilities before expensive execution.
+- plan-scoped capability elevation supports explicit `secret` approval without weakening global guardrails.
+- approved ops tool packs enable controlled shell-limited execution for Jenkins, K8s, and Helm workflows.
+- writable report roots can be approved per plan/session without globally allowing arbitrary writes.
+- fatal stop reasons are preserved and checkpoints are saved for resume/manual approval.
+
+### Validation
+
+- `python3 -m unittest tests.test_agent_runtime_profile.PlanExecuteFatalStopTests` passed (9 tests).
+- `python3 -m unittest tests.test_agent_runtime_profile.PlanExecuteToolPackReadinessTests` passed (30 tests).
+- `python3 -m unittest tests.test_agent_runtime_profile` passed (133 tests).
+- `python3 -m unittest` passed (209 tests, 1 skipped).
+- `python3 -m compileall scripts/amof -q` passed.
+- `git diff --check` passed.
+
 ## [2.6.3] - 2026-05-21
 
 ### Fixed
