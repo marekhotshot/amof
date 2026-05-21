@@ -913,6 +913,7 @@ def _gate_plan_execute_readiness(
     )
 
     parent_tools = set(getattr(tool_registry, "_tools", {}).keys())
+    base_ceiling = set(trust_state.trusted_intent_caps) if trust_state else {"read"}
     cli_caps: set[str] = set()
     if approve_capabilities:
         try:
@@ -925,6 +926,28 @@ def _gate_plan_execute_readiness(
                 "[plan-execute] CLI pre-approved capabilities for this run: "
                 f"{', '.join(sorted(cli_caps))}"
             )
+            if trust_state is not None:
+                elevation = build_plan_capability_elevation(
+                    session_id=session.id,
+                    plan=plan,
+                    goal=goal,
+                    missing_caps=sorted(cli_caps),
+                    base_ceiling=base_ceiling,
+                    approval_source="cli_flag",
+                    parent_tool_names=parent_tools,
+                )
+                apply_capability_elevation(trust_state, elevation)
+                plan.capability_elevation = elevation.to_dict()  # type: ignore[attr-defined]
+                session.metadata["plan_capability_elevation"] = elevation.to_dict()
+                events.capability_elevation(
+                    session_id=elevation.session_id,
+                    plan_id=elevation.plan_id,
+                    approved_capabilities=elevation.approved_capabilities,
+                    base_ceiling=elevation.base_ceiling,
+                    approved_tools=elevation.approved_tools,
+                    approved_paths=elevation.approved_paths,
+                    approval_source=elevation.approval_source,
+                )
 
     cli_writable_roots: set[str] = set()
     if approve_writable_roots:
@@ -949,7 +972,6 @@ def _gate_plan_execute_readiness(
                 + ", ".join(approved)
             )
 
-    base_ceiling = set(trust_state.trusted_intent_caps) if trust_state else {"read"}
     cli_tool_packs: set[str] = set()
     if approve_tool_packs:
         try:
@@ -982,6 +1004,8 @@ def _gate_plan_execute_readiness(
             parent_tool_names=parent_tools,
             approved_writable_roots=cli_writable_roots,
             approved_tool_packs=cli_tool_packs,
+            approved_capabilities=cli_caps,
+            base_capability_ceiling=base_ceiling,
         )
         if readiness.ok:
             if cli_tool_packs or cli_caps or cli_writable_roots:
@@ -990,6 +1014,7 @@ def _gate_plan_execute_readiness(
                         approved_tool_packs=cli_tool_packs,
                         approved_capabilities=cli_caps,
                         approved_writable_roots=cli_writable_roots,
+                        base_capability_ceiling=base_ceiling,
                     )
                 )
             return readiness, None
