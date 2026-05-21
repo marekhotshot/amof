@@ -531,7 +531,19 @@ def parse_args() -> argparse.Namespace:
 
     # Agent command
     agent_parser = subparsers.add_parser(
-        "agent", help="Run the AMOF coding agent (loads defaults from .amof/agent.yaml)"
+        "agent",
+        help="Run the AMOF coding agent (loads defaults from .amof/agent.yaml)",
+        epilog=(
+            "Resume examples:\n"
+            "  amof agent --resume 20260521-115444\n"
+            "  amof agent --resume 20260521-115444 --follow-up \"Retry only S003.\"\n"
+            "  amof agent --resume 20260521-115444 --follow-up-file /tmp/amof-followup.md\n"
+            "  amof agent --resume 20260521-115444 --add-budget 1.00 "
+            "--approve-capabilities secret --follow-up \"Do not rerun completed subtasks.\"\n"
+            "  amof agent --plan-execute \"goal\" --budget 2.00 --budget-strict\n"
+            "  amof agent --resume 20260521-115444 --budget-status\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     agent_parser.add_argument(
         "goal",
@@ -565,7 +577,53 @@ def parse_args() -> argparse.Namespace:
         "--max-cost",
         type=float,
         default=None,
-        help="Maximum cost in USD for the session (default: from config)",
+        help="Maximum cost in USD for the session (alias for --budget; default: from config)",
+    )
+    agent_parser.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="Hard total run budget in USD (must be > 0)",
+    )
+    agent_parser.add_argument(
+        "--cost-limit",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="Alias for --budget (must match if both are set)",
+    )
+    agent_parser.add_argument(
+        "--subtask-budget",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="Maximum budget per subtask/worker run (default: runner cap)",
+    )
+    agent_parser.add_argument(
+        "--add-budget",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="Add budget when resuming a session/checkpoint (records approval; must be > 0)",
+    )
+    agent_parser.add_argument(
+        "--require-budget-approval",
+        action="store_true",
+        default=None,
+        help="Ask before execution when estimated plan cost exceeds remaining budget",
+    )
+    agent_parser.add_argument(
+        "--budget-strict",
+        action="store_true",
+        default=None,
+        help="Fail before provider calls if estimate exceeds available budget",
+    )
+    agent_parser.add_argument(
+        "--budget-status",
+        action="store_true",
+        default=None,
+        help="Print budget state for --resume session/checkpoint and exit",
     )
     agent_parser.add_argument(
         "--model-ladder",
@@ -603,7 +661,19 @@ def parse_args() -> argparse.Namespace:
         "--resume",
         default=None,
         metavar="SESSION_ID",
-        help="Resume a previous session (loads messages + telemetry from .amof/runs/SESSION_ID/)",
+        help="Resume a previous session (loads messages + telemetry; plan checkpoints restore subtask state)",
+    )
+    agent_parser.add_argument(
+        "--follow-up",
+        default=None,
+        metavar="TEXT",
+        help="Operator follow-up appended on resume (does not replace goal/plan/checkpoint)",
+    )
+    agent_parser.add_argument(
+        "--follow-up-file",
+        default=None,
+        metavar="PATH",
+        help="Read operator follow-up from file on resume (must be under readable roots)",
     )
     agent_parser.add_argument(
         "--plan-file",
@@ -631,6 +701,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="USD",
         help="Default additional budget for 'continue' in follow-up menu (default: $1.00)",
+    )
+    agent_parser.add_argument(
+        "--approve-capabilities",
+        "--allow-capability",
+        dest="approve_capabilities",
+        action="append",
+        default=None,
+        metavar="CAP",
+        help=(
+            "Explicitly approve extra trusted capabilities for this plan-execute run only "
+            "(repeatable; e.g. --approve-capabilities secret). Does not persist globally."
+        ),
     )
 
     # Director first-class contract actions

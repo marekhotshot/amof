@@ -101,7 +101,8 @@ class SessionTelemetry:
     context_history: List[ContextSnapshot] = field(default_factory=list)
     tier_metrics: Dict[str, TierMetrics] = field(default_factory=lambda: defaultdict(TierMetrics))
     _summarization_cost: float = 0.0
-    
+    _restored_cost: float = 0.0  # baseline from resumed session (no per-call history)
+
     # Enhanced tracking
     retry_count: int = 0
     timeout_count: int = 0
@@ -329,6 +330,7 @@ class SessionTelemetry:
         inspected_files = data.get("inspected_files", {}).get("files", [])
         if isinstance(inspected_files, list):
             telemetry.inspected_files = [path for path in inspected_files if isinstance(path, str)]
+        telemetry._restored_cost = float(data.get("total_cost") or 0.0)
         return telemetry
 
     @property
@@ -361,7 +363,11 @@ class SessionTelemetry:
 
     @property
     def total_cost(self) -> float:
-        return sum(c.estimated_cost for c in self.calls) + self._summarization_cost
+        return (
+            sum(c.estimated_cost for c in self.calls)
+            + self._summarization_cost
+            + self._restored_cost
+        )
 
     @property
     def total_latency_ms(self) -> int:

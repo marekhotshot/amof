@@ -12,6 +12,15 @@ from typing import Any, Dict, List, Optional, Set
 from .planner import ExecutionPlan, Subtask
 from .trust_boundary import Capability, TrustState, derive_trusted_intent_caps
 
+VALID_CAPABILITIES: frozenset[str] = frozenset({"read", "write", "network", "secret"})
+
+_CAPABILITY_RATIONALE: Dict[str, str] = {
+    "read": "Inspect repository files, configs, and plan context.",
+    "write": "Write reports or modify files required by the approved plan.",
+    "network": "Reach Jenkins, kubectl, helm, or HTTP endpoints referenced by the plan.",
+    "secret": "Use credential env vars, tokens, or kubeconfig required by the plan (values are never logged).",
+}
+
 # Fatal failures always stop the plan (continue_on_failure cannot override).
 FATAL_STOP_REASONS = frozenset(
     {
@@ -94,10 +103,38 @@ class ExecutionReadinessResult:
 
 
 @dataclass
+class PlanCapabilityElevation:
+    """Scoped capability approval for one plan-execute session (no secret values)."""
+
+    session_id: str
+    plan_id: str
+    approved_capabilities: List[str]
+    base_ceiling: List[str]
+    approved_tools: List[str] = field(default_factory=list)
+    approved_paths: List[str] = field(default_factory=list)
+    rationales: Dict[str, str] = field(default_factory=dict)
+    approval_source: str = "interactive"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "plan_id": self.plan_id,
+            "approved_capabilities": list(self.approved_capabilities),
+            "base_ceiling": list(self.base_ceiling),
+            "approved_tools": list(self.approved_tools),
+            "approved_paths": list(self.approved_paths),
+            "rationales": dict(self.rationales),
+            "approval_source": self.approval_source,
+            "approved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+
+
+@dataclass
 class PlanExecuteCheckpoint:
     plan_id: str
     session_id: str
     plan_path: Optional[str]
+    goal: str
     completed_subtasks: List[str]
     failed_subtask_id: Optional[str]
     failure_type: str
@@ -106,12 +143,17 @@ class PlanExecuteCheckpoint:
     skip_reason: str
     resume_command: str
     continue_on_failure: bool = False
+    capability_elevation: Optional[Dict[str, Any]] = None
+    budget_limit: Optional[float] = None
+    spent_cost: Optional[float] = None
+    budget_added: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "plan_id": self.plan_id,
             "session_id": self.session_id,
             "plan_path": self.plan_path,
+            "goal": self.goal,
             "completed_subtasks": self.completed_subtasks,
             "failed_subtask_id": self.failed_subtask_id,
             "failure_type": self.failure_type,
@@ -122,6 +164,15 @@ class PlanExecuteCheckpoint:
             "continue_on_failure": self.continue_on_failure,
             "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+        if self.capability_elevation is not None:
+            payload["capability_elevation"] = self.capability_elevation
+        if self.budget_limit is not None:
+            payload["budget_limit"] = self.budget_limit
+        if self.spent_cost is not None:
+            payload["spent_cost"] = self.spent_cost
+        if self.budget_added:
+            payload["budget_added"] = self.budget_added
+        return payload
 
 
 @dataclass
@@ -163,6 +214,116 @@ def derive_required_capabilities(text: str) -> Set[Capability]:
     if _WRITE_INTENT_RE.search(text or ""):
         caps.add("write")
     return caps  # type: ignore[return-value]
+
+
+def parse_capability_names(names: List[str]) -> Set[Capability]:
+    """Parse and validate capability names from CLI flags."""
+    parsed: Set[Capability] = set()
+    for raw in names:
+        for part in str(raw).split(","):
+            cap = part.strip().lower()
+            if not cap:
+                continue
+            if cap not in VALID_CAPABILITIES:
+                raise ValueError(
+                    f"Unknown capability {cap!r}. "
+                    f"Allowed: {', '.join(sorted(VALID_CAPABILITIES))}"
+                )
+            parsed.add(cap)  # type: ignore[arg-type]
+    return parsed
+
+
+def plan_id_for(plan: ExecutionPlan, session_id: str) -> str:
+    if plan.file_path:
+        return str(plan.file_path)
+    return session_id
+
+
+def explain_capability_gaps(
+    missing_caps: List[str],
+    *,
+    text: str,
+    required_caps: Set[Capability],
+) -> Dict[str, str]:
+    rationales: Dict[str, str] = {}
+    lowered = (text or "").lower()
+    for cap in missing_caps:
+        reason = _CAPABILITY_RATIONALE.get(cap, "Required by the approved plan.")
+        if cap == "secret":
+            hints: List[str] = []
+            if "jenkins" in lowered or "trigger.sh" in lowered:
+                hints.append("Jenkins helper/env references")
+            if "kubeconfig" in lowered or "kubectl" in lowered:
+                hints.append("kubeconfig for cluster access")
+            if ".env" in lowered or "token" in lowered:
+                hints.append("environment credential references")
+            if hints:
+                reason = f"{reason} Needed for: {', '.join(hints)}."
+        elif cap == "network" and ("jenkins" in lowered or "kubectl" in lowered or "helm" in lowered):
+            reason = f"{reason} Needed for Jenkins/K8s/network actions in the plan."
+        rationales[cap] = reason
+    return rationales
+
+
+def readiness_is_capability_only_failure(result: ExecutionReadinessResult) -> bool:
+    if result.ok or not result.issues:
+        return False
+    if not all(issue.kind == "missing_capability" for issue in result.issues):
+        return False
+    return result.failure_type in {
+        "missing_required_secret_access",
+        "capability_not_authorized_by_trusted_intent",
+    }
+
+
+def apply_capability_elevation(
+    trust_state: TrustState,
+    elevation: PlanCapabilityElevation,
+) -> None:
+    """Raise trusted ceiling for this plan/session only (in-memory)."""
+    for cap in elevation.approved_capabilities:
+        trust_state.trusted_intent_caps.add(cap)  # type: ignore[arg-type]
+
+
+def build_plan_capability_elevation(
+    *,
+    session_id: str,
+    plan: ExecutionPlan,
+    goal: str,
+    missing_caps: List[str],
+    base_ceiling: Set[Capability],
+    approval_source: str,
+    parent_tool_names: Optional[Set[str]] = None,
+) -> PlanCapabilityElevation:
+    text = _plan_text(plan, goal)
+    required_caps = derive_required_capabilities(text)
+    return PlanCapabilityElevation(
+        session_id=session_id,
+        plan_id=plan_id_for(plan, session_id),
+        approved_capabilities=sorted(missing_caps),
+        base_ceiling=sorted(base_ceiling),
+        approved_tools=sorted(parent_tool_names or derive_required_tools(text, plan)),
+        approved_paths=sorted(extract_report_paths(text)),
+        rationales=explain_capability_gaps(
+            missing_caps,
+            text=text,
+            required_caps=required_caps,
+        ),
+        approval_source=approval_source,
+    )
+
+
+def checkpoint_contains_secret_values(payload: Dict[str, Any]) -> bool:
+    """Detect accidental secret values (not capability labels) in checkpoint JSON."""
+    blob = json.dumps(payload).lower()
+    value_markers = (
+        "super-secret-value",
+        "password=sk-",
+        "api_key=sk-",
+        "token=eyj",
+        "begin rsa private",
+    )
+    return any(marker in blob for marker in value_markers)
 
 
 def derive_required_tools(text: str, plan: ExecutionPlan) -> Set[str]:
@@ -279,6 +440,7 @@ def assess_execution_readiness(
                 detail={
                     "required": sorted(required_caps),
                     "allowed_ceiling": sorted(trusted),
+                    "plan_text": text[:2000],
                 },
             )
         )
@@ -368,7 +530,11 @@ def build_checkpoint(
     failure_message: str,
     failed_subtask_id: Optional[str],
     goal: str,
+    budget_limit: Optional[float] = None,
+    spent_cost: Optional[float] = None,
 ) -> PlanExecuteCheckpoint:
+    from .resume_control import build_resume_cli_command
+
     completed = [st.id for st in plan.subtasks if st.status == "completed"]
     remaining = [
         st.id
@@ -378,16 +544,24 @@ def build_checkpoint(
     ]
     plan_path = str(plan.file_path) if plan.file_path else None
     plan_id = plan_path or session_id
-    resume_parts = ["amof agent --plan-execute"]
-    if plan_path:
-        resume_parts.append(f'--plan-file "{plan_path}"')
-    resume_parts.append(f'"{goal[:80]}..."' if len(goal) > 80 else f'"{goal}"')
-    resume_command = " ".join(resume_parts)
+    approve_caps: List[str] = []
+    if failure_type in {
+        "missing_required_secret_access",
+        "capability_not_authorized_by_trusted_intent",
+    }:
+        approve_caps = ["secret"]
+    resume_command = build_resume_cli_command(
+        session_id,
+        plan_path=plan_path,
+        approve_capabilities=approve_caps or None,
+        followup_hint=True,
+    )
 
     return PlanExecuteCheckpoint(
         plan_id=plan_id,
         session_id=session_id,
         plan_path=plan_path,
+        goal=goal,
         completed_subtasks=completed,
         failed_subtask_id=failed_subtask_id,
         failure_type=failure_type,
@@ -396,6 +570,9 @@ def build_checkpoint(
         skip_reason=skip_status_for_failure(failure_type),
         resume_command=resume_command,
         continue_on_failure=getattr(plan, "continue_on_failure", False),
+        capability_elevation=getattr(plan, "capability_elevation", None),
+        budget_limit=budget_limit,
+        spent_cost=spent_cost,
     )
 
 
@@ -415,11 +592,73 @@ def format_readiness_failure(result: ExecutionReadinessResult) -> str:
             lines.append(
                 f"  Allowed ceiling: {', '.join(issue.detail.get('allowed_ceiling', []))}"
             )
+            required = issue.detail.get("required") or []
+            missing = sorted(set(required) - set(issue.detail.get("allowed_ceiling", [])))
+            if missing:
+                text_detail = issue.detail.get("plan_text", "")
+                for cap, reason in explain_capability_gaps(
+                    missing,
+                    text=text_detail,
+                    required_caps=set(required),
+                ).items():
+                    lines.append(f"  Why {cap} is needed: {reason}")
         if issue.kind == "writable_root" and issue.detail.get("writable_roots"):
             lines.append(
                 f"  Writable roots: {', '.join(issue.detail['writable_roots'])}"
             )
     lines.append("No subtasks executed.")
+    return "\n".join(lines)
+
+
+def format_capability_elevation_prompt(
+    result: ExecutionReadinessResult,
+    *,
+    goal: str,
+    plan: ExecutionPlan,
+) -> str:
+    text = _plan_text(plan, goal)
+    issue = next((i for i in result.issues if i.kind == "missing_capability"), None)
+    detail = issue.detail if issue else {}
+    missing = sorted(
+        set(detail.get("required") or []) - set(detail.get("allowed_ceiling") or [])
+    )
+    lines = [
+        "Execution readiness requires capability elevation for this plan only:",
+        f"  Required: {', '.join(missing)}",
+        f"  Current ceiling: {', '.join(detail.get('allowed_ceiling', []))}",
+    ]
+    for cap, reason in explain_capability_gaps(
+        missing,
+        text=text,
+        required_caps=set(detail.get("required") or []),
+    ).items():
+        lines.append(f"  Why {cap}: {reason}")
+    lines.extend(
+        [
+            "Options:",
+            "  [y] approve elevation for this plan/session only",
+            "  [n] reject",
+            "  [r] save checkpoint and exit",
+            "  [e] edit plan",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_elevation_scope(elevation: PlanCapabilityElevation) -> str:
+    lines = [
+        "[plan-execute] Capability elevation approved (plan/session scope only):",
+        f"  Session: {elevation.session_id}",
+        f"  Plan: {elevation.plan_id}",
+        f"  Approved capabilities: {', '.join(elevation.approved_capabilities)}",
+        f"  Base ceiling: {', '.join(elevation.base_ceiling)}",
+    ]
+    if elevation.approved_tools:
+        lines.append(f"  Approved tools/runners: {', '.join(elevation.approved_tools)}")
+    if elevation.approved_paths:
+        lines.append(f"  Approved report paths: {', '.join(elevation.approved_paths)}")
+    for cap, reason in elevation.rationales.items():
+        lines.append(f"  Scope note ({cap}): {reason}")
     return "\n".join(lines)
 
 

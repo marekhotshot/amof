@@ -100,6 +100,65 @@ class EventLog:
             event_data["metadata"] = metadata
         return self.log("tool_call", **event_data)
 
+    def capability_elevation(
+        self,
+        *,
+        session_id: str,
+        plan_id: str,
+        approved_capabilities: List[str],
+        base_ceiling: List[str],
+        approved_tools: Optional[List[str]] = None,
+        approved_paths: Optional[List[str]] = None,
+        approval_source: str = "interactive",
+    ) -> Dict[str, Any]:
+        """Log scoped plan-execute capability approval (no secret values)."""
+        return self.log(
+            "capability_elevation",
+            session_id=session_id,
+            plan_id=plan_id,
+            approved_capabilities=approved_capabilities,
+            base_ceiling=base_ceiling,
+            approved_tools=approved_tools or [],
+            approved_paths=approved_paths or [],
+            approval_source=approval_source,
+        )
+
+    def resume_followup(
+        self,
+        *,
+        session_id: str,
+        source: str,
+        chars: int,
+        sha256: str,
+        preview: str,
+    ) -> Dict[str, Any]:
+        """Log operator follow-up on resume (preview only; no secret values)."""
+        return self.log(
+            "resume_followup",
+            session_id=session_id,
+            source=source,
+            chars=chars,
+            sha256=sha256,
+            preview=preview,
+        )
+
+    def budget_approval(
+        self,
+        *,
+        session_id: str,
+        amount: float,
+        new_limit: float,
+        source: str = "cli_flag",
+    ) -> Dict[str, Any]:
+        """Log explicit additional budget approval for resume."""
+        return self.log(
+            "budget_approval",
+            session_id=session_id,
+            amount=round(amount, 4),
+            new_limit=round(new_limit, 4),
+            source=source,
+        )
+
     def policy_gate(
         self,
         *,
