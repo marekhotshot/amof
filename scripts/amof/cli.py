@@ -15,6 +15,7 @@ PUBLIC_HELP_COMMANDS = (
     "paths",
     "setup",
     "init",
+    "chat",
     "agent",
     "bootstrap",
     "update",
@@ -49,6 +50,7 @@ def parse_args() -> argparse.Namespace:
                "  amof doctor                        Report bootstrap readiness\n"
                "  amof setup provider --list         Show public provider templates\n"
                "  amof init --adopt .                Adopt the current Git repo\n"
+               "  amof chat plan \"Inspect this repo\"  Route read-only planning through remote IAL\n"
                "  amof agent --plan \"Inspect this repo\"  Run a read-only plan\n"
                "  amof bootstrap bundle --json       Emit bootstrap evidence\n"
                "\n"
@@ -527,6 +529,49 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         dest="all_repos",
         help="Profile all repos in workspace",
+    )
+
+    chat_parser = subparsers.add_parser(
+        "chat",
+        help="Create a read-only planning proposal through remote IAL",
+    )
+    chat_sub = chat_parser.add_subparsers(dest="chat_cmd", required=True)
+    chat_plan = chat_sub.add_parser(
+        "plan",
+        help="Build one non-executable PlanPacket proposal for AMOF Director",
+    )
+    chat_plan.add_argument(
+        "objective",
+        help="Planning objective or operator request to analyze",
+    )
+    chat_plan.add_argument(
+        "--repo",
+        default=".",
+        help="Repository/workspace path to inspect (default: current directory)",
+    )
+    chat_plan.add_argument(
+        "--ticket-id",
+        help="Optional ticket identifier to pin into the PlanPacket",
+    )
+    chat_plan.add_argument(
+        "--file",
+        action="append",
+        dest="files",
+        help="Bound planning context to one repo-relative file path; can be repeated",
+    )
+    chat_plan.add_argument(
+        "--max-files",
+        type=int,
+        default=8,
+        help="Maximum files to inspect when --file is omitted (default: 8)",
+    )
+    chat_plan.add_argument(
+        "--model",
+        help="Optional remote-IAL model override; defaults to the active provider profile",
+    )
+    chat_plan.add_argument(
+        "--output",
+        help="Optional path outside the target repo for the emitted proposal JSON",
     )
 
     # Agent command

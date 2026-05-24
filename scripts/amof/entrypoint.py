@@ -29,6 +29,7 @@ NO_ECOSYSTEM_COMMANDS = {
     "bootstrap",
     "paths",
     "setup",
+    "chat",
     "update",
     "uninstall",
     "shell",
@@ -166,6 +167,7 @@ cmd_pr = _lazy_command("pr", "cmd_pr")
 cmd_jira = _lazy_command("jira", "cmd_jira")
 cmd_kb = _lazy_command("kb", "cmd_kb")
 cmd_profile = _lazy_command("profile", "cmd_profile")
+cmd_chat = _lazy_command("chat", "cmd_chat")
 cmd_agent = _lazy_command("agent_cmd", "cmd_agent")
 cmd_manifest = _lazy_command("manifest_cmd", "cmd_manifest")
 cmd_release = _lazy_command("release", "cmd_release")
@@ -245,6 +247,8 @@ def main() -> None:
             sys.exit(cmd_paths(args))
         if args.command == "setup":
             sys.exit(cmd_setup(args))
+        if args.command == "chat":
+            sys.exit(cmd_chat(args))
         if args.command == "update":
             sys.exit(cmd_update(args))
         if args.command == "uninstall":

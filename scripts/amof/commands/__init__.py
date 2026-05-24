@@ -43,6 +43,7 @@ _COMMAND_EXPORTS: dict[str, tuple[str, str]] = {
     "cmd_jira": ("jira", "cmd_jira"),
     "cmd_kb": ("kb", "cmd_kb"),
     "cmd_profile": ("profile", "cmd_profile"),
+    "cmd_chat": ("chat", "cmd_chat"),
     "cmd_agent": ("agent_cmd", "cmd_agent"),
     "cmd_manifest": ("manifest_cmd", "cmd_manifest"),
     "cmd_release": ("release", "cmd_release"),

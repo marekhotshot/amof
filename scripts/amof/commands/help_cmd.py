@@ -31,6 +31,19 @@ _HELP: Dict[str, str] = {
   raw API keys and does not call a provider while writing the profile.
 """,
 
+    "chat": """
+  amof chat — Read-only planning proposal through remote IAL
+
+  Public use:
+    amof chat plan "Inspect this repo" --repo .
+    amof chat plan "Plan AMOF-CHAT-001" --ticket-id AMOF-CHAT-001 --file README.md --file scripts/amof/cli.py
+
+  This command reads only a bounded set of repo files, routes inference through
+  the active remote-ial provider profile, writes evidence to AMOF app-data under
+  chat-plan run paths, and emits a non-executable PlanPacket with
+  `execution_allowed: false` that still requires user approval.
+""",
+
     "agent": """
   amof agent — Run AMOF planning or bounded execution
 
@@ -267,6 +280,7 @@ _PUBLIC_TOPICS = [
     "paths",
     "setup",
     "init",
+    "chat",
     "agent",
     "bootstrap",
     "update",

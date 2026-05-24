@@ -30,6 +30,7 @@ AMOF turns a repository into a governed local agent surface:
 - `amof check` and `amof doctor` verify the workstation and app-data layout.
 - `amof init --adopt .` binds an existing Git repo into AMOF app-data.
 - `amof setup provider ...` stores provider references, not raw secrets.
+- `amof chat plan` produces a non-executable Director proposal through remote IAL.
 - `amof agent --plan` is read-only planning.
 - `amof agent --plan-execute` is bounded execution that still requires human
   review of the resulting Git diff.
@@ -61,6 +62,7 @@ This public `main` intentionally keeps a narrow, installable v2.6.4 surface:
 - `amof doctor`
 - `amof setup provider`
 - `amof init --adopt .`
+- `amof chat plan "Inspect this repo"`
 - `amof agent --plan "Inspect this repo"`
 - `amof agent --plan-execute "Make a bounded change"`
 - `amof bootstrap contract`
@@ -84,6 +86,7 @@ What works in v2.6.4:
 - `amof doctor --json`
 - `amof setup provider --list`
 - `amof init --adopt .`
+- `amof chat plan "Inspect this repo" --repo .`
 - `amof agent --plan "Inspect this repo"`
 - bounded `amof agent --plan-execute` runs in disposable or intentionally
   prepared repos
