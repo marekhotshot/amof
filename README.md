@@ -10,11 +10,11 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v2.6.4-0A7FFF.svg" alt="release v2.6.4" />
+  <img src="https://img.shields.io/badge/release-v2.7.0-0A7FFF.svg" alt="release v2.7.0" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
-AMOF v2.6.4 is a local-first CLI for adopting a repo into an evidence-first
+AMOF v2.7.0 is a local-first CLI for adopting a repo into an evidence-first
 agent workflow. It validates the workstation, stores app-data and run evidence
 outside the target repo, records provider profile references, and can run
 read-only planning or explicitly requested bounded execution.
@@ -53,7 +53,7 @@ Those belong outside the public product tree.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v2.6.4 surface:
+This public `main` intentionally keeps a narrow, installable v2.7.0 surface:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -70,7 +70,7 @@ This public `main` intentionally keeps a narrow, installable v2.6.4 surface:
 
 ## Released Public CLI Surface
 
-What works in v2.6.4:
+What works in v2.7.0:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -163,7 +163,7 @@ an explicit checkout-local virtualenv.
 Use this if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.6.4"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.7.0"
 ```
 
 This installs the `amof` CLI from the public GitHub tag into a pipx-managed
@@ -192,7 +192,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v2.6.4
+amof update --version v2.7.0
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -249,7 +249,7 @@ Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.6.4"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.7.0"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
@@ -267,7 +267,7 @@ message rather than fail on missing `--ecosystem/-e`.
 
 ## Bounded Worker Execution
 
-AMOF v2.6.4 includes a public default `code` runner for bounded
+AMOF v2.7.0 includes a public default `code` runner for bounded
 `amof agent --plan-execute` demos in adopted repositories. The default runner is
 limited to repository read/write tools and does not include shell, delete,
 checkpoint, commit, or push tools.
@@ -421,7 +421,7 @@ Additional public docs retained in this repo include:
 
 ## Release State
 
-- `v2.6.4` is the current public release candidate target for this slice.
+- `v2.7.0` is the current public release candidate target for this slice.
 - Public install and no-key adoption smoke passed from the GitHub tag.
 - Bounded worker execution is public/demoable, but output must be reviewed as a
   Git diff before commit.

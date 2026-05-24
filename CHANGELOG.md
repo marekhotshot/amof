@@ -8,6 +8,33 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.7.0] - 2026-05-24
+
+### Added
+
+- Added `amof chat plan` as a bounded, read-only chat planning surface routed through remote IAL.
+- Added a non-executable `PlanPacket` proposal output for Director with mandatory user approval and `execution_allowed: false`.
+- Added focused public tests for chat planning boundaries, IAL attribution preservation, and evidence-mode handling.
+
+### Changed
+
+- Public docs and CLI help now describe read-only code/workspace planning through remote IAL as part of the released public surface.
+- Chat planning evidence writes only to AMOF app-data under `runs/chat-plans/...` instead of the target repository.
+
+### Notes
+
+- `amof chat plan` does not execute shell commands, does not mutate the target repository, and does not perform Director handoff.
+- The public release includes only the remote-IAL client surface; private gateway endpoints and `services/ial-gateway` remain out of tree.
+
+### Validation
+
+- `PYTHONPATH="scripts" /tmp/amof-ial-venv/bin/python scripts/amof.py --help` passed.
+- `PYTHONPATH="scripts" /tmp/amof-ial-venv/bin/python scripts/amof.py chat --help` passed.
+- `PYTHONPATH="scripts" /tmp/amof-ial-venv/bin/python scripts/amof.py check` passed.
+- `/tmp/amof-ial-venv/bin/python -m unittest tests.test_chat_planning tests.test_ial_evidence tests.test_lazy_command_loading` passed.
+- `/tmp/amof-ial-venv/bin/python -m unittest tests.test_remote_ial` passed.
+- `git diff --check` passed.
+
 ## [2.6.4] - 2026-05-22
 
 ### Fixed
