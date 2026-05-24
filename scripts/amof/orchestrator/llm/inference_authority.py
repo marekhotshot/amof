@@ -534,6 +534,12 @@ class InferenceAuthority(LLMClient):
                     tool_calls=tool_calls,
                     source=source,
                     provider=provider,
+                    upstream_provider=getattr(usage, "upstream_provider", None),
+                    upstream_model=getattr(usage, "upstream_model", None),
+                    request_id=getattr(usage, "request_id", None),
+                    policy_decision=getattr(usage, "policy_decision", None),
+                    input_hash=getattr(usage, "input_hash", None),
+                    output_hash=getattr(usage, "output_hash", None),
                 )
             except Exception as exc:
                 logger.debug(

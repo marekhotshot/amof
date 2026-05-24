@@ -206,9 +206,15 @@ class Agent:
                     str(pe),
                     fatal=True,
                     provider=provider_label,
+                    upstream_provider=getattr(pe, "upstream_provider", None),
+                    upstream_model=getattr(pe, "upstream_model", None),
                     status_code=pe.status_code,
                     failure_class=pe.failure_class,
                     resumable=pe.resumable,
+                    request_id=getattr(pe, "request_id", None),
+                    policy_decision=getattr(pe, "policy_decision", None),
+                    input_hash=getattr(pe, "input_hash", None),
+                    output_hash=getattr(pe, "output_hash", None),
                 )
 
                 if self.model_router:
@@ -355,6 +361,13 @@ class Agent:
                     cost=response.usage.estimated_cost,
                     latency_ms=response.usage.latency_ms,
                     tool_calls_count=tool_calls_count,
+                    provider=_client_provider(active_llm) or None,
+                    upstream_provider=getattr(response.usage, "upstream_provider", None),
+                    upstream_model=getattr(response.usage, "upstream_model", None),
+                    request_id=getattr(response.usage, "request_id", None),
+                    policy_decision=getattr(response.usage, "policy_decision", None),
+                    input_hash=getattr(response.usage, "input_hash", None),
+                    output_hash=getattr(response.usage, "output_hash", None),
                 )
 
             if response.has_tool_calls:

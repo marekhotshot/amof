@@ -64,16 +64,30 @@ class EventLog:
         cost: float,
         latency_ms: int,
         tool_calls_count: int = 0,
+        **extra: Any,
     ) -> Dict[str, Any]:
         """Log an LLM API call."""
-        return self.log(
-            "llm_call",
-            model=model,
-            tokens={"in": prompt_tokens, "out": completion_tokens},
-            cost=round(cost, 6),
-            latency_ms=latency_ms,
-            tool_calls=tool_calls_count,
-        )
+        payload: Dict[str, Any] = {
+            "model": model,
+            "tokens": {"in": prompt_tokens, "out": completion_tokens},
+            "cost": round(cost, 6),
+            "latency_ms": latency_ms,
+            "tool_calls": tool_calls_count,
+        }
+        for key in (
+            "source",
+            "provider",
+            "upstream_provider",
+            "upstream_model",
+            "request_id",
+            "policy_decision",
+            "input_hash",
+            "output_hash",
+        ):
+            value = extra.get(key)
+            if value is not None:
+                payload[key] = value
+        return self.log("llm_call", **payload)
 
     def tool_call(
         self,

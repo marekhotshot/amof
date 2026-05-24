@@ -14,7 +14,7 @@ from ..app_config import activate_provider_profile_ref, get_current_context_name
 from ..app_paths import ensure_parent_dir, provider_profiles_dir
 
 
-PROVIDER_TEMPLATE_ORDER = ("openrouter", "local-qwen", "openai", "anthropic", "bedrock", "xai", "runpod")
+PROVIDER_TEMPLATE_ORDER = ("openrouter", "local-qwen", "openai", "anthropic", "bedrock", "remote-ial", "xai", "runpod")
 
 PROVIDER_TEMPLATES: dict[str, dict[str, Any]] = {
     "openrouter": {
@@ -103,6 +103,26 @@ PROVIDER_TEMPLATES: dict[str, dict[str, Any]] = {
             "Stores environment variable names only; Bedrock credentials stay in AWS_PROFILE/AWS_REGION or AMOF_BEDROCK_REGION.",
             "Corporate TLS environments may need SSL_CERT_FILE or REQUESTS_CA_BUNDLE plus AWS_CA_BUNDLE.",
             "Current CLI execution also accepts --provider bedrock and does not call AWS during setup.",
+        ],
+    },
+    "remote-ial": {
+        "name": "remote-ial-default",
+        "provider": "remote-ial",
+        "lane": "planner",
+        "model_family": "remote-ial",
+        "model_env": "AMOF_REMOTE_IAL_MODEL",
+        "default_model": "remote-ial/default",
+        "credential_refs": {
+            "api_key_env": "AMOF_REMOTE_IAL_API_KEY",
+            "base_url_env": "AMOF_REMOTE_IAL_BASE_URL",
+        },
+        "timeout_seconds": 90.0,
+        "redaction_policy": {"record_secret_names_only": True},
+        "allow_direct_git_write": False,
+        "status": "private_gateway_contract_only",
+        "notes": [
+            "Routes model calls through a private remote IAL gateway; public AMOF stores only env var names and local evidence metadata.",
+            "Set AMOF_REMOTE_IAL_BASE_URL and AMOF_REMOTE_IAL_API_KEY before live calls.",
         ],
     },
     "xai": {

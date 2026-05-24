@@ -402,7 +402,7 @@ def parse_args() -> argparse.Namespace:
     setup_provider.add_argument(
         "provider_template",
         nargs="?",
-        choices=["openrouter", "local-qwen", "openai", "anthropic", "bedrock", "xai", "runpod"],
+        choices=["openrouter", "local-qwen", "openai", "anthropic", "bedrock", "remote-ial", "xai", "runpod"],
         help="Provider template to use",
     )
     setup_provider.add_argument("--list", dest="list_templates", action="store_true", help="List provider templates")
@@ -554,7 +554,7 @@ def parse_args() -> argparse.Namespace:
     )
     agent_parser.add_argument(
         "--provider",
-        choices=["anthropic", "openai", "openrouter", "bedrock"],
+        choices=["anthropic", "openai", "openrouter", "bedrock", "remote-ial"],
         default=None,
         help="LLM provider (default: from config or anthropic)",
     )
@@ -950,7 +950,7 @@ def parse_args() -> argparse.Namespace:
     )
     eval_parser.add_argument(
         "--provider",
-        choices=["anthropic", "openai", "openrouter", "bedrock"],
+        choices=["anthropic", "openai", "openrouter", "bedrock", "remote-ial"],
         default=None,
         help="LLM provider (default: from config)",
     )

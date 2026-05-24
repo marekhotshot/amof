@@ -876,7 +876,13 @@ def run_agent_for_ui(
                         message=f"LLM call [{source}{provider_bit}] ({model}, {tok_in}+{tok_out} tokens, ${cost:.4f})",
                         payload={"model": model, "prompt_tokens": tok_in, "completion_tokens": tok_out,
                                  "cost": cost, "latency_ms": latency, "source": source,
-                                 "provider": provider},
+                                 "provider": provider,
+                                 "upstream_provider": payload.get("upstream_provider"),
+                                 "upstream_model": payload.get("upstream_model"),
+                                 "request_id": payload.get("request_id"),
+                                 "policy_decision": payload.get("policy_decision"),
+                                 "input_hash": payload.get("input_hash"),
+                                 "output_hash": payload.get("output_hash")},
                     )
                 elif event_type in ("session_start", "session_end"):
                     run_manager.append_event(

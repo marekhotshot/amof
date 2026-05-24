@@ -9,6 +9,7 @@ Supports resume on cost cap / crash via incremental session saves.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -36,7 +37,7 @@ AMOF_RUNTIME_DEPENDENCIES = {
     "yaml": "PyYAML",
 }
 OPTIONAL_MEMORY_DEPENDENCIES = {"chromadb", "pysqlite3"}
-SUPPORTED_PROFILE_PROVIDERS = {"anthropic", "openai", "openrouter", "bedrock", "local", "runpod"}
+SUPPORTED_PROFILE_PROVIDERS = {"anthropic", "openai", "openrouter", "bedrock", "local", "runpod", "remote-ial"}
 
 # Default model tiers when --model-ladder is enabled
 DEFAULT_TIERS = {
@@ -69,7 +70,15 @@ PROVIDER_DEFAULT_MODELS = {
         "worker": "deepseek-ai/DeepSeek-V4-Flash",
         "planner": "deepseek-ai/DeepSeek-V4-Flash",
     },
+    "remote-ial": {
+        "worker": "remote-ial/default",
+        "planner": "remote-ial/default",
+    },
 }
+EVIDENCE_MESSAGE_MODES = {"raw_local", "redacted_local", "hash_only"}
+EVIDENCE_JOURNAL_MODES = {"enabled", "redacted", "disabled"}
+BEARER_TOKEN_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+\b")
+SECRET_ENV_NAME_RE = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD)", re.IGNORECASE)
 MUTATION_INTENT_RE = re.compile(
     r"\b(add|write|create|edit|modify|update|patch|replace|delete|remove|refactor|implement|fix|change)\b",
     re.IGNORECASE,
@@ -561,7 +570,12 @@ def _provider_endpoint_diagnostics(
     redacted_base = base
     if parsed.username or parsed.password:
         redacted_base = parsed._replace(netloc=parsed.hostname or "").geturl()
-    final_path = "/chat/completions" if endpoint_family == "chat.completions" else "<unknown>"
+    if endpoint_family == "chat.completions":
+        final_path = "/chat/completions"
+    elif endpoint_family == "remote-ial.chat":
+        final_path = "/v1/ial/chat"
+    else:
+        final_path = "<unknown>"
     if parsed.path:
         final_path = f"{parsed.path.rstrip('/')}{final_path}"
     return (
@@ -611,6 +625,11 @@ def _default_worker_model(provider: str, model: str | None, profile_default_mode
             "AMOF_RUNPOD_MODEL",
             os.environ.get("RUNPOD_MODEL", PROVIDER_DEFAULT_MODELS["runpod"]["worker"]),
         )
+    if provider == "remote-ial":
+        return os.environ.get(
+            "AMOF_REMOTE_IAL_MODEL",
+            PROVIDER_DEFAULT_MODELS["remote-ial"]["worker"],
+        )
     return os.environ.get("AMOF_ANTHROPIC_MODEL", PROVIDER_DEFAULT_MODELS["anthropic"]["worker"])
 
 
@@ -632,6 +651,8 @@ def _default_planner_model(
     if provider == "local" and profile_default_model:
         return profile_default_model
     if provider == "runpod" and profile_default_model:
+        return profile_default_model
+    if provider == "remote-ial" and profile_default_model:
         return profile_default_model
     return PROVIDER_DEFAULT_MODELS.get(provider, PROVIDER_DEFAULT_MODELS["anthropic"])["planner"]
 
@@ -669,6 +690,134 @@ def _resolve_local_timeout_seconds(profile: dict[str, Any] | None) -> tuple[floa
             f"(got {raw_timeout!r})"
         )
     return timeout_seconds, None
+
+
+def _validate_remote_ial_base_url(base_url: str | None) -> str | None:
+    normalized = str(base_url or "").strip()
+    if not normalized:
+        return "remote-ial provider profile requires base_url or default_base_url"
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return f"remote-ial provider base_url must be an http(s) URL, got: {normalized}"
+    return None
+
+
+def _resolve_remote_ial_timeout_seconds(profile: dict[str, Any] | None) -> tuple[float, str | None]:
+    raw_timeout = None
+    if profile:
+        value = profile.get("timeout_seconds")
+        if value is not None:
+            raw_timeout = str(value).strip()
+    if not raw_timeout:
+        env_value = os.environ.get("AMOF_REMOTE_IAL_TIMEOUT_SECONDS")
+        if env_value is not None:
+            raw_timeout = env_value.strip()
+    if not raw_timeout:
+        return 90.0, None
+    try:
+        timeout_seconds = float(raw_timeout)
+    except ValueError:
+        return 90.0, (
+            "remote-ial provider timeout_seconds must be a positive number "
+            f"(got {raw_timeout!r})"
+        )
+    if timeout_seconds <= 0:
+        return 90.0, (
+            "remote-ial provider timeout_seconds must be a positive number "
+            f"(got {raw_timeout!r})"
+        )
+    return timeout_seconds, None
+
+
+def _resolve_evidence_policy(cfg: Dict[str, Any]) -> Dict[str, str]:
+    evidence_cfg = cfg.get("evidence")
+    if not isinstance(evidence_cfg, dict):
+        evidence_cfg = {}
+
+    messages_mode = str(evidence_cfg.get("messages") or "raw_local").strip() or "raw_local"
+    if messages_mode not in EVIDENCE_MESSAGE_MODES:
+        messages_mode = "raw_local"
+
+    journal_mode = str(evidence_cfg.get("journal") or "enabled").strip() or "enabled"
+    if journal_mode not in EVIDENCE_JOURNAL_MODES:
+        journal_mode = "enabled"
+
+    return {"messages": messages_mode, "journal": journal_mode}
+
+
+def _secret_values_from_env() -> List[str]:
+    values: list[str] = []
+    for key, value in os.environ.items():
+        if not SECRET_ENV_NAME_RE.search(key):
+            continue
+        secret = str(value or "").strip()
+        if len(secret) < 4:
+            continue
+        values.append(secret)
+    return sorted(set(values), key=len, reverse=True)
+
+
+def _redact_text(text: str) -> str:
+    redacted = BEARER_TOKEN_RE.sub("Bearer [REDACTED]", text)
+    for secret in _secret_values_from_env():
+        redacted = redacted.replace(secret, "[REDACTED]")
+    return redacted
+
+
+def _sanitize_evidence_value(value: Any, *, mode: str) -> Any:
+    if isinstance(value, str):
+        if mode == "redacted_local":
+            return _redact_text(value)
+        if mode == "hash_only":
+            return {
+                "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+                "chars": len(value),
+            }
+        return value
+    if isinstance(value, list):
+        return [_sanitize_evidence_value(item, mode=mode) for item in value]
+    if isinstance(value, dict):
+        return {key: _sanitize_evidence_value(item, mode=mode) for key, item in value.items()}
+    return value
+
+
+def _message_for_evidence(msg: Dict[str, Any], *, mode: str) -> Dict[str, Any]:
+    if mode == "raw_local":
+        return dict(msg)
+
+    payload: Dict[str, Any] = {"role": msg.get("role", "")}
+    for key in ("content", "tool_calls", "results"):
+        if key not in msg:
+            continue
+        payload[key] = _sanitize_evidence_value(msg.get(key), mode=mode)
+    return payload
+
+
+def _journal_session_view(session, *, mode: str):
+    if mode == "enabled":
+        return session
+
+    messages = []
+    for message in getattr(session, "messages", []):
+        cloned = copy.deepcopy(message)
+        if getattr(cloned, "content", None):
+            if mode == "redacted":
+                cloned.content = _redact_text(str(cloned.content))
+        if getattr(cloned, "tool_calls", None):
+            if mode == "redacted":
+                cloned.tool_calls = _sanitize_evidence_value(cloned.tool_calls, mode="redacted_local")
+        if getattr(cloned, "results", None):
+            if mode == "redacted":
+                cloned.results = _sanitize_evidence_value(cloned.results, mode="redacted_local")
+        messages.append(cloned)
+
+    class _SessionView:
+        def __init__(self, source, redacted_messages):
+            self.messages = redacted_messages
+            self.goal = getattr(source, "goal", None)
+            self.id = getattr(source, "id", None)
+
+    return _SessionView(session, messages)
 
 
 def _validate_runner_factory_for_plan(runner_factory: Any, plan: Any) -> str | None:
@@ -1717,6 +1866,7 @@ def cmd_agent(
         provider_base_url = _normalize_runpod_openai_base_url(provider_base_url)
     profile_default_model = _profile_model(provider_profile) if not explicit_provider else None
     local_timeout_seconds: float | None = None
+    remote_ial_timeout_seconds: float = 90.0
     if provider in {"local", "runpod"}:
         local_base_url_error = _validate_local_base_url(provider_base_url)
         if local_base_url_error:
@@ -1741,6 +1891,25 @@ def cmd_agent(
                 f"{local_timeout_error}; "
                 f"{_provider_endpoint_diagnostics(provider=provider, profile=provider_profile, base_url=provider_base_url, model=profile_default_model or model, endpoint_family='chat.completions')} "
                 f"sdk_max_retries=0\n"
+            )
+            return 1
+    elif provider == "remote-ial":
+        remote_ial_base_url_error = _validate_remote_ial_base_url(provider_base_url)
+        if remote_ial_base_url_error:
+            sys.stderr.write(
+                "[agent] "
+                f"{remote_ial_base_url_error}; "
+                f"{_provider_endpoint_diagnostics(provider=provider, profile=provider_profile, base_url=provider_base_url, model=profile_default_model or model, endpoint_family='remote-ial.chat')}\n"
+            )
+            return 1
+        remote_ial_timeout_seconds, remote_ial_timeout_error = _resolve_remote_ial_timeout_seconds(
+            provider_profile
+        )
+        if remote_ial_timeout_error:
+            sys.stderr.write(
+                "[agent] "
+                f"{remote_ial_timeout_error}; "
+                f"{_provider_endpoint_diagnostics(provider=provider, profile=provider_profile, base_url=provider_base_url, model=profile_default_model or model, endpoint_family='remote-ial.chat')}\n"
             )
             return 1
 
@@ -1780,6 +1949,16 @@ def cmd_agent(
             return 1
     elif provider == "local":
         api_key = ""
+    elif provider == "remote-ial":
+        api_key_env = _profile_credential_env(provider_profile, "api_key_env") if not explicit_provider else None
+        api_key_env = api_key_env or "AMOF_REMOTE_IAL_API_KEY"
+        api_key = os.environ.get(api_key_env, "")
+        if not api_key:
+            sys.stderr.write(
+                f"[agent] {api_key_env} not set.\n"
+                f"  Export {api_key_env}=<remote-ial-bearer-token> before running remote IAL calls.\n"
+            )
+            return 1
     elif provider == "runpod":
         api_key_env = _profile_credential_env(provider_profile, "api_key_env") if not explicit_provider else None
         api_key_env = api_key_env or "RUNPOD_API_KEY"
@@ -1864,6 +2043,15 @@ def cmd_agent(
     # Provider-specific client factory
     def _make_client(mdl: str) -> Any:
         """Create an LLM client for the configured provider."""
+        if provider == "remote-ial":
+            from ..orchestrator.llm.remote_ial import RemoteIALClient
+
+            return RemoteIALClient(
+                base_url=provider_base_url or "",
+                model=mdl,
+                api_key=api_key or None,
+                timeout=remote_ial_timeout_seconds,
+            )
         if provider in {"local", "runpod"}:
             from ..orchestrator.llm.local_openai_compatible import LocalOpenAICompatibleClient
 
@@ -2859,7 +3047,14 @@ def cmd_agent(
 # ---- Helper functions ----
 
 
-def _save_session(session, telemetry, events, workspace_root: Path, session_subdir: str = "runs") -> Path:
+def _save_session(
+    session,
+    telemetry,
+    events,
+    workspace_root: Path,
+    session_subdir: str = "runs",
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Path:
     """Save session state for resume capability.
 
     Saves:
@@ -2871,11 +3066,15 @@ def _save_session(session, telemetry, events, workspace_root: Path, session_subd
     session_dir = _agent_runs_session_dir(session.id, session_subdir=session_subdir)
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save messages as JSONL (each line is one message)
+    evidence_policy = _resolve_evidence_policy(cfg or _load_agent_config(workspace_root))
+
+    # Save messages as JSONL. Explicit evidence modes trade resume fidelity for
+    # reduced local content retention; defaults remain raw_local for back-compat.
     messages_path = session_dir / "messages.jsonl"
     with open(messages_path, "w", encoding="utf-8") as f:
         for msg in session.get_messages_for_api():
-            f.write(json.dumps(msg, default=str) + "\n")
+            payload = _message_for_evidence(msg, mode=evidence_policy["messages"])
+            f.write(json.dumps(payload, default=str) + "\n")
 
     # Save telemetry
     telemetry_path = session_dir / "telemetry.json"
@@ -2897,6 +3096,8 @@ def _load_session_messages(session, messages_path: Path) -> None:
             msg = json.loads(line)
             role = msg.get("role", "")
             content = msg.get("content", "")
+            if not isinstance(content, str):
+                content = ""
             if role == "user":
                 session.add_user_message(content)
             elif role == "assistant":
@@ -2912,10 +3113,25 @@ def _load_telemetry(telemetry, telemetry_path: Path) -> None:
         telemetry._restored_cost = data["total_cost"]
 
 
-def _generate_journal(session, goal, stop_reason, telemetry, events, manifest, workspace_root, plan=None):
+def _generate_journal(
+    session,
+    goal,
+    stop_reason,
+    telemetry,
+    events,
+    manifest,
+    workspace_root,
+    plan=None,
+    cfg: Optional[Dict[str, Any]] = None,
+):
     """Generate auto-journal entry after a run."""
     try:
         from ..orchestrator.journal import generate_entry
+
+        evidence_policy = _resolve_evidence_policy(cfg or _load_agent_config(workspace_root))
+        if evidence_policy["journal"] == "disabled":
+            return
+
         eco_name = manifest.get("ecosystem", "default")
         journal_dir = _agent_journal_dir(manifest, workspace_root)
         entry_path = generate_entry(
@@ -2927,7 +3143,7 @@ def _generate_journal(session, goal, stop_reason, telemetry, events, manifest, w
             ecosystem=eco_name,
             output_dir=journal_dir,
             plan=plan,
-            session=session,
+            session=_journal_session_view(session, mode=evidence_policy["journal"]),
         )
         print(f"Journal: {entry_path}")
     except Exception as e:

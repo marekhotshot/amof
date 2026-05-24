@@ -22,6 +22,13 @@ class Usage:
     latency_ms: int
     estimated_cost: float = 0.0
     context_window: int = 200_000  # model's max context
+    provider: Optional[str] = None
+    upstream_provider: Optional[str] = None
+    upstream_model: Optional[str] = None
+    request_id: Optional[str] = None
+    policy_decision: Optional[Dict[str, Any]] = None
+    input_hash: Optional[str] = None
+    output_hash: Optional[str] = None
 
     @property
     def total_tokens(self) -> int:
@@ -167,6 +174,12 @@ class ProviderError(Exception):
         status_code: Optional[int] = None,
         failure_class: Optional[str] = None,
         resumable: Optional[bool] = None,
+        upstream_provider: Optional[str] = None,
+        upstream_model: Optional[str] = None,
+        request_id: Optional[str] = None,
+        policy_decision: Optional[Dict[str, Any]] = None,
+        input_hash: Optional[str] = None,
+        output_hash: Optional[str] = None,
         original: Optional[BaseException] = None,
     ) -> None:
         super().__init__(message)
@@ -181,6 +194,12 @@ class ProviderError(Exception):
         if resumable is None:
             resumable = failure_class in RESUMABLE_FAILURE_CLASSES
         self.resumable = bool(resumable)
+        self.upstream_provider = upstream_provider
+        self.upstream_model = upstream_model
+        self.request_id = request_id
+        self.policy_decision = policy_decision
+        self.input_hash = input_hash
+        self.output_hash = output_hash
         self.original = original
 
     def __str__(self) -> str:
