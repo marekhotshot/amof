@@ -573,6 +573,67 @@ def parse_args() -> argparse.Namespace:
         "--output",
         help="Optional path outside the target repo for the emitted proposal JSON",
     )
+    chat_start = chat_sub.add_parser(
+        "start",
+        help="Start one bounded proposal-only intake session",
+    )
+    chat_start.add_argument(
+        "objective",
+        help="Planning objective or operator request to clarify",
+    )
+    chat_start.add_argument(
+        "--repo",
+        default=".",
+        help="Repository/workspace path to inspect (default: current directory)",
+    )
+    chat_start.add_argument(
+        "--ticket-id",
+        help="Optional ticket identifier to pin into the eventual PlanPacket",
+    )
+    chat_start.add_argument(
+        "--file",
+        action="append",
+        dest="files",
+        help="Focus the bounded intake session on one repo-relative file path; can be repeated",
+    )
+    chat_start.add_argument(
+        "--max-files",
+        type=int,
+        default=8,
+        help="Maximum indexed files to inspect when --file is omitted (default: 8)",
+    )
+    chat_start.add_argument(
+        "--max-turns",
+        type=int,
+        default=4,
+        help="Maximum user-answer turns allowed before finalize is forced ready (default: 4)",
+    )
+    chat_start.add_argument(
+        "--max-questions",
+        type=int,
+        default=3,
+        help="Maximum clarification questions the session may ask (default: 3)",
+    )
+    chat_start.add_argument(
+        "--model",
+        help="Optional remote-IAL model override; defaults to the active provider profile",
+    )
+    chat_ask = chat_sub.add_parser(
+        "ask",
+        help="Answer the current bounded intake question and advance the session",
+    )
+    chat_ask.add_argument("session_id", help="Existing bounded intake session id")
+    chat_ask.add_argument("message", help="Operator answer or clarification input")
+    chat_status = chat_sub.add_parser(
+        "status",
+        help="Show the current bounded intake session state",
+    )
+    chat_status.add_argument("session_id", help="Existing bounded intake session id")
+    chat_finalize = chat_sub.add_parser(
+        "finalize",
+        help="Finalize one bounded intake session into a proposal-only PlanPacket",
+    )
+    chat_finalize.add_argument("session_id", help="Existing bounded intake session id")
 
     # Agent command
     agent_parser = subparsers.add_parser(

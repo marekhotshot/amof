@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
 import os
@@ -35,6 +35,10 @@ from .agent_cmd import (
 
 DEFAULT_MAX_FILES = 8
 DEFAULT_MAX_CHARS_PER_FILE = 4000
+DEFAULT_MAX_SESSION_TURNS = 4
+DEFAULT_MAX_CLARIFICATION_QUESTIONS = 3
+CHAT_PLAN_SESSION_SUBDIR = "chat-plans"
+CHAT_INTAKE_SESSION_SUBDIR = "chat-sessions"
 SYSTEM_PROMPT = """You are the AMOF read-only planning chat.
 
 You are producing a proposal only. This output is not executable.
@@ -58,6 +62,31 @@ Requirements:
 - `proposed_steps`, `risks`, and `validation_plan` must be arrays of short strings.
 - `execution_prompt_for_director` must state that the packet is proposal-only and requires user approval before execution.
 - `execution_allowed` must be false.
+"""
+
+SESSION_PROMPT = """You are the AMOF bounded intake session assistant.
+
+You are helping shape a proposal-only PlanPacket.
+
+Hard rules:
+- do not execute anything
+- do not invoke agents, tools, or shell commands
+- do not propose handoff or execution bridges
+- ask at most one bounded clarification question per response
+- if the context is already sufficient, return ready_to_finalize
+- return strict JSON only with these keys:
+  state
+  assistant_message
+  question
+  rationale
+
+Requirements:
+- `state` must be either `ask_user` or `ready_to_finalize`
+- `assistant_message` must be a short operator-facing sentence
+- `question` must be null when `state=ready_to_finalize`
+- `question` must be one short bounded clarification question when `state=ask_user`
+- never include shell commands
+- never set execution_allowed or imply execution is authorized
 """
 
 
@@ -149,6 +178,98 @@ class ChatPlanResult:
 
 
 @dataclass(frozen=True)
+class IntakeSessionState:
+    """Persistent bounded intake session state."""
+
+    session_id: str
+    repo_path: str
+    objective: str
+    ticket_id: str | None
+    status: str
+    created_at: str
+    updated_at: str
+    max_turns: int
+    max_questions: int
+    turn_count: int
+    questions_asked: int
+    pending_question: str | None
+    assistant_message: str | None
+    files_to_inspect: list[str]
+    repo_scope: str
+    planning_context_receipt_path: str
+    indexed_context_path: str
+    session_dir: str
+    model: str | None = None
+    plan_result_path: str | None = None
+    finalized_at: str | None = None
+    plan_packet: dict[str, Any] | None = None
+    transcript: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "IntakeSessionState":
+        return cls(
+            session_id=str(payload.get("session_id") or ""),
+            repo_path=str(payload.get("repo_path") or ""),
+            objective=str(payload.get("objective") or ""),
+            ticket_id=str(payload.get("ticket_id")).strip() or None if payload.get("ticket_id") is not None else None,
+            status=str(payload.get("status") or "active"),
+            created_at=str(payload.get("created_at") or _now_iso()),
+            updated_at=str(payload.get("updated_at") or _now_iso()),
+            max_turns=int(payload.get("max_turns") or DEFAULT_MAX_SESSION_TURNS),
+            max_questions=int(payload.get("max_questions") or DEFAULT_MAX_CLARIFICATION_QUESTIONS),
+            turn_count=int(payload.get("turn_count") or 0),
+            questions_asked=int(payload.get("questions_asked") or 0),
+            pending_question=str(payload.get("pending_question")).strip() or None
+            if payload.get("pending_question") is not None
+            else None,
+            assistant_message=str(payload.get("assistant_message")).strip() or None
+            if payload.get("assistant_message") is not None
+            else None,
+            files_to_inspect=[str(item) for item in payload.get("files_to_inspect", []) if str(item).strip()],
+            repo_scope=str(payload.get("repo_scope") or ""),
+            planning_context_receipt_path=str(payload.get("planning_context_receipt_path") or ""),
+            indexed_context_path=str(payload.get("indexed_context_path") or ""),
+            session_dir=str(payload.get("session_dir") or ""),
+            model=str(payload.get("model")).strip() or None if payload.get("model") is not None else None,
+            plan_result_path=str(payload.get("plan_result_path")).strip() or None
+            if payload.get("plan_result_path") is not None
+            else None,
+            finalized_at=str(payload.get("finalized_at")).strip() or None
+            if payload.get("finalized_at") is not None
+            else None,
+            plan_packet=payload.get("plan_packet") if isinstance(payload.get("plan_packet"), dict) else None,
+            transcript=list(payload.get("transcript") or []),
+        )
+
+
+@dataclass(frozen=True)
+class IntakeSessionResult:
+    """Structured command result for bounded intake sessions."""
+
+    result_kind: str
+    session_id: str
+    status: str
+    repo_path: str
+    objective: str
+    turn_count: int
+    max_turns: int
+    questions_asked: int
+    max_questions: int
+    pending_question: str | None
+    assistant_message: str | None
+    files_to_inspect: list[str]
+    non_executable_until_user_approval: bool
+    evidence: dict[str, Any]
+    plan_packet: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class _ChatTelemetry:
     usage: InferenceAttribution
 
@@ -167,6 +288,40 @@ class _ChatTelemetry:
             "input_hash": self.usage.input_hash,
             "output_hash": self.usage.output_hash,
         }
+
+
+@dataclass
+class _SessionTelemetry:
+    total_cost: float = 0.0
+    total_calls: int = 0
+    latest_usage: InferenceAttribution | None = None
+
+    def record(self, usage: InferenceAttribution) -> None:
+        self.total_cost += usage.estimated_cost
+        self.total_calls += 1
+        self.latest_usage = usage
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "total_cost": round(self.total_cost, 6),
+            "total_calls": self.total_calls,
+        }
+        if self.latest_usage is not None:
+            payload.update(
+                {
+                    "provider": self.latest_usage.transport_provider,
+                    "resolved_model": self.latest_usage.resolved_model,
+                    "prompt_tokens": self.latest_usage.prompt_tokens,
+                    "completion_tokens": self.latest_usage.completion_tokens,
+                    "latency_ms": self.latest_usage.latency_ms,
+                    "request_id": self.latest_usage.request_id,
+                    "upstream_provider": self.latest_usage.upstream_provider,
+                    "upstream_model": self.latest_usage.upstream_model,
+                    "input_hash": self.latest_usage.input_hash,
+                    "output_hash": self.latest_usage.output_hash,
+                }
+            )
+        return payload
 
 
 def _now_iso() -> str:
@@ -383,6 +538,283 @@ def _build_inference_attribution(response: Any) -> InferenceAttribution:
     )
 
 
+def _session_runs_dir() -> Path:
+    return runs_dir() / CHAT_INTAKE_SESSION_SUBDIR
+
+
+def _session_dir(session_id: str) -> Path:
+    return _session_runs_dir() / session_id
+
+
+def _session_state_path(session_id: str) -> Path:
+    return _session_dir(session_id) / "intake-session.json"
+
+
+def _session_indexed_context_path(session_id: str) -> Path:
+    return _session_dir(session_id) / "indexed-context.md"
+
+
+def _session_plan_result_path(session_id: str) -> Path:
+    return _session_dir(session_id) / "plan-result.json"
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_session_state(session_id: str) -> IntakeSessionState:
+    path = _session_state_path(session_id)
+    if not path.exists():
+        raise ChatPlanError(f"chat session not found: {session_id}")
+    payload = _load_json(path)
+    return IntakeSessionState.from_dict(payload)
+
+
+def _save_session_state(state: IntakeSessionState) -> Path:
+    return _write_json(_session_state_path(state.session_id), state.to_dict())
+
+
+def _transcript_lines(transcript: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for entry in transcript:
+        role = str(entry.get("role") or "assistant")
+        kind = str(entry.get("kind") or "message")
+        content = str(entry.get("content") or "").strip()
+        if not content:
+            continue
+        lines.append(f"- {role}/{kind}: {content}")
+    return lines
+
+
+def _build_session_user_message(
+    *,
+    state: IntakeSessionState,
+    planning_context_receipt: dict[str, Any],
+    context_prompt: str,
+) -> str:
+    transcript_lines = _transcript_lines(state.transcript)
+    sections = [
+        "## Objective",
+        state.objective,
+        "",
+        "## Ticket",
+        state.ticket_id or "<none supplied>",
+        "",
+        "## Session Bounds",
+        f"- turns used: {state.turn_count}/{state.max_turns}",
+        f"- clarification questions used: {state.questions_asked}/{state.max_questions}",
+        "",
+        "## Repo Scope",
+        state.repo_scope,
+        "",
+        "## Planning Context Receipt",
+        json.dumps(planning_context_receipt, indent=2),
+        "",
+        "## Indexed Context",
+        context_prompt,
+        "",
+        "## Transcript So Far",
+    ]
+    if transcript_lines:
+        sections.extend(transcript_lines)
+    else:
+        sections.append("- <empty>")
+    return "\n".join(sections).strip() + "\n"
+
+
+def _call_remote_ial_json(
+    *,
+    client: RemoteIALClient,
+    system_prompt: str,
+    user_message: str,
+    events: EventLog | None = None,
+    telemetry: _SessionTelemetry | None = None,
+) -> tuple[dict[str, Any], InferenceAttribution]:
+    try:
+        response = client.chat(
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+            max_tokens=4096,
+            temperature=0.0,
+        )
+    except ProviderError as exc:
+        if events is not None:
+            events.error(
+                "provider_error",
+                str(exc),
+                fatal=True,
+                provider=exc.provider,
+                status_code=exc.status_code,
+                failure_class=exc.failure_class,
+                request_id=exc.request_id,
+                upstream_provider=exc.upstream_provider,
+                upstream_model=exc.upstream_model,
+                input_hash=exc.input_hash,
+                output_hash=exc.output_hash,
+            )
+        raise ChatPlanError(str(exc)) from exc
+    inference = _build_inference_attribution(response)
+    if telemetry is not None:
+        telemetry.record(inference)
+    if events is not None:
+        events.llm_call(
+            model=inference.resolved_model,
+            prompt_tokens=inference.prompt_tokens,
+            completion_tokens=inference.completion_tokens,
+            cost=inference.estimated_cost,
+            latency_ms=inference.latency_ms,
+            provider=inference.transport_provider,
+            upstream_provider=inference.upstream_provider,
+            upstream_model=inference.upstream_model,
+            request_id=inference.request_id,
+            policy_decision=inference.policy_decision,
+            input_hash=inference.input_hash,
+            output_hash=inference.output_hash,
+        )
+    return _extract_json_object(response.text), inference
+
+
+def _clarification_response(
+    *,
+    client: RemoteIALClient,
+    state: IntakeSessionState,
+    planning_context_receipt: dict[str, Any],
+    context_prompt: str,
+    events: EventLog,
+    telemetry: _SessionTelemetry,
+) -> tuple[str, str | None]:
+    payload, _ = _call_remote_ial_json(
+        client=client,
+        system_prompt=SESSION_PROMPT,
+        user_message=_build_session_user_message(
+            state=state,
+            planning_context_receipt=planning_context_receipt,
+            context_prompt=context_prompt,
+        ),
+        events=events,
+        telemetry=telemetry,
+    )
+    next_state = str(payload.get("state") or "").strip()
+    assistant_message = _require_text(payload.get("assistant_message"), "assistant_message")
+    question = _optional_string(payload, "question")
+    if next_state not in {"ask_user", "ready_to_finalize"}:
+        raise ChatPlanError("bounded intake session response must set state to ask_user or ready_to_finalize.")
+    if next_state == "ask_user":
+        if question is None:
+            raise ChatPlanError("bounded intake session response must include one question when state=ask_user.")
+        if _contains_shell_like_text(question):
+            raise ChatPlanError("clarification question must not contain shell commands.")
+    if question is not None and _contains_shell_like_text(question):
+        raise ChatPlanError("clarification question must not contain shell commands.")
+    return assistant_message, question if next_state == "ask_user" else None
+
+
+def _finalize_user_message(
+    *,
+    state: IntakeSessionState,
+    planning_context_receipt: dict[str, Any],
+    context_prompt: str,
+) -> str:
+    transcript_lines = _transcript_lines(state.transcript)
+    sections = [
+        "## Objective",
+        state.objective,
+        "",
+        "## Ticket",
+        state.ticket_id or "<none supplied>",
+        "",
+        "## Repo Scope",
+        state.repo_scope,
+        "",
+        "## Hard Rules",
+        "- proposal only",
+        "- no execution",
+        "- execution_allowed must be false",
+        "- no shell commands from chat",
+        "- no repo mutation",
+        "- no editor integrations",
+        "- requires user approval before Director handoff",
+        "",
+        "## Planning Context Receipt",
+        json.dumps(planning_context_receipt, indent=2),
+        "",
+        "## Indexed Context",
+        context_prompt,
+        "",
+        "## Session Transcript",
+    ]
+    sections.extend(transcript_lines or ["- <empty>"])
+    return "\n".join(sections).strip() + "\n"
+
+
+def _plan_packet_from_payload(
+    *,
+    payload: dict[str, Any],
+    objective_text: str,
+    ticket_id: str | None,
+    repo_scope: str,
+    files_to_inspect: list[str],
+) -> PlanPacket:
+    _assert_execution_allowed_false(payload)
+    normalized_ticket_id = ticket_id or _optional_string(payload, "ticket_id")
+    proposed_ticket_id = None if normalized_ticket_id else _optional_string(payload, "proposed_ticket_id")
+    proposed_steps = _string_list(payload, "proposed_steps")
+    risks = _string_list(payload, "risks")
+    validation_plan = _string_list(payload, "validation_plan")
+    _assert_no_shell_text(proposed_steps, field_name="proposed_steps")
+    _assert_no_shell_text(validation_plan, field_name="validation_plan")
+    return PlanPacket(
+        ticket_id=normalized_ticket_id,
+        proposed_ticket_id=proposed_ticket_id,
+        objective=objective_text,
+        repo_scope=repo_scope,
+        files_to_inspect=files_to_inspect,
+        proposed_steps=proposed_steps,
+        risks=risks,
+        validation_plan=validation_plan,
+        execution_prompt_for_director=_normalize_execution_prompt(
+            _require_text(payload.get("execution_prompt_for_director"), "execution_prompt_for_director")
+        ),
+        requires_user_approval=True,
+        execution_allowed=False,
+    )
+
+
+def _session_result(state: IntakeSessionState) -> IntakeSessionResult:
+    evidence = {
+        "session_dir": state.session_dir,
+        "session_state_path": str(_session_state_path(state.session_id)),
+        "planning_context_receipt_path": state.planning_context_receipt_path,
+        "indexed_context_path": state.indexed_context_path,
+        "events_path": str(_session_dir(state.session_id) / "events.jsonl"),
+        "messages_path": str(_session_dir(state.session_id) / "messages.jsonl"),
+        "plan_result_path": state.plan_result_path,
+    }
+    return IntakeSessionResult(
+        result_kind="intake_session",
+        session_id=state.session_id,
+        status=state.status,
+        repo_path=state.repo_path,
+        objective=state.objective,
+        turn_count=state.turn_count,
+        max_turns=state.max_turns,
+        questions_asked=state.questions_asked,
+        max_questions=state.max_questions,
+        pending_question=state.pending_question,
+        assistant_message=state.assistant_message,
+        files_to_inspect=list(state.files_to_inspect),
+        non_executable_until_user_approval=True,
+        evidence=evidence,
+        plan_packet=state.plan_packet,
+    )
+
+
 def _active_remote_ial_profile() -> dict[str, Any]:
     profile = _active_provider_profile()
     if profile is None:
@@ -461,6 +893,321 @@ def _write_chat_journal(
     )
     journal_path.write_text("\n".join(lines), encoding="utf-8")
     return journal_path
+
+
+def _write_intake_session_artifacts(
+    *,
+    state: IntakeSessionState,
+    session: Session,
+    telemetry: _SessionTelemetry,
+    events: EventLog,
+    cfg: dict[str, Any],
+) -> None:
+    _save_session(
+        session,
+        telemetry=telemetry,
+        events=events,
+        workspace_root=Path(state.repo_path),
+        session_subdir=CHAT_INTAKE_SESSION_SUBDIR,
+        cfg=cfg,
+    )
+    _save_session_state(state)
+
+
+def start_bounded_chat_session(
+    *,
+    objective: str,
+    repo: str | Path | None = None,
+    ticket_id: str | None = None,
+    files: list[str] | None = None,
+    max_files: int = DEFAULT_MAX_FILES,
+    max_turns: int = DEFAULT_MAX_SESSION_TURNS,
+    max_questions: int = DEFAULT_MAX_CLARIFICATION_QUESTIONS,
+    model: str | None = None,
+) -> IntakeSessionResult:
+    if max_turns <= 0:
+        raise ChatPlanError("max_turns must be greater than zero.")
+    if max_questions <= 0:
+        raise ChatPlanError("max_questions must be greater than zero.")
+    repo_path = _normalize_repo_path(repo)
+    objective_text = _require_text(objective, "objective")
+    cfg = _load_agent_config(repo_path)
+    client = _build_remote_ial_client(model_override=model)
+    focus_files = _normalize_focus_files(repo_path, files, max_files=max_files)
+    try:
+        planning_context = build_canonical_planning_context(
+            repo=repo_path,
+            objective=objective_text,
+            indexer_llm=client,
+            planner_provenance=_planning_provenance(model),
+            max_files=max_files,
+        )
+    except PlanningContextError as exc:
+        raise ChatPlanError(str(exc)) from exc
+    planning_receipt_payload = planning_context.receipt.to_dict()
+    if focus_files:
+        planning_receipt_payload["files_to_inspect"] = focus_files
+    session = Session(mode="chat-intake")
+    session.goal = objective_text
+    session.ecosystem = repo_path.name
+    session.add_user_message(objective_text)
+    events = EventLog(session_id=session.id, runs_dir=_session_runs_dir())
+    events.session_start(mode="chat-intake", goal=objective_text, ecosystem=repo_path.name)
+    events.user_message(objective_text)
+    telemetry = _SessionTelemetry()
+    repo_scope = _build_repo_scope(repo_path, planning_receipt_payload)
+    indexed_context_path = _session_indexed_context_path(session.id)
+    indexed_context_path.parent.mkdir(parents=True, exist_ok=True)
+    indexed_context_path.write_text(planning_context.context_prompt, encoding="utf-8")
+    planning_context_receipt_path = write_planning_context_receipt(
+        _session_dir(session.id) / "planning-context-receipt.json",
+        planning_context.receipt,
+    )
+    state = IntakeSessionState(
+        session_id=session.id,
+        repo_path=str(repo_path),
+        objective=objective_text,
+        ticket_id=ticket_id,
+        status="active",
+        created_at=_now_iso(),
+        updated_at=_now_iso(),
+        max_turns=max_turns,
+        max_questions=max_questions,
+        turn_count=0,
+        questions_asked=0,
+        pending_question=None,
+        assistant_message=None,
+        files_to_inspect=list(planning_receipt_payload.get("files_to_inspect") or []),
+        repo_scope=repo_scope,
+        planning_context_receipt_path=str(planning_context_receipt_path),
+        indexed_context_path=str(indexed_context_path),
+        session_dir=str(_session_dir(session.id)),
+        model=model,
+        transcript=[],
+    )
+    assistant_message, question = _clarification_response(
+        client=client,
+        state=state,
+        planning_context_receipt=planning_receipt_payload,
+        context_prompt=planning_context.context_prompt,
+        events=events,
+        telemetry=telemetry,
+    )
+    next_status = "active" if question is not None else "ready_to_finalize"
+    updated_transcript = list(state.transcript)
+    updated_transcript.append(
+        {
+            "role": "assistant",
+            "kind": "question" if question is not None else "status",
+            "content": question or assistant_message,
+            "recorded_at": _now_iso(),
+        }
+    )
+    session.add_assistant_message(question or assistant_message)
+    events.agent_response(content=question or assistant_message)
+    state = IntakeSessionState(
+        **{
+            **state.to_dict(),
+            "status": next_status,
+            "updated_at": _now_iso(),
+            "questions_asked": 1 if question is not None else 0,
+            "pending_question": question,
+            "assistant_message": assistant_message,
+            "transcript": updated_transcript,
+        }
+    )
+    _write_intake_session_artifacts(state=state, session=session, telemetry=telemetry, events=events, cfg=cfg)
+    return _session_result(state)
+
+
+def ask_bounded_chat_session(
+    *,
+    session_id: str,
+    message: str,
+) -> IntakeSessionResult:
+    state = _load_session_state(session_id)
+    if state.status == "finalized":
+        raise ChatPlanError(f"chat session already finalized: {session_id}")
+    repo_path = Path(state.repo_path)
+    cfg = _load_agent_config(repo_path)
+    client = _build_remote_ial_client(model_override=state.model)
+    session = Session(session_id=state.session_id, mode="chat-intake")
+    session.goal = state.objective
+    session.ecosystem = repo_path.name
+    for entry in state.transcript:
+        content = str(entry.get("content") or "")
+        if str(entry.get("role") or "") == "user":
+            session.add_user_message(content)
+        else:
+            session.add_assistant_message(content)
+    events = EventLog(session_id=session_id, runs_dir=_session_runs_dir())
+    telemetry = _SessionTelemetry()
+    user_message = _require_text(message, "message")
+    transcript = list(state.transcript)
+    transcript.append({"role": "user", "kind": "answer", "content": user_message, "recorded_at": _now_iso()})
+    session.add_user_message(user_message)
+    events.user_message(user_message)
+    turn_count = state.turn_count + 1
+    pending_question = None
+    assistant_message = "Ready to finalize. Clarification budget reached."
+    next_question = None
+    next_status = "ready_to_finalize"
+    questions_asked = state.questions_asked
+    if turn_count < state.max_turns and state.questions_asked < state.max_questions:
+        planning_receipt_payload = _load_json(Path(state.planning_context_receipt_path))
+        context_prompt = Path(state.indexed_context_path).read_text(encoding="utf-8")
+        working_state = IntakeSessionState(
+            **{
+                **state.to_dict(),
+                "turn_count": turn_count,
+                "pending_question": None,
+                "transcript": transcript,
+            }
+        )
+        assistant_message, next_question = _clarification_response(
+            client=client,
+            state=working_state,
+            planning_context_receipt=planning_receipt_payload,
+            context_prompt=context_prompt,
+            events=events,
+            telemetry=telemetry,
+        )
+        next_status = "active" if next_question is not None else "ready_to_finalize"
+        if next_question is not None:
+            questions_asked += 1
+    transcript.append(
+        {
+            "role": "assistant",
+            "kind": "question" if next_question is not None else "status",
+            "content": next_question or assistant_message,
+            "recorded_at": _now_iso(),
+        }
+    )
+    session.add_assistant_message(next_question or assistant_message)
+    events.agent_response(content=next_question or assistant_message)
+    updated_state = IntakeSessionState(
+        **{
+            **state.to_dict(),
+            "status": next_status,
+            "updated_at": _now_iso(),
+            "turn_count": turn_count,
+            "questions_asked": questions_asked,
+            "pending_question": next_question,
+            "assistant_message": assistant_message,
+            "transcript": transcript,
+        }
+    )
+    _write_intake_session_artifacts(
+        state=updated_state,
+        session=session,
+        telemetry=telemetry,
+        events=events,
+        cfg=cfg,
+    )
+    return _session_result(updated_state)
+
+
+def status_bounded_chat_session(*, session_id: str) -> IntakeSessionResult:
+    return _session_result(_load_session_state(session_id))
+
+
+def finalize_bounded_chat_session(
+    *,
+    session_id: str,
+) -> IntakeSessionResult:
+    state = _load_session_state(session_id)
+    if state.status == "finalized":
+        return _session_result(state)
+    repo_path = Path(state.repo_path)
+    cfg = _load_agent_config(repo_path)
+    client = _build_remote_ial_client(model_override=state.model)
+    planning_receipt_payload = _load_json(Path(state.planning_context_receipt_path))
+    context_prompt = Path(state.indexed_context_path).read_text(encoding="utf-8")
+    session = Session(session_id=state.session_id, mode="chat-intake")
+    session.goal = state.objective
+    session.ecosystem = repo_path.name
+    for entry in state.transcript:
+        content = str(entry.get("content") or "")
+        if str(entry.get("role") or "") == "user":
+            session.add_user_message(content)
+        else:
+            session.add_assistant_message(content)
+    events = EventLog(session_id=session_id, runs_dir=_session_runs_dir())
+    telemetry = _SessionTelemetry()
+    payload, inference = _call_remote_ial_json(
+        client=client,
+        system_prompt=SYSTEM_PROMPT,
+        user_message=_finalize_user_message(
+            state=state,
+            planning_context_receipt=planning_receipt_payload,
+            context_prompt=context_prompt,
+        ),
+        events=events,
+        telemetry=telemetry,
+    )
+    packet = _plan_packet_from_payload(
+        payload=payload,
+        objective_text=state.objective,
+        ticket_id=state.ticket_id,
+        repo_scope=state.repo_scope,
+        files_to_inspect=list(state.files_to_inspect),
+    )
+    response_json = json.dumps(packet.to_dict(), indent=2)
+    session.add_assistant_message(response_json)
+    events.agent_response(content=packet.execution_prompt_for_director)
+    plan_result_path = _session_plan_result_path(session_id)
+    result = IntakeSessionResult(
+        result_kind="chat_finalize_proposal",
+        session_id=state.session_id,
+        status="finalized",
+        repo_path=state.repo_path,
+        objective=state.objective,
+        turn_count=state.turn_count,
+        max_turns=state.max_turns,
+        questions_asked=state.questions_asked,
+        max_questions=state.max_questions,
+        pending_question=None,
+        assistant_message="PlanPacket finalized.",
+        files_to_inspect=list(state.files_to_inspect),
+        non_executable_until_user_approval=True,
+        evidence={
+            "session_dir": state.session_dir,
+            "session_state_path": str(_session_state_path(session_id)),
+            "planning_context_receipt_path": state.planning_context_receipt_path,
+            "indexed_context_path": state.indexed_context_path,
+            "events_path": str(_session_dir(session_id) / "events.jsonl"),
+            "messages_path": str(_session_dir(session_id) / "messages.jsonl"),
+            "plan_result_path": str(plan_result_path),
+            "transport_provider": inference.transport_provider,
+            "upstream_provider": inference.upstream_provider,
+            "upstream_model": inference.upstream_model,
+        },
+        plan_packet=packet.to_dict(),
+    )
+    stored_payload = _sanitize_evidence_value(result.to_dict(), mode=_resolve_evidence_policy(cfg)["messages"])
+    plan_result_path.write_text(json.dumps(stored_payload, indent=2) + "\n", encoding="utf-8")
+    updated_state = IntakeSessionState(
+        **{
+            **state.to_dict(),
+            "status": "finalized",
+            "updated_at": _now_iso(),
+            "pending_question": None,
+            "assistant_message": "PlanPacket finalized.",
+            "plan_result_path": str(plan_result_path),
+            "finalized_at": _now_iso(),
+            "plan_packet": packet.to_dict(),
+            "transcript": list(state.transcript)
+            + [{"role": "assistant", "kind": "final_plan", "content": response_json, "recorded_at": _now_iso()}],
+        }
+    )
+    _write_intake_session_artifacts(
+        state=updated_state,
+        session=session,
+        telemetry=telemetry,
+        events=events,
+        cfg=cfg,
+    )
+    return _session_result(updated_state)
 
 
 def plan_read_only_chat(
@@ -656,26 +1403,57 @@ def _validate_output_path(repo_path: Path, output_path: str | None) -> Path | No
 
 def cmd_chat(args: argparse.Namespace) -> int:
     action = getattr(args, "chat_cmd", None)
-    if action != "plan":
-        sys.stderr.write("Usage: amof chat plan <objective> [options]\n")
-        return 1
-
     try:
-        repo_path = _normalize_repo_path(getattr(args, "repo", None))
-        output_path = _validate_output_path(repo_path, getattr(args, "output", None))
-        result = plan_read_only_chat(
-            objective=getattr(args, "objective", None),
-            repo=repo_path,
-            ticket_id=getattr(args, "ticket_id", None),
-            files=getattr(args, "files", None),
-            max_files=int(getattr(args, "max_files", DEFAULT_MAX_FILES)),
-            model=getattr(args, "model", None),
-        )
-        rendered = json.dumps(result.to_dict(), indent=2)
-        if output_path is not None:
-            output_path.write_text(rendered + "\n", encoding="utf-8")
-        print(rendered)
-        return 0
+        if action == "plan":
+            repo_path = _normalize_repo_path(getattr(args, "repo", None))
+            output_path = _validate_output_path(repo_path, getattr(args, "output", None))
+            result = plan_read_only_chat(
+                objective=getattr(args, "objective", None),
+                repo=repo_path,
+                ticket_id=getattr(args, "ticket_id", None),
+                files=getattr(args, "files", None),
+                max_files=int(getattr(args, "max_files", DEFAULT_MAX_FILES)),
+                model=getattr(args, "model", None),
+            )
+            rendered = json.dumps(result.to_dict(), indent=2)
+            if output_path is not None:
+                output_path.write_text(rendered + "\n", encoding="utf-8")
+            print(rendered)
+            return 0
+        if action == "start":
+            result = start_bounded_chat_session(
+                objective=getattr(args, "objective", None),
+                repo=getattr(args, "repo", None),
+                ticket_id=getattr(args, "ticket_id", None),
+                files=getattr(args, "files", None),
+                max_files=int(getattr(args, "max_files", DEFAULT_MAX_FILES)),
+                max_turns=int(getattr(args, "max_turns", DEFAULT_MAX_SESSION_TURNS)),
+                max_questions=int(getattr(args, "max_questions", DEFAULT_MAX_CLARIFICATION_QUESTIONS)),
+                model=getattr(args, "model", None),
+            )
+            print(json.dumps(result.to_dict(), indent=2))
+            return 0
+        if action == "ask":
+            result = ask_bounded_chat_session(
+                session_id=str(getattr(args, "session_id", "") or "").strip(),
+                message=getattr(args, "message", None),
+            )
+            print(json.dumps(result.to_dict(), indent=2))
+            return 0
+        if action == "status":
+            result = status_bounded_chat_session(
+                session_id=str(getattr(args, "session_id", "") or "").strip(),
+            )
+            print(json.dumps(result.to_dict(), indent=2))
+            return 0
+        if action == "finalize":
+            result = finalize_bounded_chat_session(
+                session_id=str(getattr(args, "session_id", "") or "").strip(),
+            )
+            print(json.dumps(result.to_dict(), indent=2))
+            return 0
+        sys.stderr.write("Usage: amof chat {plan,start,ask,status,finalize} ...\n")
+        return 1
     except ChatPlanError as exc:
         sys.stderr.write(f"[chat] {exc}\n")
         return 1
@@ -685,7 +1463,13 @@ __all__ = [
     "ChatPlanError",
     "ChatPlanResult",
     "InferenceAttribution",
+    "IntakeSessionResult",
+    "IntakeSessionState",
     "PlanPacket",
+    "ask_bounded_chat_session",
     "cmd_chat",
+    "finalize_bounded_chat_session",
     "plan_read_only_chat",
+    "start_bounded_chat_session",
+    "status_bounded_chat_session",
 ]
