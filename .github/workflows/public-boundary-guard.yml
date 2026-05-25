@@ -1,0 +1,56 @@
+name: Public Boundary Guard
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  boundary-terms:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Guard private intelligence markers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          head="${{ github.sha }}"
+
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]]; then
+            base="$(git rev-list --max-parents=0 "$head")"
+          fi
+
+          pattern='PRIVATE_INTELLIGENCE|RESTRICTED_STRATEGIC_LOGIC|private intelligence|restricted strategic logic|adaptive orchestration|model routing|provider routing|provider fallback|planning heuristic|decomposition logic|eval golden|golden dataset|scoring rubric|scoring heuristic|risk scoring|blast[- ]radius|autonomous coordination|private topology'
+
+          fail=0
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            [ -f "$file" ] || continue
+            case "$file" in
+              docs/architecture/public-private-boundary.md|\
+              .github/PULL_REQUEST_TEMPLATE.md|\
+              .github/workflows/public-boundary-guard.yml)
+                continue
+                ;;
+            esac
+
+            if grep -nEi "$pattern" "$file"; then
+              echo "::error file=$file::Potential private intelligence marker requires boundary review."
+              fail=1
+            fi
+          done < <(git diff --name-only "$base" "$head" --)
+
+          exit "$fail"
