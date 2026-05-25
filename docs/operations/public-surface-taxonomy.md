@@ -97,14 +97,14 @@ historical workflow context:
 - `amof spin`
 - `amof actor`
 - `amof director-action`
-- `amof eval`
+- `amof eval` (private-backed maintainer command; unavailable in public OSS)
 - `scripts/runpod_t1_drive.py`
 - deployment/build/smoke scripts under `scripts/` that are not referenced by
   the README public quickstart
 
-Keep them documented as optional, experimental, maintainer-only, or pending
-cleanup. Do not claim they are part of the clean public baseline until they have
-their own public docs, tests, and smoke evidence.
+Keep them documented as optional, experimental, private-backed, maintainer-only,
+or pending cleanup. Do not claim they are part of the clean public baseline
+until they have their own public docs, tests, and smoke evidence.
 
 ## Provider And Secret Boundary
 

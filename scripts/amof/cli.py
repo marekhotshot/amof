@@ -1060,20 +1060,25 @@ def parse_args() -> argparse.Namespace:
 
     # Eval command
     eval_parser = subparsers.add_parser(
-        "eval", help="Run eval harness — test agent model ladder across tiers"
+        "eval",
+        help="Run a private-backed maintainer command",
+        description=(
+            "Public OSS does not include the eval harness implementation.\n"
+            "This command remains as a fail-closed maintainer entrypoint."
+        ),
     )
     eval_parser.add_argument(
         "--tiers",
         nargs="+",
         choices=["fast", "standard", "strong"],
         default=None,
-        help="Tiers to test (default: all available)",
+        help=argparse.SUPPRESS,
     )
     eval_parser.add_argument(
         "--tasks",
         default=None,
         metavar="PATH",
-        help="Custom tasks YAML file (default: built-in tasks)",
+        help=argparse.SUPPRESS,
     )
     eval_parser.add_argument(
         "--filter",
@@ -1081,24 +1086,24 @@ def parse_args() -> argparse.Namespace:
         dest="task_filter",
         default=None,
         metavar="TASK_ID",
-        help="Only run specific task IDs",
+        help=argparse.SUPPRESS,
     )
     eval_parser.add_argument(
         "--provider",
         choices=["anthropic", "openai", "openrouter", "bedrock", "remote-ial"],
         default=None,
-        help="LLM provider (default: from config)",
+        help=argparse.SUPPRESS,
     )
     eval_parser.add_argument(
         "--verbose", "-v",
         action="store_true",
-        help="Show per-step agent output",
+        help=argparse.SUPPRESS,
     )
     eval_parser.add_argument(
         "--output-dir",
         default=None,
         metavar="DIR",
-        help="Directory for report output (default: ecosystems/<eco>/reports/)",
+        help=argparse.SUPPRESS,
     )
 
     # Install command

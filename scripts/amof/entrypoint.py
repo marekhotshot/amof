@@ -324,6 +324,18 @@ def main() -> None:
                 sys.exit(cmd_workspace_materialize_run(args))
             if workspace_cmd == "materialize-from-intake":
                 sys.exit(cmd_workspace_materialize_from_intake(args))
+        if args.command == "eval":
+            from amof.commands.eval_cmd import cmd_eval
+
+            sys.exit(cmd_eval(
+                {"repos": []},
+                tiers=getattr(args, "tiers", None),
+                tasks_file=getattr(args, "tasks", None),
+                task_filter=getattr(args, "task_filter", None),
+                provider=getattr(args, "provider", None),
+                verbose=getattr(args, "verbose", False),
+                output_dir=getattr(args, "output_dir", None),
+            ))
         if args.command == "director":
             sys.exit(cmd_director(args))
 
