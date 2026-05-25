@@ -490,16 +490,16 @@ TOPIC_PATTERNS: List[tuple] = [
         ["agent loop", "tool system", "context builder", "guardrail", "system prompt", "tool registry"],
     ),
     (
-        "benchmarks",
-        "Benchmarks & Performance",
-        ["benchmark", "performance", "comparison"],
-        ["benchmark", "cost", "wall clock", "llm calls", "tokens", "efficiency", "cursor vs", "vs orchestrator"],
+        "performance",
+        "Performance",
+        ["performance", "latency", "throughput"],
+        ["performance", "latency", "throughput", "responsiveness", "reliability"],
     ),
     (
         "llm-integration",
         "LLM Integration",
-        ["thinking", "llm", "anthropic", "openai", "model"],
-        ["extended thinking", "model ladder", "thinking budget", "prefill", "json parse", "opus", "sonnet", "haiku"],
+        ["llm", "provider", "prompt"],
+        ["provider integration", "prompt handling", "response parsing", "json parse"],
     ),
     (
         "cli-ux",
@@ -578,7 +578,7 @@ def _extract_key_learnings(body: str) -> str:
     """Extract the most valuable parts of a journal body for KB consolidation.
 
     Keeps headings, bullet points, tables, and code blocks.
-    Strips raw metrics tables (LLM calls, tokens, etc.) and generated footers.
+    Strips raw metrics tables and generated footers.
     """
     lines = body.strip().splitlines()
     out: list[str] = []
@@ -603,7 +603,7 @@ def _extract_key_learnings(body: str) -> str:
         if stripped.startswith("*Manual journal entry"):
             continue
 
-        # Skip raw metrics sections (tables with LLM call counts, tokens, etc.)
+        # Skip raw metrics sections.
         if stripped.startswith("## Metrics") or stripped.startswith("## Model Usage") or stripped.startswith("## Tool Usage"):
             skip_section = True
             continue
