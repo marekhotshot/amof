@@ -44,4 +44,4 @@ v0.2.0 — Foundation:
 - Append-only JSONL event logging
 """
 
-__version__ = "2.7.0"
+__version__ = "2.8.0"

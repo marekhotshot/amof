@@ -10,14 +10,15 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v2.7.0-0A7FFF.svg" alt="release v2.7.0" />
+  <img src="https://img.shields.io/badge/release-v2.8.0-0A7FFF.svg" alt="release v2.8.0" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
-AMOF v2.7.0 is a local-first CLI for adopting a repo into an evidence-first
+AMOF v2.8.0 is a local-first CLI for adopting a repo into an evidence-first
 agent workflow. It validates the workstation, stores app-data and run evidence
 outside the target repo, records provider profile references, and can run
-read-only planning or explicitly requested bounded execution.
+read-only planning, bounded intake/handoff preparation, or explicitly requested
+bounded execution.
 
 AMOF is meant for platform/DevOps engineers who want an auditable local agent
 surface without pretending the tool is magic, a CI/CD replacement, or a hidden
@@ -31,6 +32,8 @@ AMOF turns a repository into a governed local agent surface:
 - `amof init --adopt .` binds an existing Git repo into AMOF app-data.
 - `amof setup provider ...` stores provider references, not raw secrets.
 - `amof chat plan` produces a non-executable Director proposal through remote IAL.
+- `amof chat start|ask|status|finalize` shape a bounded proposal-only intake session.
+- `amof chat approve` and `amof chat handoff` create explicit approval and handoff artifacts only.
 - `amof agent --plan` is read-only planning.
 - `amof agent --plan-execute` is bounded execution that still requires human
   review of the resulting Git diff.
@@ -53,7 +56,7 @@ Those belong outside the public product tree.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v2.7.0 surface:
+This public `main` intentionally keeps a narrow, installable v2.8.0 surface:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -63,6 +66,9 @@ This public `main` intentionally keeps a narrow, installable v2.7.0 surface:
 - `amof setup provider`
 - `amof init --adopt .`
 - `amof chat plan "Inspect this repo"`
+- `amof chat start "Clarify this repo"`
+- `amof chat approve <session-id>`
+- `amof chat handoff <approval-id-or-path>`
 - `amof agent --plan "Inspect this repo"`
 - `amof agent --plan-execute "Make a bounded change"`
 - `amof bootstrap contract`
@@ -70,7 +76,7 @@ This public `main` intentionally keeps a narrow, installable v2.7.0 surface:
 
 ## Released Public CLI Surface
 
-What works in v2.7.0:
+What works in v2.8.0:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -87,6 +93,12 @@ What works in v2.7.0:
 - `amof setup provider --list`
 - `amof init --adopt .`
 - `amof chat plan "Inspect this repo" --repo .`
+- `amof chat start "Clarify this repo" --repo .`
+- `amof chat ask <session-id> "Bounded answer"`
+- `amof chat status <session-id>`
+- `amof chat finalize <session-id>`
+- `amof chat approve <session-id>`
+- `amof chat handoff <approval-id-or-path>`
 - `amof agent --plan "Inspect this repo"`
 - bounded `amof agent --plan-execute` runs in disposable or intentionally
   prepared repos
@@ -163,7 +175,7 @@ an explicit checkout-local virtualenv.
 Use this if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.7.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.8.0"
 ```
 
 This installs the `amof` CLI from the public GitHub tag into a pipx-managed
@@ -192,7 +204,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v2.7.0
+amof update --version v2.8.0
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -249,7 +261,7 @@ Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.7.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.8.0"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
@@ -267,7 +279,7 @@ message rather than fail on missing `--ecosystem/-e`.
 
 ## Bounded Worker Execution
 
-AMOF v2.7.0 includes a public default `code` runner for bounded
+AMOF v2.8.0 includes a public default `code` runner for bounded
 `amof agent --plan-execute` demos in adopted repositories. The default runner is
 limited to repository read/write tools and does not include shell, delete,
 checkpoint, commit, or push tools.
@@ -421,8 +433,9 @@ Additional public docs retained in this repo include:
 
 ## Release State
 
-- `v2.7.0` is the current public release candidate target for this slice.
+- `v2.8.0` is the current public release candidate target for this slice.
 - Public install and no-key adoption smoke passed from the GitHub tag.
+- The public planning pipeline now covers canonical indexed planning context, bounded intake sessions, and explicit approved handoff artifacts.
 - Bounded worker execution is public/demoable, but output must be reviewed as a
   Git diff before commit.
 - AMOF does not auto-commit or push bounded worker changes.

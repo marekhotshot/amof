@@ -8,6 +8,38 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.8.0] - 2026-05-25
+
+### Added
+
+- Added canonical indexed planning context for `amof chat` with Merkle-backed freshness evidence and planning-context receipts stored in AMOF app-data.
+- Added bounded intake sessions through `amof chat start`, `amof chat ask`, `amof chat status`, and `amof chat finalize` for proposal-only plan shaping.
+- Added explicit approval and handoff commands through `amof chat approve` and `amof chat handoff`.
+- Added explicit approved-plan artifacts and approved handoff evidence that reuse the existing Director intake execution contract.
+- Added focused public tests for bounded intake sessions, approved PlanPacket handoff rejection, and approved handoff envelope generation.
+
+### Changed
+
+- Public planning now follows a three-stage pipeline: canonical indexed context, bounded intake session shaping, and explicit approved handoff to the existing workspace-materialization boundary.
+- `amof chat` remains proposal/handoff only: it does not create workspaces automatically, invoke agent execution, checkpoint tickets, or promote main.
+- Approved handoff output now requires an explicit workspace materialization command instead of implying queued execution.
+
+### Notes
+
+- The approved handoff bridge writes evidence and Director intake envelopes only; workspace materialization remains owned by the existing workspace command/path.
+- This release does not add private gateway code, runtime deployment behavior, or agent auto-execution from chat.
+
+### Validation
+
+- `PYTHONPATH=scripts python3 scripts/amof.py --help` passed from a fresh clone at the promoted release SHA.
+- `PYTHONPATH=scripts python3 scripts/amof.py chat --help` passed from a fresh clone at the promoted release SHA.
+- `PYTHONPATH=scripts python3 scripts/amof.py chat approve --help` passed from a fresh clone at the promoted release SHA.
+- `PYTHONPATH=scripts python3 scripts/amof.py chat handoff --help` passed from a fresh clone at the promoted release SHA.
+- `PYTHONPATH=scripts python3 scripts/amof.py check` passed from a fresh clone at the promoted release SHA.
+- `PYTHONPATH=scripts python3 -m unittest tests.test_chat_approved_handoff tests.test_chat_intake_sessions tests.test_chat_planning tests.test_chat_planning_context tests.test_lazy_command_loading tests.test_check` passed from a fresh clone at the promoted release SHA.
+- `PYTHONPATH=scripts /tmp/amof-283-verify.HwCIx6/venv/bin/python -m unittest tests.test_remote_ial` passed in a fresh-clone virtualenv with `fastapi`, `httpx`, and `pytest` installed.
+- `git diff --check` passed.
+
 ## [2.7.0] - 2026-05-24
 
 ### Added
