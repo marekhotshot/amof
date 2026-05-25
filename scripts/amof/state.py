@@ -104,6 +104,10 @@ def update_state(**kwargs) -> None:
     save_state(state)
 
 
+def _now_iso() -> str:
+    return datetime.now().isoformat()
+
+
 def _ticket_ecosystem(ticket: Dict[str, Any], state: Optional[Dict[str, Any]] = None) -> Optional[str]:
     payload = state or get_state()
     value = str(ticket.get("ecosystem") or payload.get("ecosystem") or "").strip()
@@ -135,6 +139,154 @@ def _normalize_repo_selections(repo_selections: Optional[List[Dict[str, Any]]]) 
     return normalized or None
 
 
+def _normalize_plan_items(plan_items: Optional[List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+    if not plan_items:
+        return {}
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for item in plan_items:
+        if not isinstance(item, dict):
+            continue
+        plan_item_id = str(item.get("id") or "").strip()
+        if not plan_item_id:
+            continue
+        expected_files = [
+            str(path).strip()
+            for path in item.get("expected_files", [])
+            if str(path).strip()
+        ]
+        validation = [
+            str(command).strip()
+            for command in item.get("validation", [])
+            if str(command).strip()
+        ]
+        status = str(item.get("status") or "pending").strip() or "pending"
+        normalized[plan_item_id] = {
+            "id": plan_item_id,
+            "type": str(item.get("type") or "OTHER").strip() or "OTHER",
+            "title": str(item.get("title") or "").strip(),
+            "expected_files": expected_files,
+            "validation": validation,
+            "checkpoint_required": bool(item.get("checkpoint_required", False)),
+            "status": status,
+            "rationale": str(item.get("rationale") or "").strip() or None,
+            "last_validation_receipt": item.get("last_validation_receipt"),
+            "checkpoint_receipts": list(item.get("checkpoint_receipts") or []),
+            "completed_at": item.get("completed_at"),
+        }
+    return normalized
+
+
+def _default_ticket_receipts(
+    *,
+    preflight_receipt: Optional[Dict[str, Any]] = None,
+    ticket_start_receipt: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return {
+        "preflight_receipt": preflight_receipt,
+        "ticket_start_receipt": ticket_start_receipt,
+        "validation_receipts": [],
+        "checkpoint_receipts": [],
+        "readiness_receipt": None,
+        "fresh_verify_receipt": None,
+    }
+
+
+def _ensure_ticket_receipts(ticket: Dict[str, Any]) -> Dict[str, Any]:
+    receipts = ticket.get("receipts")
+    if not isinstance(receipts, dict):
+        receipts = _default_ticket_receipts()
+        ticket["receipts"] = receipts
+        return receipts
+    receipts.setdefault("preflight_receipt", None)
+    receipts.setdefault("ticket_start_receipt", None)
+    receipts.setdefault("validation_receipts", [])
+    receipts.setdefault("checkpoint_receipts", [])
+    receipts.setdefault("readiness_receipt", None)
+    receipts.setdefault("fresh_verify_receipt", None)
+    return receipts
+
+
+def _ensure_ticket_shape(ticket: Dict[str, Any]) -> Dict[str, Any]:
+    ticket.setdefault("phase", "started")
+    ticket.setdefault("plan_items", {})
+    ticket["plan_items"] = _normalize_plan_items(list(ticket.get("plan_items", {}).values()) if isinstance(ticket.get("plan_items"), dict) else ticket.get("plan_items"))
+    ticket.setdefault("planner_provenance", None)
+    ticket.setdefault("dependency_ready", None)
+    ticket.setdefault("deferred_reason", None)
+    ticket.setdefault("killed_reason", None)
+    ticket.setdefault("readiness", None)
+    _ensure_ticket_receipts(ticket)
+    return ticket
+
+
+def get_ticket(ticket_id: str) -> Dict[str, Any]:
+    state = get_state()
+    ticket = dict(state.get("tickets", {}).get(ticket_id) or {})
+    if not ticket:
+        return {}
+    return _ensure_ticket_shape(ticket)
+
+
+def update_ticket(ticket_id: str, **updates: Any) -> None:
+    state = get_state()
+    tickets = state.get("tickets", {})
+    ticket = dict(tickets.get(ticket_id) or {})
+    if not ticket:
+        return
+    ticket.update(updates)
+    ticket = _ensure_ticket_shape(ticket)
+    tickets[ticket_id] = ticket
+    state["tickets"] = tickets
+    state["last_modified"] = _now_iso()
+    save_state(state)
+
+
+def record_ticket_receipt(ticket_id: str, receipt_kind: str, payload: Dict[str, Any]) -> None:
+    state = get_state()
+    tickets = state.get("tickets", {})
+    ticket = dict(tickets.get(ticket_id) or {})
+    if not ticket:
+        return
+    ticket = _ensure_ticket_shape(ticket)
+    receipts = _ensure_ticket_receipts(ticket)
+    if receipt_kind in {"preflight_receipt", "ticket_start_receipt", "readiness_receipt", "fresh_verify_receipt"}:
+        receipts[receipt_kind] = payload
+    elif receipt_kind in {"validation_receipts", "checkpoint_receipts"}:
+        receipts[receipt_kind].append(payload)
+    else:
+        receipts[receipt_kind] = payload
+    tickets[ticket_id] = ticket
+    state["tickets"] = tickets
+    state["last_modified"] = _now_iso()
+    save_state(state)
+
+
+def update_plan_item(ticket_id: str, plan_item_id: str, **updates: Any) -> None:
+    state = get_state()
+    tickets = state.get("tickets", {})
+    ticket = dict(tickets.get(ticket_id) or {})
+    if not ticket:
+        return
+    ticket = _ensure_ticket_shape(ticket)
+    plan_items = dict(ticket.get("plan_items") or {})
+    plan_item = dict(plan_items.get(plan_item_id) or {})
+    if not plan_item:
+        return
+    plan_item.update(updates)
+    if plan_item.get("status") in {"done", "deferred", "killed"} and not plan_item.get("completed_at"):
+        plan_item["completed_at"] = _now_iso()
+    plan_items[plan_item_id] = plan_item
+    ticket["plan_items"] = plan_items
+    tickets[ticket_id] = ticket
+    state["tickets"] = tickets
+    state["last_modified"] = _now_iso()
+    save_state(state)
+
+
+def set_ticket_phase(ticket_id: str, phase: str) -> None:
+    update_ticket(ticket_id, phase=phase)
+
+
 def add_ticket(
     ticket_id: str,
     repo_branches: Dict[str, str],
@@ -143,22 +295,37 @@ def add_ticket(
     stage_id: Optional[str] = None,
     environment_id: Optional[str] = None,
     repo_selections: Optional[List[Dict[str, Any]]] = None,
+    preflight_receipt: Optional[Dict[str, Any]] = None,
+    ticket_start_receipt: Optional[Dict[str, Any]] = None,
+    plan_items: Optional[List[Dict[str, Any]]] = None,
+    planner_provenance: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Add a ticket to state with its repo->branch mapping."""
     state = get_state()
     tickets = state.get("tickets", {})
     tickets[ticket_id] = {
-        "created_at": datetime.now().isoformat(),
+        "created_at": _now_iso(),
         "repos": repo_branches,
         "worktree_base": str(ticket_worktrees_dir() / ticket_id),
         "ecosystem": ecosystem or state.get("ecosystem"),
         "stage_id": (str(stage_id).strip() or None) if stage_id is not None else None,
         "environment_id": (str(environment_id).strip() or None) if environment_id is not None else None,
         "repo_selections": _normalize_repo_selections(repo_selections),
+        "phase": "started",
+        "plan_items": _normalize_plan_items(plan_items),
+        "planner_provenance": planner_provenance,
+        "dependency_ready": None,
+        "deferred_reason": None,
+        "killed_reason": None,
+        "readiness": None,
+        "receipts": _default_ticket_receipts(
+            preflight_receipt=preflight_receipt,
+            ticket_start_receipt=ticket_start_receipt,
+        ),
     }
     state["tickets"] = tickets
     state["active_ticket"] = ticket_id
-    state["last_modified"] = datetime.now().isoformat()
+    state["last_modified"] = _now_iso()
     save_state(state)
 
 
@@ -205,9 +372,9 @@ def get_all_tickets(ecosystem: Optional[str] = None) -> Dict[str, Any]:
     state = get_state()
     tickets = state.get("tickets", {})
     if not ecosystem:
-        return tickets
+        return {ticket_id: _ensure_ticket_shape(dict(info or {})) for ticket_id, info in tickets.items()}
     return {
-        ticket_id: info
+        ticket_id: _ensure_ticket_shape(dict(info or {}))
         for ticket_id, info in tickets.items()
         if _ticket_ecosystem(info or {}, state) == ecosystem
     }

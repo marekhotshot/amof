@@ -181,8 +181,11 @@ cmd_uninstall = _lazy_command("uninstall", "cmd_uninstall")
 cmd_shell = _lazy_command("shell", "cmd_shell")
 cmd_director = _lazy_command("director", "cmd_director")
 cmd_director_action = _lazy_command("director_action", "cmd_director_action")
+cmd_ticket_preflight = _lazy_command("ticket", "cmd_ticket_preflight")
 cmd_ticket_start = _lazy_command("ticket", "cmd_ticket_start")
 cmd_ticket_list = _lazy_command("ticket", "cmd_ticket_list")
+cmd_ticket_status = _lazy_command("ticket", "cmd_ticket_status")
+cmd_ticket_checkpoint = _lazy_command("ticket", "cmd_ticket_checkpoint")
 cmd_ticket_switch = _lazy_command("ticket", "cmd_ticket_switch")
 cmd_ticket_end = _lazy_command("ticket", "cmd_ticket_end")
 cmd_ticket_env_upsert = _lazy_command("ticket", "cmd_ticket_env_upsert")
@@ -339,7 +342,9 @@ def main() -> None:
             eco = ecosystem or state.get("ecosystem")
             manifest = load_manifest(eco) if eco else {"repos": []}
             ticket_cmd = getattr(args, "ticket_cmd", None)
-            if ticket_cmd == "start":
+            if ticket_cmd == "preflight":
+                sys.exit(cmd_ticket_preflight(manifest, args))
+            elif ticket_cmd == "start":
                 sys.exit(
                     cmd_ticket_start(
                         manifest,
@@ -349,10 +354,18 @@ def main() -> None:
                         getattr(args, "stage", None),
                         getattr(args, "environment", None),
                         getattr(args, "repo_selections", None),
+                        getattr(args, "plan_items_json", None),
+                        getattr(args, "plan_items_file", None),
+                        getattr(args, "planner_profile", None),
+                        getattr(args, "planner_model", None),
                     )
                 )
             elif ticket_cmd == "list":
                 sys.exit(cmd_ticket_list(manifest))
+            elif ticket_cmd == "status":
+                sys.exit(cmd_ticket_status(manifest, args))
+            elif ticket_cmd == "checkpoint":
+                sys.exit(cmd_ticket_checkpoint(manifest, args))
             elif ticket_cmd == "switch":
                 sys.exit(cmd_ticket_switch(manifest, args.ticket_id, eco))
             elif ticket_cmd == "end":
@@ -371,7 +384,7 @@ def main() -> None:
                 sys.stderr.write("Usage: amof ticket env upsert [options]\n")
                 sys.exit(1)
             else:
-                sys.stderr.write("Usage: amof ticket <start|list|switch|end|env>\n")
+                sys.stderr.write("Usage: amof ticket <preflight|start|list|status|checkpoint|switch|end|env>\n")
                 sys.exit(1)
 
     if not ecosystem:

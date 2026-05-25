@@ -1148,11 +1148,50 @@ def parse_args() -> argparse.Namespace:
     ticket_start.add_argument("--stage", help="Persist the linked lifecycle stage id for this ticket")
     ticket_start.add_argument("--environment", help="Persist the linked lifecycle environment id for this ticket")
     ticket_start.add_argument("--repo-selections", help="JSON array describing the per-repo intake contract")
+    ticket_start.add_argument("--plan-items-json", help="JSON list/object describing the TicketPlan PlanItems")
+    ticket_start.add_argument("--plan-items-file", help="Path to a JSON file describing the TicketPlan PlanItems")
+    ticket_start.add_argument("--planner-profile", help="Optional planner provider profile name for observational provenance")
+    ticket_start.add_argument("--planner-model", help="Optional planner model id for observational provenance")
+
+    ticket_preflight = ticket_sub.add_parser(
+        "preflight",
+        help="Verify canonical repo truth and clean start conditions for a ticket",
+    )
+    ticket_preflight.add_argument("ticket_id", help="Ticket ID (e.g., AMOF-280)")
+    ticket_preflight.add_argument("--repos", help="Comma-separated repo names (default: all writable)")
+    ticket_preflight.add_argument("--repo-selections", help="JSON array describing the per-repo intake contract")
+    ticket_preflight.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     ticket_sub.add_parser("list", help="List active tickets and their repo branches")
 
     ticket_switch = ticket_sub.add_parser("switch", help="Switch active ticket")
     ticket_switch.add_argument("ticket_id", help="Ticket to switch to")
+
+    ticket_status = ticket_sub.add_parser("status", help="Show TicketPlan status and promote readiness")
+    ticket_status.add_argument("ticket_id", nargs="?", help="Ticket to inspect (defaults to the active ticket)")
+    ticket_status.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    ticket_checkpoint = ticket_sub.add_parser(
+        "checkpoint",
+        help="Create one PlanItem-bound checkpoint commit after validation passes",
+    )
+    ticket_checkpoint.add_argument("ticket_id", nargs="?", help="Ticket to checkpoint (defaults to the active ticket)")
+    ticket_checkpoint.add_argument("--repo", required=True, help="Repo name inside the ticket worktree set")
+    ticket_checkpoint.add_argument(
+        "--plan-item",
+        action="append",
+        dest="plan_item_ids",
+        required=True,
+        help="Referenced PlanItem id; can be repeated",
+    )
+    ticket_checkpoint.add_argument(
+        "--file",
+        action="append",
+        dest="files",
+        required=True,
+        help="Explicit file path to stage; can be repeated",
+    )
+    ticket_checkpoint.add_argument("--message", required=True, help="Checkpoint summary appended to the ticket commit prefix")
 
     ticket_end = ticket_sub.add_parser("end", help="End ticket work")
     ticket_end.add_argument("ticket_id", help="Ticket to end")

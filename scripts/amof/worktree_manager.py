@@ -25,7 +25,15 @@ def _run_git(repo_path: Path, args: list, check: bool = True) -> subprocess.Comp
     cmd = ["git", "-c", f"safe.directory={resolved_repo_path}", "-C", str(resolved_repo_path)] + args
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
-def switch_to_ticket(repo_path: Path, branch_name: str, ticket_id: str, repo_name: str, workspace_root: Path, create_branch: bool = True) -> Path:
+def switch_to_ticket(
+    repo_path: Path,
+    branch_name: str,
+    ticket_id: str,
+    repo_name: str,
+    workspace_root: Path,
+    create_branch: bool = True,
+    base_ref: str = "HEAD",
+) -> Path:
     """
     Creates or re-uses a git worktree for the specific branch and ticket.
     Returns the path to the newly created (or existing) worktree.
@@ -59,9 +67,9 @@ def switch_to_ticket(repo_path: Path, branch_name: str, ticket_id: str, repo_nam
             logger.info(f"Created worktree tracking origin/{branch_name} at {wt_path}")
         else:
             if create_branch:
-                # Branch does not exist: create new branch and worktree from HEAD
-                _run_git(repo_path, ["worktree", "add", "-b", branch_name, str(wt_path)])
-                logger.info(f"Created new branch '{branch_name}' and worktree at {wt_path}")
+                # Branch does not exist: create new branch and worktree from the requested base ref.
+                _run_git(repo_path, ["worktree", "add", "-b", branch_name, str(wt_path), base_ref])
+                logger.info(f"Created new branch '{branch_name}' from {base_ref} at {wt_path}")
             else:
                 raise RuntimeError(f"Branch '{branch_name}' does not exist and create_branch=False")
                 
