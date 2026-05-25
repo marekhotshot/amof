@@ -15,6 +15,11 @@ from ..app_paths import runs_dir
 from ..orchestrator.events import EventLog
 from ..orchestrator.llm.base import ProviderError
 from ..orchestrator.llm.remote_ial import RemoteIALClient
+from ..orchestrator.planning_context import (
+    PlanningContextError,
+    build_canonical_planning_context,
+    write_planning_context_receipt,
+)
 from ..orchestrator.session import Session
 from .agent_cmd import (
     _active_provider_profile,
@@ -30,27 +35,6 @@ from .agent_cmd import (
 
 DEFAULT_MAX_FILES = 8
 DEFAULT_MAX_CHARS_PER_FILE = 4000
-TEXT_FILE_SUFFIXES = {
-    ".md",
-    ".txt",
-    ".py",
-    ".json",
-    ".toml",
-    ".yaml",
-    ".yml",
-    ".ini",
-    ".cfg",
-    ".sh",
-}
-DEFAULT_CONTEXT_CANDIDATES = (
-    "README.md",
-    "README",
-    "pyproject.toml",
-    "requirements.txt",
-    "package.json",
-    "Makefile",
-    ".amof/agent.yaml",
-)
 SYSTEM_PROMPT = """You are the AMOF read-only planning chat.
 
 You are producing a proposal only. This output is not executable.
@@ -205,6 +189,14 @@ def _normalize_repo_path(repo: str | Path | None) -> Path:
     return target
 
 
+def _planning_provenance(model_override: str | None) -> dict[str, Any]:
+    profile = _active_remote_ial_profile()
+    return {
+        "profile_name": str(profile.get("name") or "").strip() or None,
+        "resolved_model": str(model_override or _profile_model(profile) or "").strip() or None,
+    }
+
+
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -213,81 +205,46 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
-def _is_text_candidate(path: Path) -> bool:
-    if not path.is_file():
-        return False
-    if path.name.startswith(".") and path.name not in {".env", ".amof", ".gitignore"}:
-        return False
-    return path.suffix.lower() in TEXT_FILE_SUFFIXES or path.name in {"README", "Makefile"}
-
-
-def _normalize_context_files(
+def _normalize_focus_files(
     repo_path: Path,
     requested_files: list[str] | None,
     *,
     max_files: int,
-) -> list[Path]:
-    if requested_files:
-        normalized: list[Path] = []
-        for raw in requested_files:
-            candidate = Path(raw)
-            if not candidate.is_absolute():
-                candidate = repo_path / candidate
-            candidate = candidate.resolve(strict=False)
-            if not _is_relative_to(candidate, repo_path):
-                raise ChatPlanError(f"context file must stay under repo path: {raw}")
-            if not candidate.exists():
-                raise ChatPlanError(f"context file not found: {raw}")
-            if not candidate.is_file():
-                raise ChatPlanError(f"context path must be a file: {raw}")
-            normalized.append(candidate)
-        deduped: list[Path] = []
-        seen: set[Path] = set()
-        for item in normalized:
-            if item not in seen:
-                deduped.append(item)
-                seen.add(item)
-        if len(deduped) > max_files:
-            raise ChatPlanError(
-                f"bounded context exceeded: requested {len(deduped)} files, max is {max_files}"
-            )
-        return deduped
-
-    defaults: list[Path] = []
-    for rel in DEFAULT_CONTEXT_CANDIDATES:
-        candidate = (repo_path / rel).resolve(strict=False)
-        if candidate.exists() and candidate.is_file():
-            defaults.append(candidate)
-            if len(defaults) >= max_files:
-                return defaults
-
-    for candidate in sorted(repo_path.iterdir(), key=lambda item: item.name.lower()):
-        if len(defaults) >= max_files:
-            break
-        if candidate in defaults:
-            continue
-        if _is_text_candidate(candidate):
-            defaults.append(candidate.resolve(strict=False))
-
-    if not defaults:
+) -> list[str]:
+    if not requested_files:
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in requested_files:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = repo_path / candidate
+        candidate = candidate.resolve(strict=False)
+        if not _is_relative_to(candidate, repo_path):
+            raise ChatPlanError(f"context file must stay under repo path: {raw}")
+        if not candidate.exists():
+            raise ChatPlanError(f"context file not found: {raw}")
+        if not candidate.is_file():
+            raise ChatPlanError(f"context path must be a file: {raw}")
+        rel = candidate.relative_to(repo_path).as_posix()
+        if rel not in seen:
+            normalized.append(rel)
+            seen.add(rel)
+    if len(normalized) > max_files:
         raise ChatPlanError(
-            "No bounded context files were selected. Pass --file to identify one or more repo files."
+            f"bounded context exceeded: requested {len(normalized)} files, max is {max_files}"
         )
-    return defaults
+    return normalized
 
 
-def _read_context_excerpt(path: Path, *, max_chars: int) -> str:
-    text = path.read_text(encoding="utf-8", errors="replace")
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars].rstrip() + "\n... [truncated]"
-
-
-def _build_repo_scope(repo_path: Path, files: list[Path]) -> str:
-    listed = ", ".join(str(path.relative_to(repo_path)) for path in files)
+def _build_repo_scope(repo_path: Path, planning_context_receipt: dict[str, Any]) -> str:
+    listed = ", ".join(planning_context_receipt.get("files_to_inspect") or [])
     return (
-        f"Current filesystem view of {repo_path}. "
-        f"Bounded to {len(files)} file(s): {listed}. "
+        f"Canonical planning context for {repo_path}. "
+        f"Planning clone: {planning_context_receipt.get('planning_repo_path')}. "
+        f"Merkle root: {planning_context_receipt.get('merkle_root')}. "
+        f"Freshness: {planning_context_receipt.get('freshness')}. "
+        f"Indexed files to inspect: {listed or '<none>'}. "
         "No shell execution, repo mutation, or editor integration is authorized."
     )
 
@@ -298,8 +255,8 @@ def _build_user_message(
     repo_path: Path,
     ticket_id: str | None,
     repo_scope: str,
-    files: list[Path],
-    max_chars_per_file: int,
+    planning_context_receipt: dict[str, Any],
+    context_prompt: str,
 ) -> str:
     sections = [
         "## Objective",
@@ -320,17 +277,12 @@ def _build_user_message(
         "- no editor integrations",
         "- requires user approval before Director handoff",
         "",
-        "## Bounded Context",
+        "## Planning Context Receipt",
+        json.dumps(planning_context_receipt, indent=2),
+        "",
+        "## Indexed Context",
+        context_prompt,
     ]
-    for path in files:
-        rel = path.relative_to(repo_path)
-        sections.extend(
-            [
-                f"### {rel}",
-                _read_context_excerpt(path, max_chars=max_chars_per_file),
-                "",
-            ]
-        )
     return "\n".join(sections).strip() + "\n"
 
 
@@ -526,22 +478,34 @@ def plan_read_only_chat(
         raise ChatPlanError("max_files must be greater than zero.")
     if max_chars_per_file <= 0:
         raise ChatPlanError("max_chars_per_file must be greater than zero.")
-
-    selected_files = _normalize_context_files(repo_path, files, max_files=max_files)
-    repo_scope = _build_repo_scope(repo_path, selected_files)
     objective_text = _require_text(objective, "objective")
+
+    cfg = _load_agent_config(repo_path)
+    evidence_policy = _resolve_evidence_policy(cfg)
+    client = _build_remote_ial_client(model_override=model)
+    focus_files = _normalize_focus_files(repo_path, files, max_files=max_files)
+    try:
+        planning_context = build_canonical_planning_context(
+            repo=repo_path,
+            objective=objective_text,
+            indexer_llm=client,
+            planner_provenance=_planning_provenance(model),
+            max_files=max_files,
+        )
+    except PlanningContextError as exc:
+        raise ChatPlanError(str(exc)) from exc
+    planning_receipt_payload = planning_context.receipt.to_dict()
+    if focus_files:
+        planning_receipt_payload["files_to_inspect"] = focus_files
+    repo_scope = _build_repo_scope(repo_path, planning_receipt_payload)
     user_message = _build_user_message(
         objective=objective_text,
         repo_path=repo_path,
         ticket_id=ticket_id,
         repo_scope=repo_scope,
-        files=selected_files,
-        max_chars_per_file=max_chars_per_file,
+        planning_context_receipt=planning_receipt_payload,
+        context_prompt=planning_context.context_prompt,
     )
-
-    cfg = _load_agent_config(repo_path)
-    evidence_policy = _resolve_evidence_policy(cfg)
-    client = _build_remote_ial_client(model_override=model)
 
     session = Session(mode="plan")
     session.goal = objective_text
@@ -589,7 +553,7 @@ def plan_read_only_chat(
         proposed_ticket_id=proposed_ticket_id,
         objective=objective_text,
         repo_scope=repo_scope,
-        files_to_inspect=[str(path.relative_to(repo_path)) for path in selected_files],
+        files_to_inspect=list(planning_receipt_payload.get("files_to_inspect") or []),
         proposed_steps=proposed_steps,
         risks=risks,
         validation_plan=validation_plan,
@@ -648,6 +612,10 @@ def plan_read_only_chat(
     )
 
     plan_result_path = session_dir / "plan-result.json"
+    planning_context_receipt_path = write_planning_context_receipt(
+        session_dir / "planning-context-receipt.json",
+        planning_context.receipt,
+    )
     stored_payload = _sanitize_evidence_value(result.to_dict(), mode=evidence_policy["messages"])
     plan_result_path.write_text(json.dumps(stored_payload, indent=2) + "\n", encoding="utf-8")
     journal_path = _write_chat_journal(
@@ -660,6 +628,7 @@ def plan_read_only_chat(
 
     evidence_with_artifact = dict(evidence_payload)
     evidence_with_artifact["plan_result_path"] = str(plan_result_path)
+    evidence_with_artifact["planning_context_receipt_path"] = str(planning_context_receipt_path)
     evidence_with_artifact["journal_path"] = str(journal_path) if journal_path is not None else None
     result = ChatPlanResult(
         repo_path=result.repo_path,

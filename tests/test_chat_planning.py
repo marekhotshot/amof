@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 import tempfile
 import unittest
@@ -94,6 +95,25 @@ def _remote_ial_success_payload(*, ticket_id: str = "AMOF-CHAT-001") -> dict[str
     }
 
 
+def _fake_planning_context(repo: Path) -> object:
+    receipt_payload = {
+        "receipt_kind": "planning_context_receipt",
+        "planning_repo_path": str(repo),
+        "merkle_root": "abc123def4567890",
+        "freshness": "fresh",
+        "files_to_inspect": ["README.md", "app.py"],
+    }
+
+    class _Receipt:
+        def to_dict(self) -> dict[str, object]:
+            return dict(receipt_payload)
+
+    return SimpleNamespace(
+        receipt=_Receipt(),
+        context_prompt="# Codebase Index\n- `README.md`: project overview\n- `app.py`: app entrypoint\n",
+    )
+
+
 class ChatPlanningTests(unittest.TestCase):
     def test_plan_packet_preserves_remote_ial_attribution(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-chat-plan-") as td:
@@ -114,16 +134,17 @@ class ChatPlanningTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                with patch(
-                    "amof.orchestrator.llm.remote_ial.requests.post",
-                    return_value=_FakeHTTPResponse(200, _remote_ial_success_payload()),
-                ):
-                    result = chat.plan_read_only_chat(
-                        objective="Plan AMOF-CHAT-001 for this repo.",
-                        repo=repo,
-                        ticket_id="AMOF-CHAT-001",
-                        files=["README.md", "app.py"],
-                    )
+                with patch.object(chat, "build_canonical_planning_context", return_value=_fake_planning_context(repo)):
+                    with patch(
+                        "amof.orchestrator.llm.remote_ial.requests.post",
+                        return_value=_FakeHTTPResponse(200, _remote_ial_success_payload()),
+                    ):
+                        result = chat.plan_read_only_chat(
+                            objective="Plan AMOF-CHAT-001 for this repo.",
+                            repo=repo,
+                            ticket_id="AMOF-CHAT-001",
+                            files=["README.md", "app.py"],
+                        )
 
             self.assertEqual(result.plan_packet.ticket_id, "AMOF-CHAT-001")
             self.assertTrue(result.plan_packet.requires_user_approval)
@@ -167,19 +188,20 @@ class ChatPlanningTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                with patch(
-                    "subprocess.run",
-                    side_effect=AssertionError("chat planning must not invoke subprocess.run"),
-                ):
+                with patch.object(chat, "build_canonical_planning_context", return_value=_fake_planning_context(repo)):
                     with patch(
-                        "amof.orchestrator.llm.remote_ial.requests.post",
-                        return_value=_FakeHTTPResponse(200, _remote_ial_success_payload()),
+                        "subprocess.run",
+                        side_effect=AssertionError("chat planning must not invoke subprocess.run"),
                     ):
-                        result = chat.plan_read_only_chat(
-                            objective="Plan a read-only change review.",
-                            repo=repo,
-                            files=["README.md"],
-                        )
+                        with patch(
+                            "amof.orchestrator.llm.remote_ial.requests.post",
+                            return_value=_FakeHTTPResponse(200, _remote_ial_success_payload()),
+                        ):
+                            result = chat.plan_read_only_chat(
+                                objective="Plan a read-only change review.",
+                                repo=repo,
+                                files=["README.md"],
+                            )
 
             after_paths = sorted(str(path.relative_to(repo)) for path in repo.rglob("*"))
             self.assertEqual(before_paths, after_paths)
@@ -215,16 +237,17 @@ class ChatPlanningTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                with patch(
-                    "amof.orchestrator.llm.remote_ial.requests.post",
-                    return_value=_FakeHTTPResponse(200, _remote_ial_success_payload(ticket_id="AMOF-CHAT-777")),
-                ):
-                    result = chat.plan_read_only_chat(
-                        objective=secret_objective,
-                        repo=repo,
-                        ticket_id="AMOF-CHAT-777",
-                        files=["README.md"],
-                    )
+                with patch.object(chat, "build_canonical_planning_context", return_value=_fake_planning_context(repo)):
+                    with patch(
+                        "amof.orchestrator.llm.remote_ial.requests.post",
+                        return_value=_FakeHTTPResponse(200, _remote_ial_success_payload(ticket_id="AMOF-CHAT-777")),
+                    ):
+                        result = chat.plan_read_only_chat(
+                            objective=secret_objective,
+                            repo=repo,
+                            ticket_id="AMOF-CHAT-777",
+                            files=["README.md"],
+                        )
 
             messages_text = Path(result.evidence["messages_path"]).read_text(encoding="utf-8")
             artifact_text = Path(result.evidence["plan_result_path"]).read_text(encoding="utf-8")

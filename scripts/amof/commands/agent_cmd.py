@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from ..app_paths import get_app_paths, indexes_dir, runs_dir, vector_store_dir
+from ..app_paths import get_app_paths, runs_dir, vector_store_dir
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +155,9 @@ def _agent_vector_store_path(workspace_root: Path) -> Path:
 
 
 def _agent_index_path(workspace_root: Path, ecosystem_name: str) -> Path:
-    return indexes_dir() / _workspace_runtime_key(workspace_root) / (ecosystem_name or "default")
+    from ..orchestrator.planning_context import planning_index_dir
+
+    return planning_index_dir(workspace_root, ecosystem_name or "default")
 
 
 def _is_amof_source_checkout(workspace_root: Path) -> bool:

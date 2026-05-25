@@ -122,6 +122,10 @@ def ticket_worktrees_dir() -> Path:
     return workspaces_dir() / "ticket-worktrees"
 
 
+def planning_workspaces_dir() -> Path:
+    return workspaces_dir() / "planning"
+
+
 def receipts_dir() -> Path:
     return get_app_paths().data_root / "receipts"
 
@@ -182,6 +186,7 @@ __all__ = [
     "locks_dir",
     "logs_dir",
     "materialized_runs_dir",
+    "planning_workspaces_dir",
     "provider_profiles_dir",
     "queue_dir",
     "receipts_dir",
