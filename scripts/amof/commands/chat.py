@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from ..app_paths import runs_dir
+from ..app_paths import evidence_dir, materialized_runs_dir, runs_dir
 from ..orchestrator.events import EventLog
 from ..orchestrator.llm.base import ProviderError
 from ..orchestrator.llm.remote_ial import RemoteIALClient
@@ -32,6 +32,7 @@ from .agent_cmd import (
     _sanitize_evidence_value,
     _save_session,
 )
+from . import director as director_commands
 
 DEFAULT_MAX_FILES = 8
 DEFAULT_MAX_CHARS_PER_FILE = 4000
@@ -39,6 +40,8 @@ DEFAULT_MAX_SESSION_TURNS = 4
 DEFAULT_MAX_CLARIFICATION_QUESTIONS = 3
 CHAT_PLAN_SESSION_SUBDIR = "chat-plans"
 CHAT_INTAKE_SESSION_SUBDIR = "chat-sessions"
+CHAT_APPROVAL_SUBDIR = "chat-approvals"
+CHAT_HANDOFF_SUBDIR = "chat-handoffs"
 SYSTEM_PROMPT = """You are the AMOF read-only planning chat.
 
 You are producing a proposal only. This output is not executable.
@@ -264,6 +267,103 @@ class IntakeSessionResult:
     non_executable_until_user_approval: bool
     evidence: dict[str, Any]
     plan_packet: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ApprovedPlanArtifact:
+    """Explicit approval artifact for a finalized proposal-only PlanPacket."""
+
+    approval_id: str
+    approval_state: str
+    approved_at: str
+    approval_artifact_path: str
+    source_session: dict[str, Any]
+    repo_truth: dict[str, Any]
+    context_truth: dict[str, Any]
+    plan_packet: dict[str, Any]
+    approved_by: str | None = None
+    approval_note: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.approval_state != "approved":
+            raise ChatPlanError("ApprovedPlanArtifact approval_state must be 'approved'.")
+        if not self.approval_id.strip():
+            raise ChatPlanError("ApprovedPlanArtifact approval_id is required.")
+        if not self.approval_artifact_path.strip():
+            raise ChatPlanError("ApprovedPlanArtifact approval_artifact_path is required.")
+        if not isinstance(self.source_session, dict) or not self.source_session:
+            raise ChatPlanError("ApprovedPlanArtifact source_session is required.")
+        if not isinstance(self.repo_truth, dict) or not self.repo_truth:
+            raise ChatPlanError("ApprovedPlanArtifact repo_truth is required.")
+        if not isinstance(self.context_truth, dict) or not self.context_truth:
+            raise ChatPlanError("ApprovedPlanArtifact context_truth is required.")
+        if not isinstance(self.plan_packet, dict) or not self.plan_packet:
+            raise ChatPlanError("ApprovedPlanArtifact plan_packet is required.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ApprovedPlanArtifact":
+        return cls(
+            approval_id=str(payload.get("approval_id") or ""),
+            approval_state=str(payload.get("approval_state") or ""),
+            approved_at=str(payload.get("approved_at") or ""),
+            approval_artifact_path=str(payload.get("approval_artifact_path") or ""),
+            source_session=dict(payload.get("source_session") or {}),
+            repo_truth=dict(payload.get("repo_truth") or {}),
+            context_truth=dict(payload.get("context_truth") or {}),
+            plan_packet=dict(payload.get("plan_packet") or {}),
+            approved_by=str(payload.get("approved_by")).strip() or None
+            if payload.get("approved_by") is not None
+            else None,
+            approval_note=str(payload.get("approval_note")).strip() or None
+            if payload.get("approval_note") is not None
+            else None,
+        )
+
+
+@dataclass(frozen=True)
+class ChatApprovalResult:
+    """Structured command result for explicit PlanPacket approval."""
+
+    result_kind: str
+    approval_id: str
+    approval_state: str
+    session_id: str
+    repo_path: str
+    non_executable_until_workspace_handoff: bool
+    approval_artifact: ApprovedPlanArtifact
+    evidence: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "result_kind": self.result_kind,
+            "approval_id": self.approval_id,
+            "approval_state": self.approval_state,
+            "session_id": self.session_id,
+            "repo_path": self.repo_path,
+            "non_executable_until_workspace_handoff": self.non_executable_until_workspace_handoff,
+            "approval_artifact": self.approval_artifact.to_dict(),
+            "evidence": self.evidence,
+        }
+
+
+@dataclass(frozen=True)
+class ChatHandoffResult:
+    """Structured command result for approved chat handoff."""
+
+    result_kind: str
+    handoff_id: str
+    approval_id: str
+    repo_path: str
+    intake_path: str
+    explicit_workspace_command_required: bool
+    materialization_command_hint: str
+    evidence: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -558,6 +658,34 @@ def _session_plan_result_path(session_id: str) -> Path:
     return _session_dir(session_id) / "plan-result.json"
 
 
+def _artifact_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+def _approval_runs_dir() -> Path:
+    return evidence_dir() / CHAT_APPROVAL_SUBDIR
+
+
+def _approval_dir(approval_id: str) -> Path:
+    return _approval_runs_dir() / approval_id
+
+
+def _approval_artifact_path(approval_id: str) -> Path:
+    return _approval_dir(approval_id) / "approved-plan.json"
+
+
+def _handoff_runs_dir() -> Path:
+    return evidence_dir() / CHAT_HANDOFF_SUBDIR
+
+
+def _handoff_dir(handoff_id: str) -> Path:
+    return _handoff_runs_dir() / handoff_id
+
+
+def _handoff_intake_path(handoff_id: str) -> Path:
+    return _handoff_dir(handoff_id) / "director-intake.json"
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -578,6 +706,39 @@ def _load_session_state(session_id: str) -> IntakeSessionState:
 
 def _save_session_state(state: IntakeSessionState) -> Path:
     return _write_json(_session_state_path(state.session_id), state.to_dict())
+
+
+def _plan_packet_payload_from_state(state: IntakeSessionState) -> dict[str, Any]:
+    if state.status != "finalized":
+        raise ChatPlanError(
+            f"chat session must be finalized before approval or handoff: {state.session_id}"
+        )
+    if not isinstance(state.plan_packet, dict) or not state.plan_packet:
+        raise ChatPlanError(f"finalized chat session is missing plan_packet: {state.session_id}")
+    if state.plan_packet.get("requires_user_approval") is not True:
+        raise ChatPlanError("finalized plan_packet must require explicit user approval.")
+    if state.plan_packet.get("execution_allowed") is not False:
+        raise ChatPlanError("finalized plan_packet must remain proposal-only.")
+    return dict(state.plan_packet)
+
+
+def _approval_ref_to_path(approval_ref: str) -> Path:
+    normalized = _require_text(approval_ref, "approval_id_or_path")
+    candidate = Path(normalized).expanduser()
+    if candidate.is_absolute() or candidate.suffix or "/" in normalized:
+        return candidate.resolve(strict=False)
+    return _approval_artifact_path(normalized)
+
+
+def _load_approved_plan_artifact(approval_ref: str) -> ApprovedPlanArtifact:
+    artifact_path = _approval_ref_to_path(approval_ref)
+    if not artifact_path.exists():
+        raise ChatPlanError(f"approval artifact not found: {artifact_path}")
+    payload = _load_json(artifact_path)
+    artifact = ApprovedPlanArtifact.from_dict(payload)
+    if artifact.approval_state != "approved":
+        raise ChatPlanError("approval artifact must be in approved state before handoff.")
+    return artifact
 
 
 def _transcript_lines(transcript: list[dict[str, Any]]) -> list[str]:
@@ -1210,6 +1371,151 @@ def finalize_bounded_chat_session(
     return _session_result(updated_state)
 
 
+def approve_finalized_chat_session(
+    *,
+    session_id: str,
+    approved_by: str | None = None,
+    approval_note: str | None = None,
+) -> ChatApprovalResult:
+    state = _load_session_state(session_id)
+    plan_packet = _plan_packet_payload_from_state(state)
+    planning_receipt_payload = _load_json(Path(state.planning_context_receipt_path))
+    approval_id = f"{state.session_id}-approved-{_artifact_timestamp()}"
+    artifact_path = _approval_artifact_path(approval_id)
+    objective = _require_text(plan_packet.get("objective"), "plan_packet.objective")
+    events = EventLog(session_id=approval_id, runs_dir=_approval_runs_dir())
+    events.session_start(mode="chat-approve", goal=objective, ecosystem=Path(state.repo_path).name)
+    events.log(
+        "chat_plan_approved",
+        source_session_id=state.session_id,
+        approval_state="approved",
+        plan_result_path=state.plan_result_path,
+    )
+
+    artifact = ApprovedPlanArtifact(
+        approval_id=approval_id,
+        approval_state="approved",
+        approved_at=_now_iso(),
+        approval_artifact_path=str(artifact_path),
+        source_session={
+            "session_id": state.session_id,
+            "session_dir": state.session_dir,
+            "repo_path": state.repo_path,
+            "objective": state.objective,
+            "ticket_id": state.ticket_id,
+            "status": state.status,
+            "finalized_at": state.finalized_at,
+            "plan_result_path": state.plan_result_path,
+            "planning_context_receipt_path": state.planning_context_receipt_path,
+            "indexed_context_path": state.indexed_context_path,
+        },
+        repo_truth={
+            "source_repo_path": planning_receipt_payload.get("source_repo_path"),
+            "source_git_root": planning_receipt_payload.get("source_git_root"),
+            "source_remote_url": planning_receipt_payload.get("source_remote_url"),
+            "canonical_remote_url": planning_receipt_payload.get("canonical_remote_url"),
+            "planning_workspace_root": planning_receipt_payload.get("planning_workspace_root"),
+            "planning_repo_path": planning_receipt_payload.get("planning_repo_path"),
+            "planning_branch_ref": planning_receipt_payload.get("planning_branch_ref"),
+            "origin_main_sha": planning_receipt_payload.get("origin_main_sha"),
+        },
+        context_truth={
+            "planning_context_receipt_path": state.planning_context_receipt_path,
+            "indexed_context_path": state.indexed_context_path,
+            "merkle_root": planning_receipt_payload.get("merkle_root"),
+            "indexed_at": planning_receipt_payload.get("indexed_at"),
+            "freshness": planning_receipt_payload.get("freshness"),
+            "refresh_reason": planning_receipt_payload.get("refresh_reason"),
+            "index_refreshed": planning_receipt_payload.get("index_refreshed"),
+            "repo_scope": planning_receipt_payload.get("repo_scope"),
+            "files_to_inspect": planning_receipt_payload.get("files_to_inspect"),
+            "planner_provenance": planning_receipt_payload.get("planner_provenance"),
+        },
+        plan_packet=plan_packet,
+        approved_by=str(approved_by).strip() or None if approved_by is not None else None,
+        approval_note=str(approval_note).strip() or None if approval_note is not None else None,
+    )
+    _write_json(artifact_path, artifact.to_dict())
+    events.session_end({"total_cost": 0.0, "total_calls": 0})
+    return ChatApprovalResult(
+        result_kind="chat_approved_plan",
+        approval_id=artifact.approval_id,
+        approval_state=artifact.approval_state,
+        session_id=state.session_id,
+        repo_path=state.repo_path,
+        non_executable_until_workspace_handoff=True,
+        approval_artifact=artifact,
+        evidence={
+            "approval_artifact_path": str(artifact_path),
+            "events_path": str(events.log_path),
+            "plan_result_path": state.plan_result_path,
+            "planning_context_receipt_path": state.planning_context_receipt_path,
+        },
+    )
+
+
+def handoff_approved_chat_plan(
+    *,
+    approval_id_or_path: str,
+    run_id: str | None = None,
+    target_base_dir: str | Path | None = None,
+) -> ChatHandoffResult:
+    artifact = _load_approved_plan_artifact(approval_id_or_path)
+    repo_path = _require_text(
+        artifact.source_session.get("repo_path"),
+        "approval.source_session.repo_path",
+    )
+    objective = _require_text(
+        artifact.plan_packet.get("objective"),
+        "approval.plan_packet.objective",
+    )
+    handoff_id = f"{artifact.approval_id}-handoff-{_artifact_timestamp()}"
+    intake_path = _handoff_intake_path(handoff_id)
+    resolved_run_id = str(run_id).strip() if run_id is not None else handoff_id
+    if not resolved_run_id:
+        resolved_run_id = handoff_id
+    resolved_target_base_dir = (
+        Path(target_base_dir).expanduser().resolve(strict=False)
+        if target_base_dir is not None
+        else materialized_runs_dir()
+    )
+    events = EventLog(session_id=handoff_id, runs_dir=_handoff_runs_dir())
+    events.session_start(mode="chat-handoff", goal=objective, ecosystem=Path(repo_path).name)
+    envelope = director_commands.build_approved_plan_handoff_envelope(
+        approval=artifact.to_dict(),
+        run_id=resolved_run_id,
+        target_base_dir=str(resolved_target_base_dir),
+    )
+    _write_json(intake_path, envelope)
+    events.log(
+        "chat_handoff_envelope_written",
+        approval_id=artifact.approval_id,
+        intake_path=str(intake_path),
+        run_id=resolved_run_id,
+        target_base_dir=str(resolved_target_base_dir),
+    )
+    events.session_end({"total_cost": 0.0, "total_calls": 0})
+    materialization_hint = (
+        f"amof workspace materialize-from-intake --intake {intake_path}"
+    )
+    return ChatHandoffResult(
+        result_kind="chat_approved_handoff",
+        handoff_id=handoff_id,
+        approval_id=artifact.approval_id,
+        repo_path=repo_path,
+        intake_path=str(intake_path),
+        explicit_workspace_command_required=True,
+        materialization_command_hint=materialization_hint,
+        evidence={
+            "approval_artifact_path": artifact.approval_artifact_path,
+            "intake_path": str(intake_path),
+            "events_path": str(events.log_path),
+            "target_base_dir": str(resolved_target_base_dir),
+            "run_id": resolved_run_id,
+        },
+    )
+
+
 def plan_read_only_chat(
     *,
     objective: str,
@@ -1452,7 +1758,23 @@ def cmd_chat(args: argparse.Namespace) -> int:
             )
             print(json.dumps(result.to_dict(), indent=2))
             return 0
-        sys.stderr.write("Usage: amof chat {plan,start,ask,status,finalize} ...\n")
+        if action == "approve":
+            result = approve_finalized_chat_session(
+                session_id=str(getattr(args, "session_id", "") or "").strip(),
+                approved_by=getattr(args, "approved_by", None),
+                approval_note=getattr(args, "approval_note", None),
+            )
+            print(json.dumps(result.to_dict(), indent=2))
+            return 0
+        if action == "handoff":
+            result = handoff_approved_chat_plan(
+                approval_id_or_path=str(getattr(args, "approval_id_or_path", "") or "").strip(),
+                run_id=getattr(args, "run_id", None),
+                target_base_dir=getattr(args, "target_base_dir", None),
+            )
+            print(json.dumps(result.to_dict(), indent=2))
+            return 0
+        sys.stderr.write("Usage: amof chat {plan,start,ask,status,finalize,approve,handoff} ...\n")
         return 1
     except ChatPlanError as exc:
         sys.stderr.write(f"[chat] {exc}\n")
@@ -1460,15 +1782,20 @@ def cmd_chat(args: argparse.Namespace) -> int:
 
 
 __all__ = [
+    "ApprovedPlanArtifact",
     "ChatPlanError",
+    "ChatApprovalResult",
+    "ChatHandoffResult",
     "ChatPlanResult",
     "InferenceAttribution",
     "IntakeSessionResult",
     "IntakeSessionState",
     "PlanPacket",
+    "approve_finalized_chat_session",
     "ask_bounded_chat_session",
     "cmd_chat",
     "finalize_bounded_chat_session",
+    "handoff_approved_chat_plan",
     "plan_read_only_chat",
     "start_bounded_chat_session",
     "status_bounded_chat_session",

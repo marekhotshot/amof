@@ -634,6 +634,35 @@ def parse_args() -> argparse.Namespace:
         help="Finalize one bounded intake session into a proposal-only PlanPacket",
     )
     chat_finalize.add_argument("session_id", help="Existing bounded intake session id")
+    chat_approve = chat_sub.add_parser(
+        "approve",
+        help="Write one explicit approval artifact for a finalized proposal-only PlanPacket",
+    )
+    chat_approve.add_argument("session_id", help="Existing finalized bounded intake session id")
+    chat_approve.add_argument(
+        "--approved-by",
+        help="Optional operator identifier to record in the approval artifact",
+    )
+    chat_approve.add_argument(
+        "--approval-note",
+        help="Optional short note explaining the approval context",
+    )
+    chat_handoff = chat_sub.add_parser(
+        "handoff",
+        help="Convert one approved PlanPacket artifact into a Director Intake execution envelope",
+    )
+    chat_handoff.add_argument(
+        "approval_id_or_path",
+        help="Approval id emitted by 'amof chat approve' or a direct path to approved-plan.json",
+    )
+    chat_handoff.add_argument(
+        "--run-id",
+        help="Optional run id to record in execution_handoff.workspace_materialization",
+    )
+    chat_handoff.add_argument(
+        "--target-base-dir",
+        help="Optional workspace materialization base directory to record in the handoff envelope",
+    )
 
     # Agent command
     agent_parser = subparsers.add_parser(

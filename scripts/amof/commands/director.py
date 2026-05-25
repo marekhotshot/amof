@@ -88,6 +88,225 @@ def _require_text(value: Any, field_name: str) -> str:
     return normalized
 
 
+def _require_mapping(value: Any, field_name: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise DirectorPlannerError(f"{field_name} must be an object.")
+    return value
+
+
+def _string_list(value: Any, field_name: str) -> list[str]:
+    if not isinstance(value, list):
+        raise DirectorPlannerError(f"{field_name} must be an array of strings.")
+    result = [str(item).strip() for item in value if str(item).strip()]
+    if not result:
+        raise DirectorPlannerError(f"{field_name} must not be empty.")
+    return result
+
+
+def build_approved_plan_handoff_envelope(
+    *,
+    approval: Dict[str, Any],
+    run_id: str,
+    target_base_dir: str,
+) -> Dict[str, Any]:
+    approval_payload = _require_mapping(approval, "approval")
+    _require_text(approval_payload.get("approval_id"), "approval.approval_id")
+    approval_state = _require_text(approval_payload.get("approval_state"), "approval.approval_state")
+    if approval_state != "approved":
+        raise DirectorPlannerError("approval.approval_state must be 'approved' before handoff.")
+    approval_artifact_path = _require_text(
+        approval_payload.get("approval_artifact_path"),
+        "approval.approval_artifact_path",
+    )
+    source_session = _require_mapping(approval_payload.get("source_session"), "approval.source_session")
+    repo_truth = _require_mapping(approval_payload.get("repo_truth"), "approval.repo_truth")
+    context_truth = _require_mapping(approval_payload.get("context_truth"), "approval.context_truth")
+    plan_packet = _require_mapping(approval_payload.get("plan_packet"), "approval.plan_packet")
+
+    repo_source = (
+        str(repo_truth.get("canonical_remote_url") or "").strip()
+        or str(repo_truth.get("source_remote_url") or "").strip()
+        or str(repo_truth.get("source_git_root") or "").strip()
+        or str(repo_truth.get("source_repo_path") or "").strip()
+    )
+    repo_source = _require_text(repo_source, "approval.repo_truth.repo_source")
+    expected_sha = _require_git_sha(
+        str(repo_truth.get("origin_main_sha") or ""),
+        field_name="approval.repo_truth.origin_main_sha",
+    )
+    objective = _require_text(plan_packet.get("objective"), "approval.plan_packet.objective")
+    files_to_inspect = _string_list(
+        plan_packet.get("files_to_inspect") or [],
+        "approval.plan_packet.files_to_inspect",
+    )
+    ticket_id = (
+        str(plan_packet.get("ticket_id") or "").strip()
+        or str(plan_packet.get("proposed_ticket_id") or "").strip()
+        or None
+    )
+    session_id = _require_text(source_session.get("session_id"), "approval.source_session.session_id")
+    planning_receipt_path = _require_text(
+        context_truth.get("planning_context_receipt_path"),
+        "approval.context_truth.planning_context_receipt_path",
+    )
+    plan_result_path = _require_text(
+        source_session.get("plan_result_path"),
+        "approval.source_session.plan_result_path",
+    )
+    indexed_context_path = str(context_truth.get("indexed_context_path") or "").strip()
+    planning_branch_ref = str(repo_truth.get("planning_branch_ref") or "").strip() or "origin/main"
+    risk_reasons = [str(item).strip() for item in plan_packet.get("risks") or [] if str(item).strip()]
+
+    paths_read = [approval_artifact_path, plan_result_path, planning_receipt_path]
+    if indexed_context_path:
+        paths_read.append(indexed_context_path)
+
+    source_summary = (
+        f"Approved PlanPacket from session {session_id} targets {repo_source} at exact SHA {expected_sha}."
+    )
+    return {
+        "result_kind": "director_intake_execution_contract",
+        "ticket_summary": {
+            "ticket_id": ticket_id,
+            "rough_intent": objective,
+            "bounded_goal": (
+                "Convert one approved proposal-only PlanPacket into a workspace-materialization "
+                "handoff without invoking agent execution."
+            ),
+            "task_kind": "other",
+        },
+        "inspection_scope": {
+            "repos": [repo_source],
+            "paths_read": paths_read,
+            "runtime_sources": [],
+            "notes": (
+                f"Approved from chat session {session_id}; bounded indexed context files: "
+                + ", ".join(files_to_inspect)
+            ),
+        },
+        "source_truth": {
+            "status": "confirmed",
+            "summary": source_summary,
+            "evidence": [
+                {
+                    "kind": "file",
+                    "path": approval_artifact_path,
+                    "summary": "Explicit operator approval artifact for the finalized PlanPacket.",
+                    "freshness": "fresh",
+                },
+                {
+                    "kind": "file",
+                    "path": plan_result_path,
+                    "summary": "Finalized proposal-only PlanPacket emitted by bounded chat.",
+                    "freshness": "fresh",
+                },
+                {
+                    "kind": "file",
+                    "path": planning_receipt_path,
+                    "summary": (
+                        "Canonical planning-context receipt capturing source repo truth, planning clone "
+                        "truth, and indexed context freshness."
+                    ),
+                    "freshness": "fresh",
+                },
+            ],
+        },
+        "runtime_truth": {
+            "status": "confirmed",
+            "summary": "This approved chat handoff does not authorize runtime execution, deployment, or agent launch.",
+            "evidence": [
+                {
+                    "kind": "operator_statement",
+                    "summary": (
+                        "Approval is limited to writing an intake envelope that can be used only by an "
+                        "explicit workspace materialization command."
+                    ),
+                    "freshness": "fresh",
+                }
+            ],
+        },
+        "workspace_truth": {
+            "status": "confirmed",
+            "summary": (
+                "Workspace materialization remains owned by the existing workspace intake boundary and "
+                "may occur only through explicit operator action."
+            ),
+            "evidence": [
+                {
+                    "kind": "contract",
+                    "path": "contracts/director-intake-execution-contract.schema.json",
+                    "summary": "Existing Director intake execution contract reused without schema churn.",
+                    "freshness": "fresh",
+                },
+                {
+                    "kind": "contract",
+                    "path": "contracts/execution-handoff-result.schema.json",
+                    "summary": "Existing workspace materialization handoff result contract remains authoritative.",
+                    "freshness": "fresh",
+                },
+            ],
+        },
+        "allowed_mutations": [
+            "materialize_per_run_workspace",
+            "write_execution_handoff_result",
+        ],
+        "forbidden_mutations": [
+            "agent_execution",
+            "ticket_checkpoint",
+            "promote_main",
+            "deploy",
+            "helm",
+            "kubernetes",
+            "image_build",
+            "image_push",
+            "runtime_sync",
+        ],
+        "validation_gates": [
+            {
+                "name": "approved_plan_artifact",
+                "requirement": "approval.approval_state must remain approved before any workspace materialization.",
+                "failure_action": "stop",
+            },
+            {
+                "name": "exact_sha_checkout",
+                "requirement": "Materialized workspace must resolve to approval.repo_truth.origin_main_sha exactly.",
+                "failure_action": "stop",
+            },
+        ],
+        "stop_conditions": [
+            "stop on approval artifact state mismatch",
+            "stop on workspace materialization failure",
+            "stop on exact SHA mismatch",
+        ],
+        "risk_classification": {
+            "level": "low",
+            "reasons": risk_reasons
+            or [
+                "Approved chat handoff remains bounded to workspace materialization only.",
+                "Agent execution and delivery operations stay explicitly forbidden from this contract.",
+            ],
+        },
+        "executor_disposition": "replay_later",
+        "next_executor_prompt": (
+            "If the operator explicitly requests materialization, call the existing workspace intake boundary "
+            "to materialize execution_handoff.workspace_materialization. Do not invoke agent execution from this contract."
+        ),
+        "execution_handoff": {
+            "handoff_kind": "workspace_materialization_dry_run",
+            "workspace_materialization": {
+                "repo": repo_source,
+                "expected_sha": expected_sha,
+                "run_id": _require_text(run_id, "run_id"),
+                "target_base_dir": _require_text(target_base_dir, "target_base_dir"),
+                "branch_or_ref": planning_branch_ref,
+                "candidate_sha": expected_sha,
+            },
+        },
+        "ambiguities": [],
+        "contract_version": "chat-approved-handoff-v1",
+    }
+
+
 def _build_plan_materialization_envelope(
     *,
     repo: str,
@@ -1011,6 +1230,7 @@ def cmd_director(args: argparse.Namespace) -> int:
 
 
 __all__ = [
+    "build_approved_plan_handoff_envelope",
     "cmd_director",
     "classify_promotion_readiness",
     "execute_validation_step",
