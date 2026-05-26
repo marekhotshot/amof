@@ -6,8 +6,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from pydantic import BaseModel
 import requests
-from fastapi.testclient import TestClient
+try:
+    from fastapi.testclient import TestClient
+except ModuleNotFoundError:  # pragma: no cover - depends on optional API deps.
+    TestClient = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +23,11 @@ from amof.commands import agent_cmd, setup
 from amof.orchestrator.events import EventLog
 from amof.orchestrator.llm.base import ProviderError, stop_reason_for_failure_class
 from amof.orchestrator.llm.remote_ial import RemoteIALClient
+
+
+class _StructuredPlan(BaseModel):
+    verdict: str
+    steps: list[str]
 
 
 class _FakeHTTPResponse:
@@ -129,6 +138,92 @@ class RemoteIALFailureTests(unittest.TestCase):
         self.assertEqual(raised.exception.failure_class, "auth")
 
 
+class RemoteIALStructuredTests(unittest.TestCase):
+    def test_structured_fallback_sends_schema_instruction_and_parses_json(self) -> None:
+        client = RemoteIALClient(base_url="http://127.0.0.1:8765", api_key="token")
+        with patch(
+            "amof.orchestrator.llm.remote_ial.requests.post",
+            return_value=_FakeHTTPResponse(
+                200,
+                {
+                    "text": '{"verdict":"PASS","steps":["inspect"]}',
+                    "provider": "unit-test-upstream",
+                    "model": "unit-test/model",
+                    "tokens": {"input": 10, "output": 4},
+                    "latency_ms": 12,
+                    "stop_reason": "stop",
+                },
+            ),
+        ) as post:
+            response = client.chat_structured(
+                system="system prompt",
+                messages=[{"role": "user", "content": "return a plan"}],
+                response_model=_StructuredPlan,
+            )
+
+        self.assertEqual(response.parsed.verdict, "PASS")
+        self.assertEqual(response.parsed.steps, ["inspect"])
+        self.assertEqual(response.usage.provider, "remote-ial")
+        payload = post.call_args.kwargs["json"]
+        self.assertIn("Return ONLY one strict JSON object", payload["system"])
+        self.assertIn('"verdict"', payload["system"])
+        self.assertEqual(payload["messages"], [{"role": "user", "content": "return a plan"}])
+        self.assertEqual(payload["tools"], [])
+        self.assertNotIn("Bearer token", str(payload))
+
+    def test_structured_fallback_invalid_json_fails_closed(self) -> None:
+        client = RemoteIALClient(base_url="http://127.0.0.1:8765", api_key="token")
+        with patch(
+            "amof.orchestrator.llm.remote_ial.requests.post",
+            return_value=_FakeHTTPResponse(
+                200,
+                {
+                    "text": "not json",
+                    "provider": "unit-test-upstream",
+                    "model": "unit-test/model",
+                },
+            ),
+        ):
+            with self.assertRaises(ProviderError) as raised:
+                client.chat_structured(
+                    system="system prompt",
+                    messages=[{"role": "user", "content": "return a plan"}],
+                    response_model=_StructuredPlan,
+                )
+
+        self.assertEqual(raised.exception.provider, "remote-ial")
+        self.assertEqual(raised.exception.failure_class, "api_error")
+        self.assertIn("failed schema validation", str(raised.exception))
+
+    def test_structured_fallback_preserves_provider_error_classification(self) -> None:
+        client = RemoteIALClient(base_url="http://127.0.0.1:8765", api_key="token")
+        with patch(
+            "amof.orchestrator.llm.remote_ial.requests.post",
+            return_value=_FakeHTTPResponse(
+                401,
+                {
+                    "detail": {
+                        "code": "provider_failure",
+                        "message": "User not found.",
+                        "provider": "unit-test-upstream",
+                        "failure_class": "auth",
+                        "status_code": 401,
+                    }
+                },
+            ),
+        ):
+            with self.assertRaises(ProviderError) as raised:
+                client.chat_structured(
+                    system="system prompt",
+                    messages=[{"role": "user", "content": "return a plan"}],
+                    response_model=_StructuredPlan,
+                )
+
+        self.assertEqual(raised.exception.provider, "remote-ial")
+        self.assertEqual(raised.exception.upstream_provider, "unit-test-upstream")
+        self.assertEqual(raised.exception.failure_class, "auth")
+
+
 class RemoteIALEventTests(unittest.TestCase):
     def test_llm_call_records_remote_transport_and_upstream_provider(self) -> None:
         client = RemoteIALClient(base_url="http://127.0.0.1:8765", api_key="token")
@@ -178,9 +273,11 @@ class RemoteIALEventTests(unittest.TestCase):
 
 
 class PublicRouteTests(unittest.TestCase):
+    @unittest.skipIf(TestClient is None, "fastapi is not installed")
     def test_public_api_prefix_does_not_expose_ial_chat(self) -> None:
         from amof.api.main import app
 
+        assert TestClient is not None
         client = TestClient(app)
         response = client.post(
             "/api/v1/ial/chat",

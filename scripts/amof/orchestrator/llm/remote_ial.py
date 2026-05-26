@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+from pydantic import ValidationError
 import requests
 
 from .base import (
     LLMClient,
     LLMResponse,
+    PROVIDER_FAILURE_API_ERROR,
     PROVIDER_FAILURE_AUTH,
     PROVIDER_FAILURE_NETWORK,
     ProviderError,
+    StructuredLLMResponse,
     ToolCallRequest,
     Usage,
     classify_provider_status,
@@ -227,7 +231,41 @@ class RemoteIALClient(LLMClient):
         response_model: Any,
         max_tokens: int = 8192,
         temperature: float = 0.0,
-    ) -> Any:
-        raise NotImplementedError(
-            "RemoteIALClient does not yet support native structured output calls."
+    ) -> StructuredLLMResponse:
+        schema = response_model.model_json_schema()
+        structured_system = (
+            f"{system}\n\n"
+            "Return ONLY one strict JSON object that validates against this JSON Schema. "
+            "Do not include markdown fences, prose, comments, or extra keys outside the schema.\n\n"
+            f"JSON Schema:\n{json.dumps(schema, sort_keys=True)}"
+        )
+        response = self.chat(
+            system=structured_system,
+            messages=messages,
+            tools=None,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        raw_text = (response.text or "").strip()
+        if not raw_text:
+            raise ProviderError(
+                provider=self._provider,
+                message="Remote IAL structured response was empty.",
+                failure_class=PROVIDER_FAILURE_API_ERROR,
+            )
+        try:
+            parsed = response_model.model_validate_json(raw_text)
+        except (ValidationError, ValueError) as exc:
+            raise ProviderError(
+                provider=self._provider,
+                message=f"Remote IAL structured response failed schema validation: {exc}",
+                failure_class=PROVIDER_FAILURE_API_ERROR,
+                original=exc,
+            ) from exc
+        return StructuredLLMResponse(
+            parsed=parsed,
+            usage=response.usage,
+            stop_reason=response.stop_reason,
+            raw=response.raw,
+            text=raw_text,
         )
