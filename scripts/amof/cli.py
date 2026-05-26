@@ -503,17 +503,11 @@ def parse_args() -> argparse.Namespace:
 
     gb_admission = generated_build_sub.add_parser(
         "admission-preview",
-        help="Evaluate generated-build admission policy read-only",
+        help="Return the public generated-build admission contract",
     )
     gb_admission.add_argument("repo_path", help="Repository root path used when the artifact was persisted")
     gb_admission.add_argument("--service", help="Optional service name (defaults to root)")
-    gb_admission.add_argument("--output", help="Optional path to write policy result JSON")
-    gb_admission.add_argument("--existing-build-present", action="store_true", help="Assert existing-build contract conflict")
-    gb_admission.add_argument("--existing-build-resolved", action="store_true", help="Assert existing-build precedence resolved")
-    gb_admission.add_argument("--operator-confirmed", action="store_true", help="Provide minimal operator confirmation context")
-    gb_admission.add_argument("--confirmed-by", default="operator", help="Operator id/email for confirmation context")
-    gb_admission.add_argument("--deploy-pull-reference-present", action="store_true", help="Assert deploy-pull image reference is present")
-    gb_admission.add_argument("--source-ref-confirmed", action="store_true", help="Assert source repo/ref has been confirmed")
+    gb_admission.add_argument("--output", help="Optional path to write contract result JSON")
 
     # Profile command
     profile_parser = subparsers.add_parser(

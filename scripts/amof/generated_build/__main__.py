@@ -66,16 +66,10 @@ def _main(argv: list[str] | None = None) -> int:
     show_parser.add_argument("--service", help="Optional service name (defaults to root).")
     show_parser.add_argument("--output", help="Optional path to write artifact JSON.")
 
-    admission_parser = sub.add_parser("admission-preview", help="Evaluate generated-build admission policy read-only.")
+    admission_parser = sub.add_parser("admission-preview", help="Return the public generated-build admission contract.")
     admission_parser.add_argument("repo_path", help="Repository root path used when the artifact was persisted.")
     admission_parser.add_argument("--service", help="Optional service name (defaults to root).")
-    admission_parser.add_argument("--output", help="Optional path to write policy result JSON.")
-    admission_parser.add_argument("--existing-build-present", action="store_true", help="Assert existing-build contract conflict.")
-    admission_parser.add_argument("--existing-build-resolved", action="store_true", help="Assert existing-build precedence was resolved for generated lane.")
-    admission_parser.add_argument("--operator-confirmed", action="store_true", help="Provide minimal operator confirmation context.")
-    admission_parser.add_argument("--confirmed-by", default="operator", help="Operator id/email for confirmation context.")
-    admission_parser.add_argument("--deploy-pull-reference-present", action="store_true", help="Assert deploy-pull image reference is present.")
-    admission_parser.add_argument("--source-ref-confirmed", action="store_true", help="Assert source repo/ref has been confirmed.")
+    admission_parser.add_argument("--output", help="Optional path to write contract result JSON.")
 
     args = parser.parse_args(argv)
 
@@ -132,24 +126,9 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "admission-preview":
         artifact_path = artifact_path_for(Path(args.repo_path), service=getattr(args, "service", None))
         artifact = load_artifact(Path(args.repo_path), service=getattr(args, "service", None))
-        context = {
-            "existing_build_contract_present": bool(getattr(args, "existing_build_present", False)),
-            "existing_build_precedence_resolved": bool(getattr(args, "existing_build_resolved", False)),
-            "deploy_pull_reference_present": bool(getattr(args, "deploy_pull_reference_present", False)),
-            "source_ref_confirmed": bool(getattr(args, "source_ref_confirmed", False)),
-        }
-        if getattr(args, "operator_confirmed", False):
-            digest = (artifact.get("build_proof") or {}).get("image_digest") or ""
-            context["operator_confirmation"] = {
-                "confirmed": True,
-                "confirmed_by": getattr(args, "confirmed_by", "operator"),
-                "confirmed_at": "1970-01-01T00:00:00Z",
-                "confirmed_image_digest": digest,
-                "target_service": getattr(args, "service", None) or artifact.get("service") or "root",
-            }
-        policy_result = evaluate_admission(artifact, artifact_path=artifact_path, context=context)
-        _emit_artifact(policy_result, args.output)
-        return 2 if policy_result.get("admission_status") == "refused" else 0
+        admission_result = evaluate_admission(artifact, artifact_path=artifact_path)
+        _emit_artifact(admission_result, args.output)
+        return 2 if admission_result.get("admission_status") == "refused" else 0
 
     parser.error(f"Unknown command: {args.command}")
     return 1  # unreachable

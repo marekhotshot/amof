@@ -223,17 +223,6 @@ def main() -> None:
                 gb_argv.extend(["--service", getattr(args, "service")])
             if getattr(args, "timeout", None) is not None and getattr(args, "generated_build_cmd", None) == "runtime-proof":
                 gb_argv.extend(["--timeout", str(getattr(args, "timeout"))])
-            for flag_name, cli_flag in (
-                ("existing_build_present", "--existing-build-present"),
-                ("existing_build_resolved", "--existing-build-resolved"),
-                ("operator_confirmed", "--operator-confirmed"),
-                ("deploy_pull_reference_present", "--deploy-pull-reference-present"),
-                ("source_ref_confirmed", "--source-ref-confirmed"),
-            ):
-                if getattr(args, flag_name, False):
-                    gb_argv.append(cli_flag)
-            if getattr(args, "confirmed_by", None) and getattr(args, "generated_build_cmd", None) == "admission-preview":
-                gb_argv.extend(["--confirmed-by", getattr(args, "confirmed_by")])
             sys.exit(generated_build_main(gb_argv))
         if args.command == "help":
             sys.exit(cmd_help(getattr(args, "topic", None)))
