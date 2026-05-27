@@ -8,6 +8,27 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## [2.8.1] - 2026-05-27
+
+### Fixed
+
+- Added a generic `RemoteIALClient.chat_structured()` fallback through the existing remote IAL chat contract.
+- Structured remote IAL calls now request strict JSON, parse with the requested Pydantic model, and fail closed with `ProviderError` when output is empty, invalid JSON, or schema-invalid.
+- Existing remote IAL provider error classification remains stable for auth, network, and upstream provider failures.
+
+### Changed
+
+- Installed `amof chat plan` can now complete structured planning through a configured remote IAL gateway when the gateway and upstream provider are healthy.
+- Public remote IAL docs now describe the verified client contract without publishing private routing policy, model ladder behavior, gateway internals, or deployment topology.
+
+### Validation
+
+- `python3 -m py_compile scripts/amof/orchestrator/llm/remote_ial.py scripts/amof/__init__.py scripts/amof/orchestrator/__init__.py` passed.
+- `PYTHONPATH=scripts python -m unittest tests.test_remote_ial tests.test_ial_evidence tests.test_batch_contract_public_facade tests.test_generated_build_public_contract tests.test_public_lifecycle_surface -v` passed: 36 run, 35 passed, 1 skipped because `fastapi` was not installed in the validation venv.
+- `git diff --check` passed.
+- `scripts/doctor-workspace.sh` and `scripts/dogfood-v280-flow.sh` passed in the operator workspace.
+- Installed `AMOF v2.8.1` completed `amof chat plan` against the cloud-dev remote IAL gateway after the gateway provider secret was refreshed from operator `.env`.
+
 ## [2.8.0] - 2026-05-25
 
 ### Added

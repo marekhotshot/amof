@@ -2,7 +2,7 @@
 
 Ticket: `AMOF-IAL-PUBLIC-CLIENT-001`
 
-Status: `PUBLIC_CLIENT_CONTRACT_ONLY`
+Status: `PUBLIC_CLIENT_CONTRACT_ONLY`, updated for `v2.8.1`
 
 ## Purpose
 
@@ -35,8 +35,13 @@ The following pieces are public-safe:
   - `evidence.journal: enabled | redacted | disabled`
 - failure-path correlation preservation so truthful non-success outcomes still
   retain gateway correlation fields locally when available
+- generic structured-output fallback through `RemoteIALClient.chat_structured()`
+  using the existing remote chat endpoint, strict JSON instructions, and local
+  Pydantic validation
 - tests proving:
   - auth/network/provider failures remain non-success
+  - valid structured JSON parses into the requested public response model
+  - invalid structured output fails closed with `ProviderError`
   - `/api/v1/ial/chat` is not publicly exposed
   - local evidence does not store bearer tokens or provider API keys in the
     hardened modes
@@ -87,6 +92,20 @@ Public `amof` may consume and forward:
 The local provider identity remains `remote-ial`; truthful upstream identity is
 recorded separately under `upstream_provider` and `upstream_model`.
 
+### Structured output
+
+Public AMOF does not require a hosted structured endpoint. The client may request
+structured output by:
+
+- adding a provider-neutral instruction that requires one strict JSON object
+- including the requested Pydantic model JSON Schema
+- calling `POST /v1/ial/chat`
+- validating the returned text locally
+
+Empty, invalid JSON, or schema-invalid responses must fail closed with
+`ProviderError`. Upstream provider errors from the gateway must keep their
+existing failure classification.
+
 ## Evidence Modes
 
 Public `amof` defaults remain deterministic:
@@ -131,6 +150,8 @@ The public client/evidence contract has been proven against the private gateway:
   - public client
   - private gateway
   - live OpenRouter upstream
+- installed `AMOF v2.8.1` completed `amof chat plan` through the remote IAL
+  client after the cloud-dev gateway provider secret was refreshed
 - private receipts remained hash-only
 - public messages remained hash-only when configured
 - no journals were created when disabled

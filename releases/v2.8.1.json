@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "version": "2.8.1",
+  "tag": "v2.8.1",
+  "previous_tag": "v2.8.0",
+  "timestamp": "2026-05-26T23:44:20Z",
+  "action": "bump",
+  "bump_part": "patch",
+  "stage": null,
+  "stage_num": null,
+  "branch": "main",
+  "commit": "25266da29a54d976492fe115c460f0b0f3904352",
+  "author": "Marek Ga\u0161per",
+  "commits_since_previous": 7,
+  "commit_subjects": [
+    "chore(promote-main): promote AMOF-221 candidate bundle",
+    "chore(promote-main): promote AMOF-221 candidate bundle",
+    "chore(promote-main): promote AMOF-221 candidate bundle",
+    "chore(promote-main): promote AMOF-221 candidate bundle",
+    "chore(promote-main): promote AMOF-221 candidate bundle",
+    "chore(promote-main): promote AMOF-221 candidate bundle",
+    "chore(promote-main): promote AMOF-221 candidate bundle"
+  ],
+  "files_updated": [
+    "scripts/amof/__init__.py",
+    "scripts/amof/orchestrator/__init__.py",
+    "pyproject.toml",
+    "CHANGELOG.md",
+    "README.md",
+    "docs/governed-cognition-runtime.md",
+    "docs/remote-ial.md",
+    "docs/operations/remote-ial-public-client-contract.md"
+  ],
+  "origin": "cli",
+  "dry_run": false,
+  "pushed": false,
+  "runpod_activity": {
+    "audit_path": "/home/hotshot/work/amof-operating/repos/amof/.amof/audit/runpod-pods.jsonl",
+    "window": {
+      "since_iso": "2026-05-25T14:39:57+02:00",
+      "until_iso": null
+    },
+    "counts_by_op": {},
+    "events": [],
+    "note": "audit_file_missing"
+  }
+}

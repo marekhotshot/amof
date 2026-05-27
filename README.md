@@ -6,37 +6,54 @@
 
 <p align="center"><strong>Agentic Operations Fabric</strong></p>
 
-<p align="center">Public installable CLI for governed agentic operations, bootstrap validation, and repository hygiene.</p>
+<p align="center">Governed cognition runtime with infrastructure awareness, receipts, and bounded execution.</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v2.8.0-0A7FFF.svg" alt="release v2.8.0" />
+  <img src="https://img.shields.io/badge/release-v2.8.1-0A7FFF.svg" alt="release v2.8.1" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
-AMOF v2.8.0 is a local-first CLI for adopting a repo into an evidence-first
-agent workflow. It validates the workstation, stores app-data and run evidence
+AMOF v2.8.1 is a local-first CLI for governed planning and execution around
+real repositories. It validates the workstation, stores app-data and receipts
 outside the target repo, records provider profile references, and can run
 read-only planning, bounded intake/handoff preparation, or explicitly requested
 bounded execution.
 
-AMOF is meant for platform/DevOps engineers who want an auditable local agent
-surface without pretending the tool is magic, a CI/CD replacement, or a hidden
-runtime control plane.
+AMOF is for platform and DevOps engineers who want an auditable cognition loop:
+LLM calls are workers inside a governed runtime, not the authority for source
+truth, runtime truth, or production mutation.
 
 ## What AMOF Is
 
-AMOF turns a repository into a governed local agent surface:
+AMOF turns a repository into a governed cognition runtime:
 
 - `amof check` and `amof doctor` verify the workstation and app-data layout.
 - `amof init --adopt .` binds an existing Git repo into AMOF app-data.
 - `amof setup provider ...` stores provider references, not raw secrets.
-- `amof chat plan` produces a non-executable Director proposal through remote IAL.
+- `amof chat plan` produces a non-executable proposal through remote IAL.
 - `amof chat start|ask|status|finalize` shape a bounded proposal-only intake session.
 - `amof chat approve` and `amof chat handoff` create explicit approval and handoff artifacts only.
 - `amof agent --plan` is read-only planning.
 - `amof agent --plan-execute` is bounded execution that still requires human
   review of the resulting Git diff.
+
+```text
+source repo + runtime evidence
+        |
+        v
+AMOF governance loop ---- receipts / provenance / approvals
+        |
+        v
+optional cognition worker: local model, hosted provider, or remote IAL gateway
+        |
+        v
+proposal, bounded plan, or explicitly approved execution artifact
+```
+
+AMOF owns the loop around source truth, runtime truth, receipts, and approval
+boundaries. Vendor runtimes and local models are optional cognition workers
+behind that loop.
 
 ## Why Evidence-First
 
@@ -56,7 +73,7 @@ Those belong outside the public product tree.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v2.8.0 surface:
+This public `main` intentionally keeps a narrow, installable v2.8.1 surface:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -76,7 +93,7 @@ This public `main` intentionally keeps a narrow, installable v2.8.0 surface:
 
 ## Released Public CLI Surface
 
-What works in v2.8.0:
+What works in v2.8.1:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -175,7 +192,7 @@ an explicit checkout-local virtualenv.
 Use this if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.8.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.8.1"
 ```
 
 This installs the `amof` CLI from the public GitHub tag into a pipx-managed
@@ -204,7 +221,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v2.8.0
+amof update --version v2.8.1
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -261,7 +278,7 @@ Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.8.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v2.8.1"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
@@ -279,7 +296,7 @@ message rather than fail on missing `--ecosystem/-e`.
 
 ## Bounded Worker Execution
 
-AMOF v2.8.0 includes a public default `code` runner for bounded
+AMOF v2.8.1 includes a public default `code` runner for bounded
 `amof agent --plan-execute` demos in adopted repositories. The default runner is
 limited to repository read/write tools and does not include shell, delete,
 checkpoint, commit, or push tools.
@@ -353,6 +370,21 @@ without an explicit combined CA bundle containing the system trust roots plus
 the corporate interception CA. `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` cover
 Anthropic/httpx trust; `AWS_CA_BUNDLE` covers AWS SDK trust.
 
+Remote IAL:
+
+```bash
+export AMOF_REMOTE_IAL_BASE_URL="https://ial.example.invalid"
+export AMOF_REMOTE_IAL_API_KEY="<redacted>"
+amof setup provider remote-ial --name remote-ial --activate --yes
+amof chat plan "Inspect this repo" --repo . --file README.md --max-files 1
+```
+
+The verified public contract is client-side only. The installed CLI can call a
+configured remote IAL gateway, request structured planning output, parse strict
+JSON locally, and fail closed with `ProviderError` when the response is not
+valid for the expected schema. Public AMOF does not ship the gateway, provider
+routing policy, model ladder, credentials, or deployment topology.
+
 For scripts or CI, add `--yes` to skip the confirmation prompt. Do not put an
 OpenRouter key into `ANTHROPIC_API_KEY`; provider setup stores environment
 variable references and metadata only, and live calls still require the matching
@@ -419,6 +451,8 @@ that directory as a flat app-data root.
 
 Additional public docs retained in this repo include:
 
+- `docs/governed-cognition-runtime.md`
+- `docs/remote-ial.md`
 - `docs/runbooks/install.md`
 - `docs/runbooks/happy-path-agent-workflow.md`
 - `docs/runbooks/installed-cli-bedrock.md`
@@ -433,9 +467,13 @@ Additional public docs retained in this repo include:
 
 ## Release State
 
-- `v2.8.0` is the current public release candidate target for this slice.
-- Public install and no-key adoption smoke passed from the GitHub tag.
-- The public planning pipeline now covers canonical indexed planning context, bounded intake sessions, and explicit approved handoff artifacts.
+- `v2.8.1` is the current local release tag for this slice.
+- Public install and no-key adoption smoke passed.
+- Installed `AMOF v2.8.1` completed `amof chat plan` through the verified
+  remote IAL client path against the cloud-dev gateway.
+- The public planning pipeline covers canonical indexed planning context,
+  bounded intake sessions, explicit approved handoff artifacts, and structured
+  remote IAL planning.
 - Bounded worker execution is public/demoable, but output must be reviewed as a
   Git diff before commit.
 - AMOF does not auto-commit or push bounded worker changes.
