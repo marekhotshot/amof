@@ -8,6 +8,7 @@ Replaces the broken context.py approach that produced identical output for all r
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -16,6 +17,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import yaml
+
+from ..app_config import (
+    get_context,
+    get_current_context_name,
+    load_provider_profile,
+    upsert_context,
+)
+from ..app_paths import ensure_parent_dir, provider_profiles_dir
 from ..manifest import find_repo
 from ..state import get_effective_repos
 
@@ -568,10 +578,107 @@ def profile_repo(
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+PROFILE_EXAMPLES_DIR = Path(__file__).resolve().parents[3] / "examples" / "profiles"
+PROFILE_ALLOWED_INIT = {"remote-ial-openrouter"}
+
+
+def _profile_example_path(profile_name: str) -> Path:
+    normalized = str(profile_name or "").strip()
+    if not normalized:
+        raise ValueError("profile name is required")
+    return PROFILE_EXAMPLES_DIR / f"{normalized}.yaml"
+
+
+def _load_public_profile_example(profile_name: str) -> dict[str, Any]:
+    if profile_name not in PROFILE_ALLOWED_INIT:
+        allowed = ", ".join(sorted(PROFILE_ALLOWED_INIT))
+        raise ValueError(f"unsupported public profile: {profile_name}. Supported: {allowed}")
+    example_path = _profile_example_path(profile_name)
+    if not example_path.exists():
+        raise ValueError(f"profile example not found: {example_path}")
+    payload = yaml.safe_load(example_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid profile example format: {example_path}")
+    return payload
+
+
+def _write_or_print_profile_init(profile_name: str, *, print_only: bool, force: bool) -> int:
+    payload = _load_public_profile_example(profile_name)
+    rendered = yaml.safe_dump(payload, sort_keys=False)
+    if print_only:
+        print(rendered, end="")
+        return 0
+
+    target_path = provider_profiles_dir() / f"{profile_name}.yaml"
+    if target_path.exists() and not force:
+        sys.stderr.write(
+            f"[profile] profile already exists: {target_path}\n"
+            "[profile] rerun with --force to overwrite or use --print to inspect.\n"
+        )
+        return 1
+    ensure_parent_dir(target_path).write_text(rendered, encoding="utf-8")
+    print(f"[profile] Wrote public-safe profile: {target_path}")
+    print("[profile] Stored env var names only; no secret values were written.")
+    return 0
+
+
+def _profile_use(profile_name: str) -> int:
+    normalized = str(profile_name or "").strip()
+    if not normalized:
+        sys.stderr.write("[profile] profile name is required for `amof profile use`.\n")
+        return 1
+    try:
+        profile = load_provider_profile(normalized)
+    except (FileNotFoundError, ValueError) as exc:
+        sys.stderr.write(f"[profile] {exc}\n")
+        return 1
+
+    context_name = get_current_context_name()
+    context_payload = get_context(context_name)
+    credentials = context_payload.setdefault("credentials", {})
+    if not isinstance(credentials, dict):
+        credentials = {}
+        context_payload["credentials"] = credentials
+    credentials["provider_profile_refs"] = [normalized]
+    upsert_context(context_name, context_payload)
+    print(
+        f"[profile] Active provider profile for context '{context_name}' set to '{normalized}' "
+        f"(provider={profile.get('provider', '<unknown>')})."
+    )
+    return 0
+
+
+def _handle_profile_actions(args: Any) -> int | None:
+    action = str(getattr(args, "profile_action", "") or "").strip()
+    if action == "init":
+        profile_name = str(getattr(args, "profile_name", "") or "").strip()
+        if not profile_name:
+            sys.stderr.write("Usage: amof profile init <profile-name> [--print] [--force]\n")
+            return 1
+        try:
+            return _write_or_print_profile_init(
+                profile_name,
+                print_only=bool(getattr(args, "print_profile", False)),
+                force=bool(getattr(args, "force", False)),
+            )
+        except ValueError as exc:
+            sys.stderr.write(f"[profile] {exc}\n")
+            return 1
+    if action == "use":
+        profile_name = str(getattr(args, "profile_name", "") or "").strip()
+        if not profile_name:
+            sys.stderr.write("Usage: amof profile use <profile-name>\n")
+            return 1
+        return _profile_use(profile_name)
+    return None
+
+
 def cmd_profile(
-    manifest: Dict[str, Any],
+    manifest: Dict[str, Any] | None,
     repo_name: Optional[str] = None,
     all_repos: bool = False,
+    *,
+    args: Any | None = None,
 ) -> int:
     """Generate repo profiles.
 
@@ -579,6 +686,21 @@ def cmd_profile(
     If --all, profile all repos.
     If neither, profile all repos.
     """
+    if args is not None:
+        action_result = _handle_profile_actions(args)
+        if action_result is not None:
+            return action_result
+        if repo_name is None:
+            repo_name = str(getattr(args, "profile_action", "") or "").strip() or None
+        all_repos = bool(getattr(args, "all_repos", all_repos))
+
+    if manifest is None:
+        sys.stderr.write(
+            "[profile] Repo profiling mode requires an ecosystem manifest.\n"
+            "[profile] Use `amof -e <ecosystem> profile [repo] --all` for legacy repo profiling.\n"
+        )
+        return 1
+
     repos = get_effective_repos(manifest)
 
     if repo_name:

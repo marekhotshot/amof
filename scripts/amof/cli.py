@@ -12,6 +12,8 @@ from .manifest import list_available_ecosystems
 PUBLIC_HELP_COMMANDS = (
     "check",
     "doctor",
+    "config",
+    "profile",
     "paths",
     "setup",
     "init",
@@ -49,6 +51,8 @@ def parse_args() -> argparse.Namespace:
                "  amof check                         Verify local prerequisites\n"
                "  amof doctor                        Report bootstrap readiness\n"
                "  amof setup provider --list         Show public provider templates\n"
+               "  amof profile init remote-ial-openrouter  Initialize a safe profile\n"
+               "  amof config doctor                 Verify active profile env wiring\n"
                "  amof init --adopt .                Adopt the current Git repo\n"
                "  amof chat plan \"Inspect this repo\"  Route read-only planning through remote IAL\n"
                "  amof agent --plan \"Inspect this repo\"  Run a read-only plan\n"
@@ -511,18 +515,53 @@ def parse_args() -> argparse.Namespace:
 
     # Profile command
     profile_parser = subparsers.add_parser(
-        "profile", help="Generate repo profile for agent navigation"
+        "profile", help="Initialize or select local provider profiles"
     )
     profile_parser.add_argument(
-        "repo",
+        "profile_action",
         nargs="?",
-        help="Repo name (omit for all repos)",
+        help="Action: init, use, or legacy repo name for repo profiling",
+    )
+    profile_parser.add_argument(
+        "profile_name",
+        nargs="?",
+        help="Profile name for init/use (for example: remote-ial-openrouter)",
+    )
+    profile_parser.add_argument(
+        "--print",
+        dest="print_profile",
+        action="store_true",
+        help="Print the resolved profile YAML instead of writing it",
     )
     profile_parser.add_argument(
         "--all",
         action="store_true",
         dest="all_repos",
-        help="Profile all repos in workspace",
+        help="Legacy mode: profile all repos in workspace",
+    )
+    profile_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing local profile during init",
+    )
+
+    config_parser = subparsers.add_parser(
+        "config",
+        help="Render or validate active local AMOF profile config",
+    )
+    config_sub = config_parser.add_subparsers(dest="config_cmd")
+    config_render = config_sub.add_parser(
+        "render",
+        help="Render effective profile configuration",
+    )
+    config_render.add_argument(
+        "--redacted",
+        action="store_true",
+        help="Render only non-secret values and env var names",
+    )
+    config_doctor = config_sub.add_parser(
+        "doctor",
+        help="Check active profile env-var wiring without printing secrets",
     )
 
     chat_parser = subparsers.add_parser(
@@ -566,6 +605,22 @@ def parse_args() -> argparse.Namespace:
     chat_plan.add_argument(
         "--output",
         help="Optional path outside the target repo for the emitted proposal JSON",
+    )
+    chat_plan.add_argument(
+        "--minimal-context",
+        action="store_true",
+        help="Disable canonical planning clone/indexing and use only objective + explicit --file context",
+    )
+    chat_plan.add_argument(
+        "--no-index",
+        action="store_true",
+        help="Alias for --minimal-context (skip canonical index build)",
+    )
+    chat_plan.add_argument(
+        "--max-chars-per-file",
+        type=int,
+        default=4000,
+        help="Maximum characters to include per --file in minimal-context mode (default: 4000)",
     )
     chat_start = chat_sub.add_parser(
         "start",

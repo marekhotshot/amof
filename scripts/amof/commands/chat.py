@@ -144,7 +144,7 @@ class InferenceAttribution:
     prompt_tokens: int
     completion_tokens: int
     latency_ms: int
-    estimated_cost: float
+    estimated_cost: float | None
     cost_status: str
     upstream_provider: str | None = None
     upstream_model: str | None = None
@@ -402,21 +402,30 @@ class _ChatTelemetry:
 @dataclass
 class _SessionTelemetry:
     total_cost: float = 0.0
+    observed_cost_calls: int = 0
     total_calls: int = 0
     latest_usage: InferenceAttribution | None = None
     unknown_cost_calls: int = 0
 
     def record(self, usage: InferenceAttribution) -> None:
         if usage.cost_status == "observed":
-            self.total_cost += usage.estimated_cost
+            self.total_cost += float(usage.estimated_cost or 0.0)
+            self.observed_cost_calls += 1
         else:
             self.unknown_cost_calls += 1
         self.total_calls += 1
         self.latest_usage = usage
 
     def to_dict(self) -> dict[str, Any]:
+        total_cost_value: float | None
+        if self.observed_cost_calls > 0:
+            total_cost_value = round(self.total_cost, 6)
+        elif self.unknown_cost_calls > 0:
+            total_cost_value = None
+        else:
+            total_cost_value = 0.0
         payload: dict[str, Any] = {
-            "total_cost": round(self.total_cost, 6),
+            "total_cost": total_cost_value,
             "total_calls": self.total_calls,
             "unknown_cost_calls": self.unknown_cost_calls,
         }
@@ -519,6 +528,87 @@ def _build_repo_scope(repo_path: Path, planning_context_receipt: dict[str, Any])
         f"Indexed files to inspect: {listed or '<none>'}. "
         "No shell execution, repo mutation, or editor integration is authorized."
     )
+
+
+def _build_minimal_repo_scope(repo_path: Path, focus_files: list[str]) -> str:
+    listed = ", ".join(focus_files)
+    return (
+        f"Minimal bounded planning context for {repo_path}. "
+        f"Included files: {listed or '<none>'}. "
+        "Canonical planning clone and indexer were explicitly disabled. "
+        "No shell execution, repo mutation, or editor integration is authorized."
+    )
+
+
+def _profile_context_limit_chars(profile: dict[str, Any] | None) -> tuple[int | None, str | None]:
+    candidate: str | None = None
+    if profile:
+        for key in ("context_limit_chars", "max_input_chars"):
+            value = profile.get(key)
+            if value is not None and str(value).strip():
+                candidate = str(value).strip()
+                break
+    if candidate is None:
+        env_value = os.environ.get("AMOF_REMOTE_IAL_CONTEXT_LIMIT_CHARS")
+        if env_value is not None and env_value.strip():
+            candidate = env_value.strip()
+    if candidate is None:
+        return None, None
+    try:
+        limit = int(candidate)
+    except ValueError:
+        return None, f"remote-ial context limit must be an integer (got {candidate!r})"
+    if limit <= 0:
+        return None, f"remote-ial context limit must be positive (got {candidate!r})"
+    return limit, None
+
+
+def _minimal_indexed_context(
+    repo_path: Path,
+    focus_files: list[str],
+    *,
+    max_chars_per_file: int,
+) -> str:
+    sections = ["# Minimal Context", "Canonical index disabled by operator flag.", ""]
+    for rel in focus_files:
+        file_path = (repo_path / rel).resolve(strict=False)
+        text = file_path.read_text(encoding="utf-8", errors="ignore")
+        truncated = text[:max_chars_per_file]
+        sections.extend(
+            [
+                f"## {rel}",
+                "```",
+                truncated,
+                "```",
+            ]
+        )
+        if len(text) > max_chars_per_file:
+            sections.append(f"[truncated to {max_chars_per_file} chars]")
+        sections.append("")
+    return "\n".join(sections).strip() + "\n"
+
+
+def _minimal_planning_receipt(repo_path: Path, focus_files: list[str]) -> dict[str, Any]:
+    return {
+        "receipt_kind": "planning_context_receipt_minimal",
+        "recorded_at": _now_iso(),
+        "mode": "minimal_context_no_index",
+        "source_repo_path": str(repo_path),
+        "source_git_root": str(repo_path),
+        "planning_repo_path": str(repo_path),
+        "planning_branch_ref": None,
+        "origin_main_sha": None,
+        "index_dir": None,
+        "index_path": None,
+        "tree_path": None,
+        "merkle_root": None,
+        "indexed_at": None,
+        "freshness": "minimal-context",
+        "refresh_reason": "no-index",
+        "index_refreshed": False,
+        "repo_scope": [str(repo_path)],
+        "files_to_inspect": list(focus_files),
+    }
 
 
 def _build_user_message(
@@ -649,7 +739,7 @@ def _build_inference_attribution(response: Any) -> InferenceAttribution:
         prompt_tokens=int(usage.prompt_tokens or 0),
         completion_tokens=int(usage.completion_tokens or 0),
         latency_ms=int(usage.latency_ms or 0),
-        estimated_cost=float(usage.estimated_cost or 0.0) if cost_status == "observed" else 0.0,
+        estimated_cost=float(usage.estimated_cost or 0.0) if cost_status == "observed" else None,
         cost_status=cost_status,
         upstream_provider=usage.upstream_provider,
         upstream_model=usage.upstream_model,
@@ -1552,6 +1642,8 @@ def plan_read_only_chat(
     max_files: int = DEFAULT_MAX_FILES,
     max_chars_per_file: int = DEFAULT_MAX_CHARS_PER_FILE,
     model: str | None = None,
+    minimal_context: bool = False,
+    no_index: bool = False,
 ) -> ChatPlanResult:
     repo_path = _normalize_repo_path(repo)
     if max_files <= 0:
@@ -1563,29 +1655,54 @@ def plan_read_only_chat(
     cfg = _load_agent_config(repo_path)
     evidence_policy = _resolve_evidence_policy(cfg)
     client = _build_remote_ial_client(model_override=model)
+    profile = _active_remote_ial_profile()
+    minimal_mode = bool(minimal_context or no_index)
     focus_files = _normalize_focus_files(repo_path, files, max_files=max_files)
-    try:
-        planning_context = build_canonical_planning_context(
-            repo=repo_path,
-            objective=objective_text,
-            indexer_llm=client,
-            planner_provenance=_planning_provenance(model),
-            max_files=max_files,
+    if minimal_mode and not focus_files:
+        raise ChatPlanError("--minimal-context requires at least one --file path.")
+    if minimal_mode:
+        planning_receipt_payload = _minimal_planning_receipt(repo_path, focus_files)
+        context_prompt = _minimal_indexed_context(
+            repo_path,
+            focus_files,
+            max_chars_per_file=max_chars_per_file,
         )
-    except PlanningContextError as exc:
-        raise ChatPlanError(str(exc)) from exc
-    planning_receipt_payload = planning_context.receipt.to_dict()
-    if focus_files:
-        planning_receipt_payload["files_to_inspect"] = focus_files
-    repo_scope = _build_repo_scope(repo_path, planning_receipt_payload)
+        repo_scope = _build_minimal_repo_scope(repo_path, focus_files)
+    else:
+        try:
+            planning_context = build_canonical_planning_context(
+                repo=repo_path,
+                objective=objective_text,
+                indexer_llm=client,
+                planner_provenance=_planning_provenance(model),
+                max_files=max_files,
+            )
+        except PlanningContextError as exc:
+            raise ChatPlanError(str(exc)) from exc
+        planning_receipt_payload = planning_context.receipt.to_dict()
+        if focus_files:
+            planning_receipt_payload["files_to_inspect"] = focus_files
+        context_prompt = planning_context.context_prompt
+        repo_scope = _build_repo_scope(repo_path, planning_receipt_payload)
     user_message = _build_user_message(
         objective=objective_text,
         repo_path=repo_path,
         ticket_id=ticket_id,
         repo_scope=repo_scope,
         planning_context_receipt=planning_receipt_payload,
-        context_prompt=planning_context.context_prompt,
+        context_prompt=context_prompt,
     )
+    context_limit_chars, context_limit_error = _profile_context_limit_chars(profile)
+    if context_limit_error:
+        raise ChatPlanError(context_limit_error)
+    if context_limit_chars is not None:
+        projected_chars = len(SYSTEM_PROMPT) + len(user_message)
+        if projected_chars > context_limit_chars:
+            raise ChatPlanError(
+                "projected planning context exceeds configured limit before provider call: "
+                f"{projected_chars} chars > {context_limit_chars} chars. "
+                "Use fewer --file inputs, lower --max-chars-per-file, or adjust the profile context limit."
+            )
 
     session = Session(mode="plan")
     session.goal = objective_text
@@ -1695,9 +1812,9 @@ def plan_read_only_chat(
     )
 
     plan_result_path = session_dir / "plan-result.json"
-    planning_context_receipt_path = write_planning_context_receipt(
+    planning_context_receipt_path = _write_json(
         session_dir / "planning-context-receipt.json",
-        planning_context.receipt,
+        planning_receipt_payload,
     )
     stored_payload = _sanitize_evidence_value(result.to_dict(), mode=evidence_policy["messages"])
     plan_result_path.write_text(json.dumps(stored_payload, indent=2) + "\n", encoding="utf-8")
@@ -1749,7 +1866,10 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 ticket_id=getattr(args, "ticket_id", None),
                 files=getattr(args, "files", None),
                 max_files=int(getattr(args, "max_files", DEFAULT_MAX_FILES)),
+                max_chars_per_file=int(getattr(args, "max_chars_per_file", DEFAULT_MAX_CHARS_PER_FILE)),
                 model=getattr(args, "model", None),
+                minimal_context=bool(getattr(args, "minimal_context", False)),
+                no_index=bool(getattr(args, "no_index", False)),
             )
             rendered = json.dumps(result.to_dict(), indent=2)
             if output_path is not None:

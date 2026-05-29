@@ -26,6 +26,7 @@ NO_ECOSYSTEM_COMMANDS = {
     "release",
     "troubleshoot",
     "doctor",
+    "config",
     "bootstrap",
     "paths",
     "setup",
@@ -175,6 +176,7 @@ cmd_troubleshoot = _lazy_command("troubleshoot", "cmd_troubleshoot")
 cmd_doctor = _lazy_command("doctor", "cmd_doctor")
 cmd_bootstrap = _lazy_command("bootstrap", "cmd_bootstrap")
 cmd_help = _lazy_command("help_cmd", "cmd_help")
+cmd_config = _lazy_command("config", "cmd_config")
 cmd_setup = _lazy_command("setup", "cmd_setup")
 cmd_update = _lazy_command("update", "cmd_update")
 cmd_uninstall = _lazy_command("uninstall", "cmd_uninstall")
@@ -233,6 +235,8 @@ def main() -> None:
             sys.exit(cmd_troubleshoot(manifest))
         if args.command == "doctor":
             sys.exit(cmd_doctor(args))
+        if args.command == "config":
+            sys.exit(cmd_config(args))
         if args.command == "bootstrap":
             sys.exit(cmd_bootstrap(args))
         if args.command == "paths":
@@ -388,6 +392,9 @@ def main() -> None:
                 sys.stderr.write("Usage: amof ticket <preflight|start|list|status|checkpoint|switch|end|env>\n")
                 sys.exit(1)
 
+    if args.command == "profile" and str(getattr(args, "profile_action", "") or "").strip() in {"init", "use"}:
+        sys.exit(cmd_profile(None, args=args))
+
     if not ecosystem:
         ecosystem = _resolve_adopted_repo_ecosystem()
 
@@ -427,7 +434,14 @@ def main() -> None:
         sys.exit(cmd_context(manifest, args.service, args.context_types, args.output_format, args.incremental))
 
     if args.command == "profile":
-        sys.exit(cmd_profile(manifest, getattr(args, "repo", None), getattr(args, "all_repos", False)))
+        sys.exit(
+            cmd_profile(
+                manifest,
+                getattr(args, "profile_action", None),
+                getattr(args, "all_repos", False),
+                args=args,
+            )
+        )
 
     if args.command == "eval":
         from amof.commands.eval_cmd import cmd_eval

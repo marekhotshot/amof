@@ -95,6 +95,36 @@ def _remote_ial_success_payload(*, ticket_id: str = "AMOF-CHAT-001") -> dict[str
     }
 
 
+def _remote_ial_unknown_cost_payload(*, ticket_id: str = "AMOF-CHAT-UNKNOWN") -> dict[str, object]:
+    return {
+        "text": json.dumps(
+            {
+                "ticket_id": ticket_id,
+                "proposed_ticket_id": None,
+                "proposed_steps": [
+                    "Read only the supplied bounded files.",
+                ],
+                "risks": [
+                    "Bounded context can miss cross-repo dependencies.",
+                ],
+                "validation_plan": [
+                    "Confirm this stays proposal-only and requires explicit approval.",
+                ],
+                "execution_prompt_for_director": (
+                    "Prepare a Director intake proposal from this PlanPacket only. "
+                    "Await user approval before any execution flow."
+                ),
+                "execution_allowed": False,
+            }
+        ),
+        "provider": "openrouter",
+        "model": "openai/gpt-4o-mini",
+        "request_id": "req-chat-unknown",
+        "tokens": {"input": 60, "output": 20},
+        "latency_ms": 27,
+    }
+
+
 def _fake_planning_context(repo: Path) -> object:
     receipt_payload = {
         "receipt_kind": "planning_context_receipt",
@@ -259,6 +289,87 @@ class ChatPlanningTests(unittest.TestCase):
             self.assertNotIn(secret_objective, artifact_text)
             self.assertIn("sha256", artifact_text)
             self.assertIsNone(result.evidence["journal_path"])
+
+    def test_minimal_context_mode_skips_canonical_index_builder(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-chat-plan-minimal-") as td:
+            temp = Path(td)
+            repo = temp / "repo"
+            repo.mkdir()
+            (repo / "context.md").write_text("# Context\nbounded\n", encoding="utf-8")
+            amof_home = temp / "amof-home"
+            _write_remote_ial_profile(amof_home)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "AMOF_HOME": str(amof_home),
+                    "AMOF_REMOTE_IAL_BASE_URL": "https://ial.example.test",
+                    "AMOF_REMOTE_IAL_API_KEY": "unit-test-token",
+                    "AMOF_REMOTE_IAL_CONTEXT_LIMIT_CHARS": "20000",
+                },
+                clear=False,
+            ):
+                with patch.object(
+                    chat,
+                    "build_canonical_planning_context",
+                    side_effect=AssertionError("canonical planning context should be skipped"),
+                ):
+                    with patch(
+                        "amof.orchestrator.llm.remote_ial.requests.post",
+                        return_value=_FakeHTTPResponse(200, _remote_ial_success_payload(ticket_id="AMOF-CHAT-MINIMAL")),
+                    ):
+                        result = chat.plan_read_only_chat(
+                            objective="Return a bounded next-action checklist.",
+                            repo=repo,
+                            ticket_id="AMOF-CHAT-MINIMAL",
+                            files=["context.md"],
+                            minimal_context=True,
+                        )
+
+            receipt_payload = json.loads(Path(result.evidence["planning_context_receipt_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(receipt_payload["mode"], "minimal_context_no_index")
+            self.assertEqual(receipt_payload["files_to_inspect"], ["context.md"])
+
+    def test_unknown_cost_does_not_render_zero_in_plan_result(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-chat-plan-unknown-cost-") as td:
+            temp = Path(td)
+            repo = temp / "repo"
+            repo.mkdir()
+            (repo / "context.md").write_text("# Context\nbounded\n", encoding="utf-8")
+            amof_home = temp / "amof-home"
+            _write_remote_ial_profile(amof_home)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "AMOF_HOME": str(amof_home),
+                    "AMOF_REMOTE_IAL_BASE_URL": "https://ial.example.test",
+                    "AMOF_REMOTE_IAL_API_KEY": "unit-test-token",
+                    "AMOF_REMOTE_IAL_CONTEXT_LIMIT_CHARS": "20000",
+                },
+                clear=False,
+            ):
+                with patch.object(
+                    chat,
+                    "build_canonical_planning_context",
+                    side_effect=AssertionError("canonical planning context should be skipped"),
+                ):
+                    with patch(
+                        "amof.orchestrator.llm.remote_ial.requests.post",
+                        return_value=_FakeHTTPResponse(200, _remote_ial_unknown_cost_payload()),
+                    ):
+                        result = chat.plan_read_only_chat(
+                            objective="Return bounded checklist with unknown provider cost.",
+                            repo=repo,
+                            ticket_id="AMOF-CHAT-UNKNOWN",
+                            files=["context.md"],
+                            minimal_context=True,
+                        )
+
+            self.assertIsNone(result.inference.estimated_cost)
+            plan_result_text = Path(result.evidence["plan_result_path"]).read_text(encoding="utf-8")
+            self.assertIn('"estimated_cost": null', plan_result_text)
+            self.assertNotIn('"estimated_cost": 0.0', plan_result_text)
 
 
 if __name__ == "__main__":
