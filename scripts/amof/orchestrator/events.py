@@ -19,13 +19,27 @@ from amof.app_paths import runs_dir as default_runs_dir
 class EventLog:
     """Append-only JSONL event logger for a single session."""
 
-    def __init__(self, session_id: Optional[str] = None, runs_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        session_id: Optional[str] = None,
+        runs_dir: Optional[Path] = None,
+        *,
+        run_id: Optional[str] = None,
+        ticket_id: Optional[str] = None,
+        planning_mode: Optional[str] = None,
+        actor: str = "amof.chat",
+    ):
         self.session_id = session_id or datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        self.run_id = str(run_id or self.session_id)
+        self.ticket_id = str(ticket_id).strip() if ticket_id is not None else None
+        self.planning_mode = str(planning_mode).strip() if planning_mode is not None else None
+        self.actor = actor
         self._runs_dir = runs_dir or default_runs_dir()
         self._session_dir = self._runs_dir / self.session_id
         self._session_dir.mkdir(parents=True, exist_ok=True)
         self._log_path = self._session_dir / "events.jsonl"
         self._events: List[Dict[str, Any]] = []
+        self._event_counter = 0
 
     @property
     def session_dir(self) -> Path:
@@ -37,8 +51,24 @@ class EventLog:
 
     def log(self, event_type: str, **payload: Any) -> Dict[str, Any]:
         """Log an event. Returns the event dict."""
+        self._event_counter += 1
+        timestamp = datetime.now(timezone.utc).isoformat()
+        severity = str(payload.pop("severity", "info") or "info")
+        actor = str(payload.pop("actor", self.actor) or self.actor)
+        ticket_id = payload.pop("ticket_id", self.ticket_id)
+        planning_mode = payload.pop("planning_mode", self.planning_mode)
         event = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "event_id": f"{self.run_id}:{self._event_counter:04d}",
+            "run_id": self.run_id,
+            "session_id": self.session_id,
+            "timestamp": timestamp,
+            "event_type": event_type,
+            "severity": severity,
+            "actor": actor,
+            "ticket_id": ticket_id,
+            "planning_mode": planning_mode,
+            # Legacy aliases retained for existing readers/tests.
+            "ts": timestamp,
             "type": event_type,
             **payload,
         }
@@ -90,7 +120,6 @@ class EventLog:
             "policy_decision",
             "input_hash",
             "output_hash",
-            "provider_generation_id",
             "provider_generation_ref",
         ):
             value = extra.get(key)
@@ -496,16 +525,28 @@ class EventLog:
         # Create instance without triggering directory creation
         instance = object.__new__(cls)
         instance.session_id = session_id
+        instance.run_id = session_id
+        instance.ticket_id = None
+        instance.planning_mode = None
+        instance.actor = "amof.chat"
         instance._runs_dir = log_path.parent.parent
         instance._session_dir = log_path.parent
         instance._log_path = log_path
         instance._events = []
+        instance._event_counter = 0
 
         if log_path.exists():
             for line in log_path.read_text(encoding="utf-8").strip().split("\n"):
                 if line.strip():
                     try:
-                        instance._events.append(json.loads(line))
+                        event = json.loads(line)
+                        instance._events.append(event)
+                        if isinstance(event.get("event_id"), str):
+                            maybe_counter = str(event["event_id"]).split(":")[-1]
+                            if maybe_counter.isdigit():
+                                instance._event_counter = max(instance._event_counter, int(maybe_counter))
+                        if isinstance(event.get("run_id"), str) and event.get("run_id"):
+                            instance.run_id = event["run_id"]
                     except json.JSONDecodeError:
                         pass
         return instance

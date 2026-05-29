@@ -394,7 +394,6 @@ class _ChatTelemetry:
             "upstream_model": self.usage.upstream_model,
             "input_hash": self.usage.input_hash,
             "output_hash": self.usage.output_hash,
-            "provider_generation_id": self.usage.provider_generation_id,
             "provider_generation_ref": self.usage.provider_generation_ref,
         }
 
@@ -434,7 +433,6 @@ class _SessionTelemetry:
                     "input_hash": self.latest_usage.input_hash,
                     "output_hash": self.latest_usage.output_hash,
                     "cost_status": self.latest_usage.cost_status,
-                    "provider_generation_id": self.latest_usage.provider_generation_id,
                     "provider_generation_ref": self.latest_usage.provider_generation_ref,
                 }
             )
@@ -925,6 +923,11 @@ def _call_remote_ial_json(
     events: EventLog | None = None,
     telemetry: _SessionTelemetry | None = None,
 ) -> tuple[dict[str, Any], InferenceAttribution]:
+    if events is not None:
+        events.log(
+            "ial_request_started",
+            model=getattr(client, "_model", None),
+        )
     try:
         response = client.chat(
             system=system_prompt,
@@ -952,6 +955,23 @@ def _call_remote_ial_json(
     if telemetry is not None:
         telemetry.record(inference)
     if events is not None:
+        events.log(
+            "ial_request_finished",
+            provider=inference.transport_provider,
+            upstream_provider=inference.upstream_provider,
+            upstream_model=inference.upstream_model,
+            request_id=inference.request_id,
+            cost_status=inference.cost_status,
+            estimated_cost=(
+                round(float(inference.estimated_cost), 6)
+                if inference.cost_status == "observed"
+                else None
+            ),
+            tokens_in=inference.prompt_tokens,
+            tokens_out=inference.completion_tokens,
+            receipt_ref=inference.provider_generation_ref,
+        )
+    if events is not None:
         events.llm_call(
             model=inference.resolved_model,
             prompt_tokens=inference.prompt_tokens,
@@ -966,7 +986,6 @@ def _call_remote_ial_json(
             input_hash=inference.input_hash,
             output_hash=inference.output_hash,
             cost_status=inference.cost_status,
-            provider_generation_id=inference.provider_generation_id,
             provider_generation_ref=inference.provider_generation_ref,
         )
     return _extract_json_object(response.text), inference
@@ -1705,35 +1724,31 @@ def plan_read_only_chat(
     session.goal = objective_text
     session.ecosystem = repo_path.name
     session.add_user_message(objective_text)
-    events = EventLog(session_id=session.id, runs_dir=runs_dir() / "chat-plans")
+    planning_mode = str(planning_receipt_payload.get("planning_mode") or "canonical_context")
+    events = EventLog(
+        session_id=session.id,
+        runs_dir=runs_dir() / "chat-plans",
+        run_id=session.id,
+        ticket_id=ticket_id,
+        planning_mode=planning_mode,
+    )
+    events.log("run_created")
+    events.log(
+        "planning_mode_selected",
+        planning_mode=planning_mode,
+        repo_path=str(repo_path),
+    )
+    for rel in list(planning_receipt_payload.get("files_to_inspect") or []):
+        events.log("context_file_loaded", context_file=rel)
     events.session_start(mode="chat-plan", goal=objective_text, ecosystem=repo_path.name)
     events.user_message(objective_text)
 
-    try:
-        response = client.chat(
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-            max_tokens=4096,
-            temperature=0.0,
-        )
-    except ProviderError as exc:
-        events.error(
-            "provider_error",
-            str(exc),
-            fatal=True,
-            provider=exc.provider,
-            status_code=exc.status_code,
-            failure_class=exc.failure_class,
-            request_id=exc.request_id,
-            upstream_provider=exc.upstream_provider,
-            upstream_model=exc.upstream_model,
-            input_hash=exc.input_hash,
-            output_hash=exc.output_hash,
-        )
-        raise ChatPlanError(str(exc)) from exc
-
-    inference = _build_inference_attribution(response)
-    payload = _extract_json_object(response.text)
+    payload, inference = _call_remote_ial_json(
+        client=client,
+        system_prompt=SYSTEM_PROMPT,
+        user_message=user_message,
+        events=events,
+    )
     _assert_execution_allowed_false(payload)
     normalized_ticket_id = ticket_id or _optional_string(payload, "ticket_id")
     proposed_ticket_id = None if normalized_ticket_id else _optional_string(payload, "proposed_ticket_id")
@@ -1760,23 +1775,6 @@ def plan_read_only_chat(
 
     response_json = json.dumps(packet.to_dict(), indent=2)
     session.add_assistant_message(content=response_json)
-    events.llm_call(
-        model=inference.resolved_model,
-        prompt_tokens=inference.prompt_tokens,
-        completion_tokens=inference.completion_tokens,
-        cost=inference.estimated_cost if inference.cost_status == "observed" else None,
-        latency_ms=inference.latency_ms,
-        provider=inference.transport_provider,
-        upstream_provider=inference.upstream_provider,
-        upstream_model=inference.upstream_model,
-        request_id=inference.request_id,
-        policy_decision=inference.policy_decision,
-        input_hash=inference.input_hash,
-        output_hash=inference.output_hash,
-        cost_status=inference.cost_status,
-        provider_generation_id=inference.provider_generation_id,
-        provider_generation_ref=inference.provider_generation_ref,
-    )
     events.agent_response(content=packet.execution_prompt_for_director)
 
     telemetry = _ChatTelemetry(usage=inference)
@@ -1813,6 +1811,11 @@ def plan_read_only_chat(
         session_dir / "planning-context-receipt.json",
         planning_context.receipt,
     )
+    events.log(
+        "planning_context_receipt_written",
+        receipt_ref=str(planning_context_receipt_path),
+        files_to_inspect=list(planning_receipt_payload.get("files_to_inspect") or []),
+    )
     stored_payload = _sanitize_evidence_value(result.to_dict(), mode=evidence_policy["messages"])
     plan_result_path.write_text(json.dumps(stored_payload, indent=2) + "\n", encoding="utf-8")
     journal_path = _write_chat_journal(
@@ -1837,7 +1840,21 @@ def plan_read_only_chat(
         evidence=evidence_with_artifact,
     )
 
-    events.session_end(telemetry.to_dict())
+    telemetry_payload = telemetry.to_dict()
+    events.session_end(telemetry_payload)
+    events.log(
+        "run_finished",
+        cost_status=inference.cost_status,
+        estimated_cost=(
+            round(float(inference.estimated_cost), 6)
+            if inference.cost_status == "observed"
+            else None
+        ),
+        tokens_in=inference.prompt_tokens,
+        tokens_out=inference.completion_tokens,
+        receipt_ref=str(planning_context_receipt_path),
+        result_kind=result.result_kind,
+    )
     return result
 
 
