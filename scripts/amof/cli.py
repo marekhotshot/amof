@@ -564,6 +564,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional remote-IAL model override; defaults to the active provider profile",
     )
     chat_plan.add_argument(
+        "--minimal-context",
+        action="store_true",
+        help="Bypass canonical planning context/indexer and use only objective plus explicit --file context",
+    )
+    chat_plan.add_argument(
         "--output",
         help="Optional path outside the target repo for the emitted proposal JSON",
     )

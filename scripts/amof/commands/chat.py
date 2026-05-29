@@ -509,6 +509,110 @@ def _normalize_focus_files(
     return normalized
 
 
+@dataclass
+class _MinimalPlanningContextReceipt:
+    receipt_kind: str
+    recorded_at: str
+    source_repo_path: str
+    planning_repo_path: str
+    merkle_root: str
+    freshness: str
+    refresh_reason: str
+    index_refreshed: bool
+    files_to_inspect: list[str]
+    planner_provenance: dict[str, Any]
+    planning_mode: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class _MinimalPlanningContext:
+    receipt: _MinimalPlanningContextReceipt
+    context_prompt: str
+
+
+def _build_minimal_context_prompt(
+    *,
+    repo_path: Path,
+    objective_text: str,
+    focus_files: list[str],
+    max_chars_per_file: int,
+) -> str:
+    lines = [
+        "# Minimal Context (No Indexer)",
+        "minimal_context_mode: true",
+        f"repo_path: {repo_path}",
+        "",
+        "## Objective",
+        objective_text,
+        "",
+        "## Explicit Files",
+    ]
+    if not focus_files:
+        lines.extend(
+            [
+                "- <none supplied>",
+                "- No indexed codebase context is available in minimal mode.",
+            ]
+        )
+        return "\n".join(lines).strip() + "\n"
+    for rel in focus_files:
+        candidate = (repo_path / rel).resolve(strict=False)
+        if not _is_relative_to(candidate, repo_path):
+            raise ChatPlanError(f"context file must stay under repo path: {rel}")
+        if not candidate.exists():
+            raise ChatPlanError(f"context file not found: {rel}")
+        if not candidate.is_file():
+            raise ChatPlanError(f"context path must be a file: {rel}")
+        text = candidate.read_text(encoding="utf-8")
+        clipped = text[:max_chars_per_file]
+        truncated = len(text) > len(clipped)
+        lines.extend(
+            [
+                "",
+                f"### {rel}",
+                f"chars_read={len(clipped)}",
+                f"truncated={'true' if truncated else 'false'}",
+                "```",
+                clipped,
+                "```",
+            ]
+        )
+    return "\n".join(lines).strip() + "\n"
+
+
+def _build_minimal_planning_context(
+    *,
+    repo_path: Path,
+    objective_text: str,
+    focus_files: list[str],
+    model: str | None,
+    max_chars_per_file: int,
+) -> _MinimalPlanningContext:
+    receipt = _MinimalPlanningContextReceipt(
+        receipt_kind="planning_context_receipt",
+        recorded_at=_now_iso(),
+        source_repo_path=str(repo_path),
+        planning_repo_path=str(repo_path),
+        merkle_root="minimal-context-not-computed",
+        freshness="minimal_context",
+        refresh_reason="minimal_context",
+        index_refreshed=False,
+        files_to_inspect=list(focus_files),
+        planner_provenance=_planning_provenance(model),
+        planning_mode="minimal_context",
+    )
+    context_prompt = _build_minimal_context_prompt(
+        repo_path=repo_path,
+        objective_text=objective_text,
+        focus_files=focus_files,
+        max_chars_per_file=max_chars_per_file,
+    )
+    return _MinimalPlanningContext(receipt=receipt, context_prompt=context_prompt)
+
+
 def _build_repo_scope(repo_path: Path, planning_context_receipt: dict[str, Any]) -> str:
     listed = ", ".join(planning_context_receipt.get("files_to_inspect") or [])
     return (
@@ -1551,6 +1655,7 @@ def plan_read_only_chat(
     files: list[str] | None = None,
     max_files: int = DEFAULT_MAX_FILES,
     max_chars_per_file: int = DEFAULT_MAX_CHARS_PER_FILE,
+    minimal_context: bool = False,
     model: str | None = None,
 ) -> ChatPlanResult:
     repo_path = _normalize_repo_path(repo)
@@ -1564,16 +1669,25 @@ def plan_read_only_chat(
     evidence_policy = _resolve_evidence_policy(cfg)
     client = _build_remote_ial_client(model_override=model)
     focus_files = _normalize_focus_files(repo_path, files, max_files=max_files)
-    try:
-        planning_context = build_canonical_planning_context(
-            repo=repo_path,
-            objective=objective_text,
-            indexer_llm=client,
-            planner_provenance=_planning_provenance(model),
-            max_files=max_files,
+    if minimal_context:
+        planning_context = _build_minimal_planning_context(
+            repo_path=repo_path,
+            objective_text=objective_text,
+            focus_files=focus_files,
+            model=model,
+            max_chars_per_file=max_chars_per_file,
         )
-    except PlanningContextError as exc:
-        raise ChatPlanError(str(exc)) from exc
+    else:
+        try:
+            planning_context = build_canonical_planning_context(
+                repo=repo_path,
+                objective=objective_text,
+                indexer_llm=client,
+                planner_provenance=_planning_provenance(model),
+                max_files=max_files,
+            )
+        except PlanningContextError as exc:
+            raise ChatPlanError(str(exc)) from exc
     planning_receipt_payload = planning_context.receipt.to_dict()
     if focus_files:
         planning_receipt_payload["files_to_inspect"] = focus_files
@@ -1749,6 +1863,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 ticket_id=getattr(args, "ticket_id", None),
                 files=getattr(args, "files", None),
                 max_files=int(getattr(args, "max_files", DEFAULT_MAX_FILES)),
+                minimal_context=bool(getattr(args, "minimal_context", False)),
                 model=getattr(args, "model", None),
             )
             rendered = json.dumps(result.to_dict(), indent=2)
