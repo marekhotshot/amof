@@ -1,0 +1,17 @@
+name: remote-ial-openrouter
+provider: remote-ial
+lane: planner
+model_family: remote-ial
+model_env: AMOF_REMOTE_IAL_MODEL
+default_model: openai/gpt-4o-mini
+credential_refs:
+  api_key_env: AMOF_REMOTE_IAL_API_KEY
+  base_url_env: AMOF_REMOTE_IAL_BASE_URL
+timeout_seconds: 90.0
+redaction_policy:
+  record_secret_names_only: true
+allow_direct_git_write: false
+status: private_gateway_contract_only
+notes:
+  - OpenRouter is upstream behind private IAL; this public profile stores env var names only.
+  - Cost truth uses cost_status=observed|unknown; missing provider cost is never represented as 0.0.

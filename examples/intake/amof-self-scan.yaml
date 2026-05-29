@@ -1,0 +1,28 @@
+id: amof-self-scan
+version: "1.0.0"
+kind: bounded_intake_task
+ticket_id: AMOF-ULTRAPLAN-300-RUNTIME-AUTHORITY-001
+rough_intent: Scan the public AMOF repo for runtime-authority readiness.
+bounded_goal: Produce a planning-only inventory; no mutations.
+task_kind: other
+repo_scope:
+  - .
+paths_to_inspect:
+  - docs/
+  - scripts/amof/
+  - contracts/
+  - templates/provider-profiles/
+profile_ref: remote-ial-openrouter
+mutations:
+  allowed: []
+  forbidden:
+    - edit
+    - deploy
+    - promote
+    - push
+validation_gates:
+  - name: read_only
+    requirement: Intake remains planning-only.
+    failure_action: stop
+cost_truth_policy:
+  missing_cost_representation: unknown
