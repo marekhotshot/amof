@@ -145,12 +145,15 @@ class InferenceAttribution:
     completion_tokens: int
     latency_ms: int
     estimated_cost: float
+    cost_status: str
     upstream_provider: str | None = None
     upstream_model: str | None = None
     request_id: str | None = None
     policy_decision: dict[str, Any] | None = None
     input_hash: str | None = None
     output_hash: str | None = None
+    provider_generation_id: str | None = None
+    provider_generation_ref: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -374,8 +377,12 @@ class _ChatTelemetry:
     usage: InferenceAttribution
 
     def to_dict(self) -> dict[str, Any]:
+        total_cost: float | None = (
+            self.usage.estimated_cost if self.usage.cost_status == "observed" else None
+        )
         return {
-            "total_cost": self.usage.estimated_cost,
+            "total_cost": total_cost,
+            "cost_status": self.usage.cost_status,
             "total_calls": 1,
             "provider": self.usage.transport_provider,
             "resolved_model": self.usage.resolved_model,
@@ -387,6 +394,8 @@ class _ChatTelemetry:
             "upstream_model": self.usage.upstream_model,
             "input_hash": self.usage.input_hash,
             "output_hash": self.usage.output_hash,
+            "provider_generation_id": self.usage.provider_generation_id,
+            "provider_generation_ref": self.usage.provider_generation_ref,
         }
 
 
@@ -395,9 +404,13 @@ class _SessionTelemetry:
     total_cost: float = 0.0
     total_calls: int = 0
     latest_usage: InferenceAttribution | None = None
+    unknown_cost_calls: int = 0
 
     def record(self, usage: InferenceAttribution) -> None:
-        self.total_cost += usage.estimated_cost
+        if usage.cost_status == "observed":
+            self.total_cost += usage.estimated_cost
+        else:
+            self.unknown_cost_calls += 1
         self.total_calls += 1
         self.latest_usage = usage
 
@@ -405,6 +418,7 @@ class _SessionTelemetry:
         payload: dict[str, Any] = {
             "total_cost": round(self.total_cost, 6),
             "total_calls": self.total_calls,
+            "unknown_cost_calls": self.unknown_cost_calls,
         }
         if self.latest_usage is not None:
             payload.update(
@@ -419,6 +433,9 @@ class _SessionTelemetry:
                     "upstream_model": self.latest_usage.upstream_model,
                     "input_hash": self.latest_usage.input_hash,
                     "output_hash": self.latest_usage.output_hash,
+                    "cost_status": self.latest_usage.cost_status,
+                    "provider_generation_id": self.latest_usage.provider_generation_id,
+                    "provider_generation_ref": self.latest_usage.provider_generation_ref,
                 }
             )
         return payload
@@ -622,19 +639,26 @@ def _build_inference_attribution(response: Any) -> InferenceAttribution:
     usage = response.usage
     if usage is None:
         raise ChatPlanError("remote IAL did not return usage metadata for the planning call.")
+    cost_observed = bool(getattr(usage, "cost_observed", True))
+    cost_status = str(getattr(usage, "cost_status", "observed") or "observed")
+    if not cost_observed:
+        cost_status = "unknown"
     return InferenceAttribution(
         transport_provider=str(usage.provider or "remote-ial"),
         resolved_model=str(usage.model or "remote-ial"),
         prompt_tokens=int(usage.prompt_tokens or 0),
         completion_tokens=int(usage.completion_tokens or 0),
         latency_ms=int(usage.latency_ms or 0),
-        estimated_cost=float(usage.estimated_cost or 0.0),
+        estimated_cost=float(usage.estimated_cost or 0.0) if cost_status == "observed" else 0.0,
+        cost_status=cost_status,
         upstream_provider=usage.upstream_provider,
         upstream_model=usage.upstream_model,
         request_id=usage.request_id,
         policy_decision=usage.policy_decision,
         input_hash=usage.input_hash,
         output_hash=usage.output_hash,
+        provider_generation_id=getattr(usage, "provider_generation_id", None),
+        provider_generation_ref=getattr(usage, "provider_generation_ref", None),
     )
 
 
@@ -828,7 +852,7 @@ def _call_remote_ial_json(
             model=inference.resolved_model,
             prompt_tokens=inference.prompt_tokens,
             completion_tokens=inference.completion_tokens,
-            cost=inference.estimated_cost,
+            cost=inference.estimated_cost if inference.cost_status == "observed" else None,
             latency_ms=inference.latency_ms,
             provider=inference.transport_provider,
             upstream_provider=inference.upstream_provider,
@@ -837,6 +861,9 @@ def _call_remote_ial_json(
             policy_decision=inference.policy_decision,
             input_hash=inference.input_hash,
             output_hash=inference.output_hash,
+            cost_status=inference.cost_status,
+            provider_generation_id=inference.provider_generation_id,
+            provider_generation_ref=inference.provider_generation_ref,
         )
     return _extract_json_object(response.text), inference
 
@@ -1623,7 +1650,7 @@ def plan_read_only_chat(
         model=inference.resolved_model,
         prompt_tokens=inference.prompt_tokens,
         completion_tokens=inference.completion_tokens,
-        cost=inference.estimated_cost,
+        cost=inference.estimated_cost if inference.cost_status == "observed" else None,
         latency_ms=inference.latency_ms,
         provider=inference.transport_provider,
         upstream_provider=inference.upstream_provider,
@@ -1632,6 +1659,9 @@ def plan_read_only_chat(
         policy_decision=inference.policy_decision,
         input_hash=inference.input_hash,
         output_hash=inference.output_hash,
+        cost_status=inference.cost_status,
+        provider_generation_id=inference.provider_generation_id,
+        provider_generation_ref=inference.provider_generation_ref,
     )
     events.agent_response(content=packet.execution_prompt_for_director)
 

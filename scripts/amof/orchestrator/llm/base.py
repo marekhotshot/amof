@@ -29,6 +29,10 @@ class Usage:
     policy_decision: Optional[Dict[str, Any]] = None
     input_hash: Optional[str] = None
     output_hash: Optional[str] = None
+    cost_status: str = "observed"
+    cost_observed: bool = True
+    provider_generation_id: Optional[str] = None
+    provider_generation_ref: Optional[str] = None
 
     @property
     def total_tokens(self) -> int:

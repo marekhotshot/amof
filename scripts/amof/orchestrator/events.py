@@ -61,16 +61,23 @@ class EventLog:
         model: str,
         prompt_tokens: int,
         completion_tokens: int,
-        cost: float,
+        cost: float | None,
         latency_ms: int,
         tool_calls_count: int = 0,
         **extra: Any,
     ) -> Dict[str, Any]:
         """Log an LLM API call."""
+        raw_cost_status = str(extra.get("cost_status") or "").strip().lower()
+        cost_status = (
+            raw_cost_status
+            if raw_cost_status in {"observed", "unknown"}
+            else ("observed" if cost is not None else "unknown")
+        )
         payload: Dict[str, Any] = {
             "model": model,
             "tokens": {"in": prompt_tokens, "out": completion_tokens},
-            "cost": round(cost, 6),
+            "cost": round(float(cost), 6) if cost is not None else None,
+            "cost_status": cost_status,
             "latency_ms": latency_ms,
             "tool_calls": tool_calls_count,
         }
@@ -83,6 +90,8 @@ class EventLog:
             "policy_decision",
             "input_hash",
             "output_hash",
+            "provider_generation_id",
+            "provider_generation_ref",
         ):
             value = extra.get(key)
             if value is not None:
@@ -332,7 +341,11 @@ class EventLog:
         tool_calls = self.query(event_type="tool_call")
         errors = self.query(event_type="error")
 
-        total_cost = sum(e.get("cost", 0) for e in llm_calls)
+        total_cost = sum(
+            float(e.get("cost"))
+            for e in llm_calls
+            if isinstance(e.get("cost"), (int, float))
+        )
         total_tokens_in = sum(e.get("tokens", {}).get("in", 0) for e in llm_calls)
         total_tokens_out = sum(e.get("tokens", {}).get("out", 0) for e in llm_calls)
         total_latency = sum(e.get("latency_ms", 0) for e in llm_calls)
@@ -399,8 +412,13 @@ class EventLog:
                 lines.append(
                     f"[{ts}] LLM {event.get('model', '?')} "
                     f"{tokens.get('in', 0)}+{tokens.get('out', 0)}tok "
-                    f"${event.get('cost', 0):.4f} {event.get('latency_ms', 0)}ms "
-                    f"({event.get('tool_calls', 0)} tools)"
+                    + (
+                        f"${float(event.get('cost')):.4f} "
+                        if isinstance(event.get("cost"), (int, float))
+                        else "cost=unknown "
+                    )
+                    + f"{event.get('latency_ms', 0)}ms "
+                    + f"({event.get('tool_calls', 0)} tools)"
                 )
             elif etype == "tool_call":
                 status = "OK" if event.get("success") else "FAIL"

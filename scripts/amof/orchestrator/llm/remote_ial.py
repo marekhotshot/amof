@@ -44,6 +44,17 @@ def _parse_json_response(response: requests.Response) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _parse_optional_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 class RemoteIALClient(LLMClient):
     """Route chat requests through a private remote IAL gateway."""
 
@@ -197,13 +208,28 @@ class RemoteIALClient(LLMClient):
             body.get("upstream_model") or body.get("model") or self._model or ""
         ).strip() or None
         resolved_model = upstream_model or "remote-ial"
+        observed_cost = _parse_optional_float(body.get("estimated_cost"))
+        if observed_cost is None and isinstance(body.get("provider_usage"), dict):
+            observed_cost = _parse_optional_float(body["provider_usage"].get("cost"))
+        raw_cost_status = str(body.get("cost_status") or "").strip().lower()
+        cost_observed = observed_cost is not None
+        if raw_cost_status in {"observed", "unknown"}:
+            cost_status = raw_cost_status
+        else:
+            cost_status = "observed" if cost_observed else "unknown"
+        if cost_status == "unknown":
+            cost_observed = False
+        elif observed_cost is None:
+            # Preserve truthful status if provider explicitly marked observed.
+            cost_status = "unknown"
+            cost_observed = False
 
         usage = Usage(
             model=resolved_model,
             prompt_tokens=input_tokens,
             completion_tokens=output_tokens,
             latency_ms=int(body.get("latency_ms") or 0),
-            estimated_cost=float(body.get("estimated_cost") or 0.0),
+            estimated_cost=float(observed_cost or 0.0),
             context_window=get_context_window(resolved_model),
             provider=self._provider,
             upstream_provider=upstream_provider,
@@ -214,6 +240,10 @@ class RemoteIALClient(LLMClient):
             else None,
             input_hash=str(body.get("input_hash") or "").strip() or None,
             output_hash=str(body.get("output_hash") or "").strip() or None,
+            cost_status=cost_status,
+            cost_observed=cost_observed,
+            provider_generation_id=str(body.get("provider_generation_id") or "").strip() or None,
+            provider_generation_ref=str(body.get("provider_generation_ref") or "").strip() or None,
         )
         return LLMResponse(
             text=body.get("text") if isinstance(body.get("text"), str) else None,

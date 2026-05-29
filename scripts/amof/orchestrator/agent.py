@@ -260,8 +260,12 @@ class Agent:
                 _print_status(
                     f"  [{iteration}]{tier_label} {response.usage.model} "
                     f"{response.usage.prompt_tokens}+{response.usage.completion_tokens}tok "
-                    f"${response.usage.estimated_cost:.4f} "
-                    f"{response.usage.latency_ms}ms"
+                    + (
+                        f"${response.usage.estimated_cost:.4f} "
+                        if bool(getattr(response.usage, "cost_observed", True))
+                        else "cost=unknown "
+                    )
+                    + f"{response.usage.latency_ms}ms"
                     + (f" | {len(response.tool_calls)} tool calls" if response.tool_calls else " | final response")
                 )
                 # Show extended thinking if present
@@ -320,9 +324,10 @@ class Agent:
             else:
                 self.telemetry.record_from_usage(response.usage, tier=tier)
                 if response.usage:
-                    self.telemetry.record_agent_cost(
-                        "master", response.usage.estimated_cost
-                    )
+                    if bool(getattr(response.usage, "cost_observed", True)):
+                        self.telemetry.record_agent_cost(
+                            "master", response.usage.estimated_cost
+                        )
 
             # Budget early warnings
             warning = self.telemetry.check_budget_warning()
@@ -358,7 +363,11 @@ class Agent:
                     model=response.usage.model,
                     prompt_tokens=response.usage.prompt_tokens,
                     completion_tokens=response.usage.completion_tokens,
-                    cost=response.usage.estimated_cost,
+                    cost=(
+                        response.usage.estimated_cost
+                        if bool(getattr(response.usage, "cost_observed", True))
+                        else None
+                    ),
                     latency_ms=response.usage.latency_ms,
                     tool_calls_count=tool_calls_count,
                     provider=_client_provider(active_llm) or None,
@@ -368,6 +377,9 @@ class Agent:
                     policy_decision=getattr(response.usage, "policy_decision", None),
                     input_hash=getattr(response.usage, "input_hash", None),
                     output_hash=getattr(response.usage, "output_hash", None),
+                    cost_status=getattr(response.usage, "cost_status", None),
+                    provider_generation_id=getattr(response.usage, "provider_generation_id", None),
+                    provider_generation_ref=getattr(response.usage, "provider_generation_ref", None),
                 )
 
             if response.has_tool_calls:

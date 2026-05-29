@@ -225,6 +225,106 @@ class RemoteIALStructuredTests(unittest.TestCase):
 
 
 class RemoteIALEventTests(unittest.TestCase):
+    def test_remote_ial_usage_cost_present_is_observed(self) -> None:
+        client = RemoteIALClient(base_url="http://127.0.0.1:8765", api_key="token")
+        with patch(
+            "amof.orchestrator.llm.remote_ial.requests.post",
+            return_value=_FakeHTTPResponse(
+                200,
+                {
+                    "text": "remote-ok",
+                    "provider": "openrouter",
+                    "model": "openai/gpt-4o-mini",
+                    "tokens": {"input": 12, "output": 5},
+                    "estimated_cost": 0.000321,
+                    "cost_status": "observed",
+                    "latency_ms": 34,
+                },
+            ),
+        ):
+            response = client.chat(system="", messages=[{"role": "user", "content": "hi"}])
+
+        self.assertEqual(response.usage.cost_status, "observed")
+        self.assertTrue(response.usage.cost_observed)
+        self.assertAlmostEqual(response.usage.estimated_cost, 0.000321, places=6)
+
+    def test_remote_ial_usage_cost_missing_is_unknown_not_zero_truth(self) -> None:
+        client = RemoteIALClient(base_url="http://127.0.0.1:8765", api_key="token")
+        with patch(
+            "amof.orchestrator.llm.remote_ial.requests.post",
+            return_value=_FakeHTTPResponse(
+                200,
+                {
+                    "text": "remote-ok",
+                    "provider": "openrouter",
+                    "model": "openai/gpt-4o-mini",
+                    "tokens": {"input": 9, "output": 4},
+                    "latency_ms": 21,
+                },
+            ),
+        ):
+            response = client.chat(system="", messages=[{"role": "user", "content": "hi"}])
+
+        self.assertEqual(response.usage.cost_status, "unknown")
+        self.assertFalse(response.usage.cost_observed)
+        self.assertEqual(response.usage.estimated_cost, 0.0)
+
+    def test_remote_ial_usage_keeps_provider_generation_references(self) -> None:
+        client = RemoteIALClient(base_url="http://127.0.0.1:8765", api_key="token")
+        with patch(
+            "amof.orchestrator.llm.remote_ial.requests.post",
+            return_value=_FakeHTTPResponse(
+                200,
+                {
+                    "text": "remote-ok",
+                    "provider": "openrouter",
+                    "model": "openai/gpt-4o-mini",
+                    "tokens": {"input": 9, "output": 4},
+                    "latency_ms": 21,
+                    "provider_generation_id": "gen-123",
+                    "provider_generation_ref": "hash-abc",
+                },
+            ),
+        ):
+            response = client.chat(system="", messages=[{"role": "user", "content": "hi"}])
+
+        self.assertEqual(response.usage.provider_generation_id, "gen-123")
+        self.assertEqual(response.usage.provider_generation_ref, "hash-abc")
+
+    def test_llm_event_marks_unknown_cost_without_zero_fallback(self) -> None:
+        client = RemoteIALClient(base_url="http://127.0.0.1:8765", api_key="token")
+        with patch(
+            "amof.orchestrator.llm.remote_ial.requests.post",
+            return_value=_FakeHTTPResponse(
+                200,
+                {
+                    "text": "remote-ok",
+                    "provider": "openrouter",
+                    "model": "openai/gpt-4o-mini",
+                    "tokens": {"input": 4, "output": 3},
+                    "latency_ms": 12,
+                },
+            ),
+        ):
+            response = client.chat(system="", messages=[{"role": "user", "content": "hi"}])
+
+        with tempfile.TemporaryDirectory(prefix="amof-remote-ial-events-unknown-cost-") as td:
+            events = EventLog(session_id="remote-ial-session", runs_dir=Path(td))
+            events.llm_call(
+                model=response.usage.model,
+                prompt_tokens=response.usage.prompt_tokens,
+                completion_tokens=response.usage.completion_tokens,
+                cost=response.usage.estimated_cost if response.usage.cost_observed else None,
+                latency_ms=response.usage.latency_ms,
+                provider=response.usage.provider,
+                upstream_provider=response.usage.upstream_provider,
+                cost_status=response.usage.cost_status,
+            )
+            event_text = events.log_path.read_text(encoding="utf-8")
+
+        self.assertIn('"cost": null', event_text)
+        self.assertIn('"cost_status": "unknown"', event_text)
+
     def test_llm_call_records_remote_transport_and_upstream_provider(self) -> None:
         client = RemoteIALClient(base_url="http://127.0.0.1:8765", api_key="token")
         with patch(
@@ -252,7 +352,7 @@ class RemoteIALEventTests(unittest.TestCase):
                 model=response.usage.model,
                 prompt_tokens=response.usage.prompt_tokens,
                 completion_tokens=response.usage.completion_tokens,
-                cost=response.usage.estimated_cost,
+                cost=response.usage.estimated_cost if response.usage.cost_observed else None,
                 latency_ms=response.usage.latency_ms,
                 provider=response.usage.provider,
                 upstream_provider=response.usage.upstream_provider,
@@ -261,6 +361,7 @@ class RemoteIALEventTests(unittest.TestCase):
                 policy_decision=response.usage.policy_decision,
                 input_hash=response.usage.input_hash,
                 output_hash=response.usage.output_hash,
+                cost_status=response.usage.cost_status,
             )
             event_text = events.log_path.read_text(encoding="utf-8")
 

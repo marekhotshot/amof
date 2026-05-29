@@ -35,13 +35,19 @@ class CallMetrics:
     # to backfill — when the authority is wired (live API path) it always
     # supplies the provider extracted from the resolved client.
     provider: str = ""
+    cost_status: str = "observed"
 
     def summary_line(self) -> str:
         provider_bit = f"{self.provider}/" if self.provider else ""
+        cost_text = (
+            f"${self.estimated_cost:.4f}"
+            if self.cost_status == "observed"
+            else "cost=unknown"
+        )
         return (
             f"[{self.tier}:{provider_bit}{self.model}] "
             f"{self.prompt_tokens}+{self.completion_tokens} tokens "
-            f"({self.context_used_pct:.1f}% ctx) ${self.estimated_cost:.4f} "
+            f"({self.context_used_pct:.1f}% ctx) {cost_text} "
             f"{self.latency_ms}ms"
         )
 
@@ -126,6 +132,7 @@ class SessionTelemetry:
 
     # Latency tracking (raw values for percentile calculation)
     _latency_values: List[int] = field(default_factory=list)
+    _unknown_cost_calls: int = 0
 
     def record(self, metrics: CallMetrics) -> None:
         """Record metrics from an LLM call."""
@@ -143,7 +150,10 @@ class SessionTelemetry:
         tm.calls += 1
         tm.input_tokens += metrics.prompt_tokens
         tm.output_tokens += metrics.completion_tokens
-        tm.cost += metrics.estimated_cost
+        if metrics.cost_status == "observed":
+            tm.cost += metrics.estimated_cost
+        else:
+            self._unknown_cost_calls += 1
         tm.model_name = metrics.model
 
     def record_from_usage(
@@ -174,6 +184,11 @@ class SessionTelemetry:
             latency_ms=usage.latency_ms,
             tier=tier,
             provider=provider,
+            cost_status=(
+                str(getattr(usage, "cost_status", "observed") or "observed")
+                if bool(getattr(usage, "cost_observed", True))
+                else "unknown"
+            ),
         )
         self.record(metrics)
         return metrics
@@ -364,10 +379,14 @@ class SessionTelemetry:
     @property
     def total_cost(self) -> float:
         return (
-            sum(c.estimated_cost for c in self.calls)
+            sum(c.estimated_cost for c in self.calls if c.cost_status == "observed")
             + self._summarization_cost
             + self._restored_cost
         )
+
+    @property
+    def unknown_cost_calls(self) -> int:
+        return self._unknown_cost_calls
 
     @property
     def total_latency_ms(self) -> int:
@@ -458,6 +477,10 @@ class SessionTelemetry:
         if self.max_cost is not None:
             pct = (self.total_cost / self.max_cost) * 100 if self.max_cost > 0 else 0
             lines.append(f"  Budget used:  {pct:.1f}% (limit: ${self.max_cost:.2f})")
+        if self.unknown_cost_calls > 0:
+            lines.append(
+                f"  Cost truth:   {self.unknown_cost_calls} call(s) reported unknown provider cost"
+            )
 
         # Per-tier cost breakdown
         if len(self.tier_metrics) > 1 or (self.tier_metrics and "default" not in self.tier_metrics):
@@ -539,6 +562,7 @@ class SessionTelemetry:
             "total_latency_ms": self.total_latency_ms,
             "elapsed_seconds": round(self.elapsed_seconds, 1),
             "peak_context_pct": round(self.peak_context_pct, 1),
+            "unknown_cost_calls": self.unknown_cost_calls,
         }
         if self.tier_metrics:
             result["tiers"] = {

@@ -510,9 +510,10 @@ class InferenceAuthority(LLMClient):
                     exc,
                 )
             try:
-                self._telemetry.record_agent_cost(
-                    source, float(getattr(usage, "estimated_cost", 0.0) or 0.0)
-                )
+                if bool(getattr(usage, "cost_observed", True)):
+                    self._telemetry.record_agent_cost(
+                        source, float(getattr(usage, "estimated_cost", 0.0) or 0.0)
+                    )
             except Exception as exc:
                 logger.debug(
                     "authority telemetry record_agent_cost failed for source=%s: %s",
@@ -529,7 +530,12 @@ class InferenceAuthority(LLMClient):
                         "in": getattr(usage, "prompt_tokens", 0) or 0,
                         "out": getattr(usage, "completion_tokens", 0) or 0,
                     },
-                    cost=round(float(getattr(usage, "estimated_cost", 0.0) or 0.0), 6),
+                    cost=(
+                        round(float(getattr(usage, "estimated_cost", 0.0) or 0.0), 6)
+                        if bool(getattr(usage, "cost_observed", True))
+                        else None
+                    ),
+                    cost_status=getattr(usage, "cost_status", None),
                     latency_ms=getattr(usage, "latency_ms", 0) or 0,
                     tool_calls=tool_calls,
                     source=source,
@@ -540,6 +546,8 @@ class InferenceAuthority(LLMClient):
                     policy_decision=getattr(usage, "policy_decision", None),
                     input_hash=getattr(usage, "input_hash", None),
                     output_hash=getattr(usage, "output_hash", None),
+                    provider_generation_id=getattr(usage, "provider_generation_id", None),
+                    provider_generation_ref=getattr(usage, "provider_generation_ref", None),
                 )
             except Exception as exc:
                 logger.debug(
