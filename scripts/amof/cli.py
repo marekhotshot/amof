@@ -17,6 +17,7 @@ PUBLIC_HELP_COMMANDS = (
     "init",
     "chat",
     "intake",
+    "runner",
     "runs",
     "agent",
     "bootstrap",
@@ -757,6 +758,45 @@ def parse_args() -> argparse.Namespace:
     )
     intake_show.add_argument("intake_id", help="Intake identifier")
     intake_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    runner_parser = subparsers.add_parser(
+        "runner",
+        help="Register and match planning-only runner metadata from AMOF_HOME",
+    )
+    runner_sub = runner_parser.add_subparsers(dest="runner_cmd", required=True)
+
+    runner_register = runner_sub.add_parser(
+        "register",
+        help="Register one runner metadata YAML/JSON file locally",
+    )
+    runner_register.add_argument("file", help="Path to runner metadata YAML/JSON")
+    runner_register.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    runner_list = runner_sub.add_parser(
+        "list",
+        help="List locally registered runner metadata",
+    )
+    runner_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    runner_show = runner_sub.add_parser(
+        "show",
+        help="Show one runner metadata record by runner_id",
+    )
+    runner_show.add_argument("runner_id", help="Runner identifier")
+    runner_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    runner_doctor = runner_sub.add_parser(
+        "doctor",
+        help="Validate local runner registry readiness without dispatch",
+    )
+    runner_doctor.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    runner_match = runner_sub.add_parser(
+        "match",
+        help="Planning-only intake-to-runner compatibility check (no dispatch)",
+    )
+    runner_match.add_argument("intake_ref", help="Intake file path or known intake id")
+    runner_match.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     # Agent command
     agent_parser = subparsers.add_parser(

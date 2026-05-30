@@ -1,0 +1,278 @@
+from __future__ import annotations
+
+from contextlib import redirect_stderr, redirect_stdout
+import io
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS_ROOT = ROOT / "scripts"
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from amof.app_config import set_current_context_name
+from amof.commands.intake import cmd_intake
+from amof.commands.runner import cmd_runner
+
+
+def _runner_args(runner_cmd: str, **overrides: object) -> SimpleNamespace:
+    payload: dict[str, object] = {
+        "runner_cmd": runner_cmd,
+        "file": None,
+        "runner_id": None,
+        "intake_ref": None,
+        "json": False,
+    }
+    payload.update(overrides)
+    return SimpleNamespace(**payload)
+
+
+def _intake_args(intake_cmd: str, **overrides: object) -> SimpleNamespace:
+    payload: dict[str, object] = {"intake_cmd": intake_cmd, "file": None, "intake_id": None, "json": False}
+    payload.update(overrides)
+    return SimpleNamespace(**payload)
+
+
+def _run_runner_cmd(args: SimpleNamespace) -> tuple[int, str, str]:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        code = cmd_runner(args)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+def _run_intake_cmd(args: SimpleNamespace) -> tuple[int, str, str]:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        code = cmd_intake(args)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+VALID_RUNNER = """\
+runner_id: local-planning-runner
+name: Local Planning Runner
+context: local
+status: available
+capabilities:
+  - intake.validate
+  - intake.plan
+supported_task_kinds:
+  - other
+allowed_mutation_modes:
+  - read_only
+max_concurrency: 1
+labels:
+  - local
+  - planning
+trust_level: local
+registration_source: local_file
+endpoint_ref: local-only
+"""
+
+
+VALID_INTAKE = """\
+id: amof-runner-registration-intake
+version: "1.0.0"
+kind: bounded_intake_task
+ticket_id: AMOF-RUNNER-REGISTRATION-001
+rough_intent: Validate runner registration matching.
+bounded_goal: Match read-only intake to local planning runner without dispatch.
+task_kind: other
+repo_scope:
+  - .
+paths_to_inspect:
+  - .
+profile_ref: remote-ial-openrouter
+mutations:
+  allowed: []
+  forbidden:
+    - edit
+    - deploy
+    - promote
+    - push
+validation_gates:
+  - name: read_only
+    requirement: Intake remains planning-only.
+    failure_action: stop
+cost_truth_policy:
+  missing_cost_representation: unknown
+"""
+
+
+def _write(path: Path, content: str) -> Path:
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+class RunnerRegistrationTests(unittest.TestCase):
+    def test_register_valid_runner_passes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-register-valid-") as td:
+            home = Path(td) / "home"
+            runner_path = _write(Path(td) / "runner.yaml", VALID_RUNNER)
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                set_current_context_name("local")
+                code, stdout, stderr = _run_runner_cmd(_runner_args("register", file=str(runner_path)))
+            self.assertEqual(code, 0)
+            self.assertIn("REGISTERED runner_id=local-planning-runner", stdout)
+            self.assertIn("no_dispatch=yes", stdout)
+            self.assertEqual(stderr, "")
+
+    def test_register_missing_fields_fail(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-register-missing-") as td:
+            home = Path(td) / "home"
+            runner_path = _write(Path(td) / "runner.yaml", VALID_RUNNER.replace("context: local\n", ""))
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                code, _stdout, stderr = _run_runner_cmd(_runner_args("register", file=str(runner_path)))
+            self.assertEqual(code, 1)
+            self.assertIn("missing required field: context", stderr)
+
+    def test_register_rejects_secret_like_values(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-register-secret-") as td:
+            home = Path(td) / "home"
+            runner_path = _write(
+                Path(td) / "runner.yaml",
+                VALID_RUNNER + "api_key: sk-or-secret-should-not-pass\n",
+            )
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                code, _stdout, stderr = _run_runner_cmd(_runner_args("register", file=str(runner_path)))
+            self.assertEqual(code, 1)
+            self.assertIn("secret-like content is not allowed", stderr)
+
+    def test_list_show_and_doctor_work(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-list-show-doctor-") as td:
+            home = Path(td) / "home"
+            runner_path = _write(Path(td) / "runner.yaml", VALID_RUNNER)
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                set_current_context_name("local")
+                code, _stdout, _stderr = _run_runner_cmd(_runner_args("register", file=str(runner_path)))
+                self.assertEqual(code, 0)
+
+                code, stdout, stderr = _run_runner_cmd(_runner_args("list"))
+                self.assertEqual(code, 0)
+                self.assertIn("local-planning-runner", stdout)
+                self.assertIn("read_only", stdout)
+                self.assertEqual(stderr, "")
+
+                code, stdout, stderr = _run_runner_cmd(_runner_args("show", runner_id="local-planning-runner"))
+                self.assertEqual(code, 0)
+                self.assertIn("runner_id: local-planning-runner", stdout)
+                self.assertIn("context: local", stdout)
+                self.assertNotIn("sk-or-", stdout)
+                self.assertEqual(stderr, "")
+
+                code, stdout, stderr = _run_runner_cmd(_runner_args("doctor"))
+                self.assertEqual(code, 0)
+                self.assertIn("RUNNER_REGISTRY_OK", stdout)
+                self.assertIn("no_dispatch=yes", stdout)
+                self.assertEqual(stderr, "")
+
+    def test_match_planning_only_context_compatible(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-match-ok-") as td:
+            home = Path(td) / "home"
+            runner_path = _write(Path(td) / "runner.yaml", VALID_RUNNER)
+            intake_path = _write(Path(td) / "intake.yaml", VALID_INTAKE)
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                set_current_context_name("local")
+                code, _stdout, _stderr = _run_runner_cmd(_runner_args("register", file=str(runner_path)))
+                self.assertEqual(code, 0)
+
+                code, stdout, stderr = _run_runner_cmd(_runner_args("match", intake_ref=str(intake_path)))
+                self.assertEqual(code, 0)
+                self.assertIn("candidates=1", stdout)
+                self.assertIn("planning_only=yes", stdout)
+                self.assertIn("no_dispatch=yes", stdout)
+                self.assertIn("no_remote_execution=yes", stdout)
+                self.assertEqual(stderr, "")
+
+    def test_match_rejects_mutating_intake(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-match-mutation-") as td:
+            home = Path(td) / "home"
+            runner_path = _write(Path(td) / "runner.yaml", VALID_RUNNER)
+            intake_path = _write(
+                Path(td) / "intake.yaml",
+                VALID_INTAKE.replace("allowed: []", "allowed:\n    - edit"),
+            )
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                set_current_context_name("local")
+                code, _stdout, _stderr = _run_runner_cmd(_runner_args("register", file=str(runner_path)))
+                self.assertEqual(code, 0)
+
+                code, _stdout, stderr = _run_runner_cmd(_runner_args("match", intake_ref=str(intake_path)))
+                self.assertEqual(code, 1)
+                self.assertIn("planning-only intake only", stderr)
+
+    def test_match_fails_closed_for_unavailable_remote_context(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-match-fail-closed-") as td:
+            home = Path(td) / "home"
+            runner_path = _write(
+                Path(td) / "runner.yaml",
+                VALID_RUNNER.replace("context: local", "context: cloud-dev"),
+            )
+            intake_path = _write(Path(td) / "intake.yaml", VALID_INTAKE)
+            with patch.dict(
+                os.environ,
+                {
+                    "AMOF_HOME": str(home),
+                    "AMOF_REMOTE_IAL_BASE_URL": "",
+                    "AMOF_REMOTE_IAL_API_KEY": "",
+                },
+                clear=False,
+            ):
+                set_current_context_name("cloud-dev")
+                code, _stdout, _stderr = _run_runner_cmd(_runner_args("register", file=str(runner_path)))
+                self.assertEqual(code, 0)
+                code, _stdout, stderr = _run_runner_cmd(_runner_args("match", intake_ref=str(intake_path)))
+            self.assertEqual(code, 1)
+            self.assertIn("FAIL_CLOSED", stderr)
+            self.assertIn("No silent fallback", stderr)
+
+    def test_register_does_not_mutate_repo(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-no-mutate-") as td:
+            repo = Path(td) / "repo"
+            repo.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            (repo / "README.md").write_text("hello\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"],
+                cwd=repo,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            before = subprocess.run(["git", "status", "--short"], cwd=repo, check=True, capture_output=True, text=True).stdout
+
+            home = Path(td) / "home"
+            runner_path = _write(Path(td) / "runner.yaml", VALID_RUNNER)
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                code, _stdout, _stderr = _run_runner_cmd(_runner_args("register", file=str(runner_path)))
+            self.assertEqual(code, 0)
+            after = subprocess.run(["git", "status", "--short"], cwd=repo, check=True, capture_output=True, text=True).stdout
+            self.assertEqual(before, after)
+
+    def test_match_accepts_intake_submission_id_reference(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-match-intake-id-") as td:
+            home = Path(td) / "home"
+            runner_path = _write(Path(td) / "runner.yaml", VALID_RUNNER)
+            intake_path = _write(Path(td) / "intake.yaml", VALID_INTAKE)
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                set_current_context_name("local")
+                code, _stdout, _stderr = _run_intake_cmd(_intake_args("submit", file=str(intake_path)))
+                self.assertEqual(code, 0)
+                code, _stdout, _stderr = _run_runner_cmd(_runner_args("register", file=str(runner_path)))
+                self.assertEqual(code, 0)
+                code, stdout, stderr = _run_runner_cmd(_runner_args("match", intake_ref="amof-runner-registration-intake"))
+            self.assertEqual(code, 0)
+            self.assertIn("candidates=1", stdout)
+            self.assertEqual(stderr, "")
+
+
+if __name__ == "__main__":
+    unittest.main()
