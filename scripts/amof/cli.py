@@ -16,6 +16,7 @@ PUBLIC_HELP_COMMANDS = (
     "setup",
     "init",
     "chat",
+    "runs",
     "agent",
     "bootstrap",
     "update",
@@ -662,6 +663,67 @@ def parse_args() -> argparse.Namespace:
         "--target-base-dir",
         help="Optional workspace materialization base directory to record in the handoff envelope",
     )
+
+    runs_parser = subparsers.add_parser(
+        "runs",
+        help="Inspect runtime run sessions from AMOF_HOME",
+    )
+    runs_sub = runs_parser.add_subparsers(dest="runs_cmd", required=True)
+    runs_list = runs_sub.add_parser(
+        "list",
+        help="List discovered run sessions from app-data",
+    )
+    runs_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    runs_show = runs_sub.add_parser(
+        "show",
+        help="Show one run summary by run_id",
+    )
+    runs_show.add_argument("run_id", help="Run id or session id to inspect")
+    runs_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    runs_logs = runs_sub.add_parser(
+        "logs",
+        help="Print events.jsonl lines for one run",
+    )
+    runs_logs.add_argument("run_id", help="Run id or session id to inspect")
+    runs_logs.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Optional limit of most recent events to print (default: all)",
+    )
+    runs_logs.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    runs_tail = runs_sub.add_parser(
+        "tail",
+        help="Print latest event lines and optionally follow for new events",
+    )
+    runs_tail.add_argument("run_id", help="Run id or session id to inspect")
+    runs_tail.add_argument(
+        "--lines",
+        type=int,
+        default=20,
+        help="Number of recent lines to print before follow mode (default: 20)",
+    )
+    runs_tail.add_argument(
+        "--follow",
+        action="store_true",
+        help="Poll and print appended events for a bounded number of polls",
+    )
+    runs_tail.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=1.0,
+        help="Polling interval in seconds for --follow mode (default: 1.0)",
+    )
+    runs_tail.add_argument(
+        "--max-polls",
+        type=int,
+        default=20,
+        help="Maximum follow polls before exit (default: 20)",
+    )
+    runs_tail.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     # Agent command
     agent_parser = subparsers.add_parser(
