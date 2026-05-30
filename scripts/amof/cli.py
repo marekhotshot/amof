@@ -16,6 +16,7 @@ PUBLIC_HELP_COMMANDS = (
     "setup",
     "init",
     "chat",
+    "intake",
     "runs",
     "agent",
     "bootstrap",
@@ -724,6 +725,38 @@ def parse_args() -> argparse.Namespace:
         help="Maximum follow polls before exit (default: 20)",
     )
     runs_tail.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    intake_parser = subparsers.add_parser(
+        "intake",
+        help="Validate and submit bounded intake packets from AMOF_HOME",
+    )
+    intake_sub = intake_parser.add_subparsers(dest="intake_cmd", required=True)
+    intake_validate = intake_sub.add_parser(
+        "validate",
+        help="Validate one intake YAML/JSON packet against bounded MVP rules",
+    )
+    intake_validate.add_argument("file", help="Path to intake YAML/JSON")
+    intake_validate.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    intake_submit = intake_sub.add_parser(
+        "submit",
+        help="Validate then submit one planning-only intake packet locally",
+    )
+    intake_submit.add_argument("file", help="Path to intake YAML/JSON")
+    intake_submit.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    intake_list = intake_sub.add_parser(
+        "list",
+        help="List local intake submissions from AMOF_HOME",
+    )
+    intake_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    intake_show = intake_sub.add_parser(
+        "show",
+        help="Show one local intake submission by intake_id",
+    )
+    intake_show.add_argument("intake_id", help="Intake identifier")
+    intake_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     # Agent command
     agent_parser = subparsers.add_parser(
