@@ -19,6 +19,7 @@ PUBLIC_HELP_COMMANDS = (
     "intake",
     "runner",
     "execution",
+    "loop",
     "runs",
     "agent",
     "bootstrap",
@@ -818,6 +819,45 @@ def parse_args() -> argparse.Namespace:
     )
     execution_report.add_argument("scan_id", help="Execution scan identifier")
     execution_report.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    loop_parser = subparsers.add_parser(
+        "loop",
+        help="Run bounded no-mutation/no-dispatch loop proofs from AMOF_HOME",
+    )
+    loop_sub = loop_parser.add_subparsers(dest="loop_cmd", required=True)
+
+    loop_run = loop_sub.add_parser(
+        "run",
+        help="Run one bounded loop over intake + runner + execution scan/report surfaces",
+    )
+    loop_run.add_argument("intake_ref", help="Intake file path or known intake id")
+    loop_run.add_argument(
+        "--max-loops",
+        type=int,
+        required=True,
+        help="Maximum loop iterations before forced stop",
+    )
+    loop_run.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    loop_show = loop_sub.add_parser(
+        "show",
+        help="Show one bounded loop report by loop_run_id",
+    )
+    loop_show.add_argument("loop_run_id", help="Loop run identifier")
+    loop_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    loop_logs = loop_sub.add_parser(
+        "logs",
+        help="Print events for one bounded loop run",
+    )
+    loop_logs.add_argument("loop_run_id", help="Loop run identifier")
+    loop_logs.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Optional limit of most recent events to print (default: all)",
+    )
+    loop_logs.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     # Agent command
     agent_parser = subparsers.add_parser(

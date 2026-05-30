@@ -80,7 +80,7 @@ def _resolve_context_fail_closed() -> str:
 
 
 def _scan_id_for(intake_id: str) -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", intake_id).strip("-") or "intake"
     return f"execution-scan-{stamp}-{normalized}"
 
