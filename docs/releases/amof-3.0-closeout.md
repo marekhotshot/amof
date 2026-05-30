@@ -136,5 +136,6 @@ Private scope excluded from this report:
 
 ## Next After 3.0
 
+- Post-tag documentation backfill for `v3.0.0` is recorded in `docs/releases/amof-3.0.0-tag.md`; it was committed after the tag and is not part of the original tagged source tree.
 - Decide release/tag gating ticket (`AMOF-300-RELEASE-TAG-001` or equivalent).
 - Keep mutation and dispatch authority behind separate reviewed tickets.
