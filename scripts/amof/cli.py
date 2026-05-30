@@ -18,6 +18,7 @@ PUBLIC_HELP_COMMANDS = (
     "chat",
     "intake",
     "runner",
+    "execution",
     "runs",
     "agent",
     "bootstrap",
@@ -797,6 +798,26 @@ def parse_args() -> argparse.Namespace:
     )
     runner_match.add_argument("intake_ref", help="Intake file path or known intake id")
     runner_match.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    execution_parser = subparsers.add_parser(
+        "execution",
+        help="Produce no-execution remote execution readiness scan/report artifacts",
+    )
+    execution_sub = execution_parser.add_subparsers(dest="execution_cmd", required=True)
+
+    execution_scan = execution_sub.add_parser(
+        "scan",
+        help="Scan intake plus runner metadata and write a no-execution readiness report",
+    )
+    execution_scan.add_argument("intake_ref", help="Intake file path or known intake id")
+    execution_scan.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    execution_report = execution_sub.add_parser(
+        "report",
+        help="Show one previously written execution scan report by scan_id",
+    )
+    execution_report.add_argument("scan_id", help="Execution scan identifier")
+    execution_report.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     # Agent command
     agent_parser = subparsers.add_parser(

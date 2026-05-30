@@ -32,6 +32,7 @@ NO_ECOSYSTEM_COMMANDS = {
     "chat",
     "intake",
     "runner",
+    "execution",
     "runs",
     "update",
     "uninstall",
@@ -173,6 +174,7 @@ cmd_profile = _lazy_command("profile", "cmd_profile")
 cmd_chat = _lazy_command("chat", "cmd_chat")
 cmd_intake = _lazy_command("intake", "cmd_intake")
 cmd_runner = _lazy_command("runner", "cmd_runner")
+cmd_execution = _lazy_command("execution", "cmd_execution")
 cmd_runs = _lazy_command("runs", "cmd_runs")
 cmd_agent = _lazy_command("agent_cmd", "cmd_agent")
 cmd_manifest = _lazy_command("manifest_cmd", "cmd_manifest")
@@ -251,6 +253,8 @@ def main() -> None:
             sys.exit(cmd_intake(args))
         if args.command == "runner":
             sys.exit(cmd_runner(args))
+        if args.command == "execution":
+            sys.exit(cmd_execution(args))
         if args.command == "runs":
             sys.exit(cmd_runs(args))
         if args.command == "update":
