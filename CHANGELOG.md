@@ -8,6 +8,51 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## v3.0.0 - Runtime Authority
+
+Marker: `AMOF_300_RELEASE_PUBLIC_DOCS_BACKFILL`
+
+This changelog entry was committed after the `v3.0.0` tag as public docs recovery and is not part of the original tagged source tree.
+
+- tagged commit SHA: `bd2314c0229c6a802cc71e14c7463cbbf51df245`
+- tag object SHA: `b6ecabb78dbbb73a2f4624767f47d8cd48982830`
+- release decision: `TAG_V3_0_0_APPROVED`
+- closeout docs: `docs/releases/amof-3.0-closeout.md`
+- tag-result docs: `docs/releases/amof-3.0.0-tag.md`
+
+### Added Surfaces
+
+- `amof context`
+- `amof intake`
+- `amof runner`
+- `amof execution` scan/report with `NO_EXECUTION_PERFORMED`
+- `amof loop` bounded loops with `NO_MUTATION_PERFORMED`
+- `NO_REMOTE_EXECUTION_DISPATCHED`
+- `amof runs`
+
+### Validation Summary
+
+- local closeout smoke passed
+- remote IAL smoke explicit pass: `REMOTE_IAL_SMOKE_STATUS_EXPLICIT=PASS`
+- request id: `461a726e-8877-49ae-947a-b1d83a616692`
+- cost status: `observed`
+- estimated cost: `0.000354`
+- sanitization: `sanitized_hash_only`
+- raw `provider_generation_id` not present in public output/events
+
+### Limitations / Follow-ups
+
+- scan/report only
+- bounded loops only
+- no mutation execution
+- no remote execution dispatch
+- console runtime logs viewer follow-up remains open
+- console polling/receipt count semantics follow-up remains open
+
+### Future Release Rule
+
+Release docs means README, CHANGELOG, and release notes/closeout docs. README and CHANGELOG must be committed and fresh-clone verified before future version tags. Only tag object SHA and remote push verification may be documented after tag creation.
+
 ## [2.8.1] - 2026-05-27
 
 ### Fixed

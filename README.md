@@ -10,11 +10,11 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v2.8.1-0A7FFF.svg" alt="release v2.8.1" />
+  <img src="https://img.shields.io/badge/release-v3.0.0-0A7FFF.svg" alt="release v3.0.0" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
-AMOF v2.8.1 is a local-first CLI for governed planning and execution around
+AMOF v3.0.0 is a local-first CLI for governed planning and execution around
 real repositories. It validates the workstation, stores app-data and receipts
 outside the target repo, records provider profile references, and can run
 read-only planning, bounded intake/handoff preparation, or explicitly requested
@@ -73,7 +73,7 @@ Those belong outside the public product tree.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v2.8.1 surface:
+This public `main` intentionally keeps a narrow, installable v3.0.0 surface:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -93,7 +93,7 @@ This public `main` intentionally keeps a narrow, installable v2.8.1 surface:
 
 ## Released Public CLI Surface
 
-What works in v2.8.1:
+What works in v3.0.0:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -284,7 +284,7 @@ git init  # only needed if this is not already a Git repo
 amof init --adopt .
 amof doctor
 amof setup provider openrouter --name openrouter-default --activate
-export OPENROUTER_API_KEY="<redacted>"
+# Ensure OPENROUTER_API_KEY is set in your shell before running this command.
 amof agent --plan "Inspect this repo" --no-follow-up
 ```
 
@@ -325,7 +325,7 @@ OpenRouter:
 
 ```bash
 amof setup provider openrouter --name openrouter-default --activate
-export OPENROUTER_API_KEY="<redacted>"
+# Ensure OPENROUTER_API_KEY is set in your shell before running this command.
 amof agent --plan "Inspect this repo" --no-follow-up
 ```
 
@@ -467,22 +467,32 @@ Additional public docs retained in this repo include:
 
 ## Release State
 
-- `v2.8.1` is the current local release tag for this slice.
-- Public install and no-key adoption smoke passed.
-- Installed `AMOF v2.8.1` completed `amof chat plan` through the verified
-  remote IAL client path against the cloud-dev gateway.
-- The public planning pipeline covers canonical indexed planning context,
-  bounded intake sessions, explicit approved handoff artifacts, and structured
-  remote IAL planning.
-- Bounded worker execution is public/demoable, but output must be reviewed as a
-  Git diff before commit.
-- AMOF does not auto-commit or push bounded worker changes.
+- `AMOF_300_RELEASE_PUBLIC_DOCS_BACKFILL`
+- `v3.0.0` is tagged as the AMOF 3.0 Runtime Authority release.
+- Runtime Authority framing for public `v3.0.0` includes:
+  - explicit runtime context via `amof context`
+  - intake contract and CLI intake via `amof intake`
+  - runner capability registry via `amof runner`
+  - execution scan/report surfaces with `NO_EXECUTION_PERFORMED`
+  - bounded loops with `NO_MUTATION_PERFORMED` and `NO_REMOTE_EXECUTION_DISPATCHED`
+  - runtime evidence inspection via `amof runs` and runtime logs contract tests
+  - remote IAL cost truth with `REMOTE_IAL_SMOKE_STATUS_EXPLICIT=PASS`
+- Current `v3.0.0` limitations:
+  - no remote execution dispatch
+  - no mutation execution
+  - console runtime logs viewer is not part of `v3.0.0`
+- Release evidence docs:
+  - `docs/releases/amof-3.0-closeout.md`
+  - `docs/releases/amof-3.0.0-tag.md`
+- This README release positioning was committed after `v3.0.0` tag creation as post-tag docs recovery and is not part of the original tagged source tree.
 
 ## Change History
 
 `CHANGELOG.md` records release and reduction history for this repo. The current
 top entry should be read as the authoritative statement of what canonical
 `main` contains.
+
+Future release rule: release docs means README, CHANGELOG, and release notes/closeout docs. README and CHANGELOG must be committed and fresh-clone verified before future version tags. Only tag object SHA and remote push verification may be documented after tag creation.
 
 ## License
 
