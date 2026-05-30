@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 import re
 from typing import Any
 
-TICKET_ID_RE = re.compile(r"([A-Za-z][A-Za-z0-9]+-\d+[A-Za-z]*)\b")
+TICKET_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*-\d+[A-Za-z0-9]*)\b")
 QUALIFYING_BRANCH_RE = re.compile(r"^(feat|fix|chore|refactor|hotfix|bugfix)/.+", re.IGNORECASE)
 ENV_ONLY_COMMIT_MESSAGE_RE = re.compile(r"^fix\(gitops\): update .+ env from head$", re.IGNORECASE)
 ENV_PATH_PREFIX = "envs/tickets/"

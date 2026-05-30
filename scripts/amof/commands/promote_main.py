@@ -92,6 +92,7 @@ class PromoteMainPlan:
     failure_stage: str | None = None
     failure_reason: str | None = None
     failure_classification: str | None = None
+    legacy_numeric_fallback_used: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -181,6 +182,10 @@ def _normalize_ticket_id(value: str) -> str:
     if not text:
         raise ValueError("ticket_id is required")
     return text
+
+
+def _is_legacy_numeric_ticket_id(ticket_id: str) -> bool:
+    return bool(re.fullmatch(r"AMOF-\d+", str(ticket_id or "").strip().upper()))
 
 
 def _slugify(value: str) -> str:
@@ -1094,6 +1099,7 @@ def plan_promote_main_dry_run(
 
     ticket_id = _normalize_ticket_id(bundle.ticket_id)
     branch_ticket_id = (infer_ticket_id(bundle.candidate_branch) or "").upper()
+    legacy_numeric_fallback_used = _is_legacy_numeric_ticket_id(ticket_id)
 
     source_sha = _resolve_commit(repo_path, bundle.source_sha)
     gitops_input = str(bundle.gitops_commit_sha or "").strip()
@@ -1221,7 +1227,10 @@ def plan_promote_main_dry_run(
                 validation_checks["env_commit_matches_source_sha"] = True
                 validation_checks["ticket_linkage_consistent"] = ticket_id == branch_ticket_id
                 if rejection_reason is None and not validation_checks["ticket_linkage_consistent"]:
-                    rejection_reason = "ticket linkage is inconsistent across branch and input bundle"
+                    rejection_reason = (
+                        "ticket linkage is inconsistent across branch and input bundle "
+                        f"(branch_ticket_id={branch_ticket_id or '<missing>'}, input_ticket_id={ticket_id})"
+                    )
             else:
                 env_delta_entries = _name_status_diff(repo_path, source_sha, gitops_commit_sha)
                 env_delta_files = [path for _, path in env_delta_entries]
@@ -1258,7 +1267,11 @@ def plan_promote_main_dry_run(
                         ticket_id == branch_ticket_id and message_ticket_ok
                     )
                     if not validation_checks["ticket_linkage_consistent"]:
-                        rejection_reason = "ticket linkage is inconsistent across branch, env commit, and input bundle"
+                        rejection_reason = (
+                            "ticket linkage is inconsistent across branch, env commit, and input bundle "
+                            f"(branch_ticket_id={branch_ticket_id or '<missing>'}, input_ticket_id={ticket_id}, "
+                            f"env_commit_subject_matches={'yes' if message_ticket_ok else 'no'})"
+                        )
 
             if rejection_reason is None:
                 fetch_ok, fetch_out = _fetch_origin_main(repo_path, workspace_root)
@@ -1312,6 +1325,7 @@ def plan_promote_main_dry_run(
                 validation_checks=validation_checks,
                 rejection_reason=rejection_reason,
                 failure_classification=failure_classification,
+                legacy_numeric_fallback_used=legacy_numeric_fallback_used,
             )
     except PromotionLockError as exc:
         plan = PromoteMainPlan(
@@ -1339,6 +1353,7 @@ def plan_promote_main_dry_run(
             validation_checks=validation_checks,
             rejection_reason=str(exc),
             failure_classification=None,
+            legacy_numeric_fallback_used=legacy_numeric_fallback_used,
         )
 
     lock_final_status = "released" if plan.lock_status == "acquired" else plan.lock_final_status
@@ -1356,6 +1371,8 @@ def _print_plan(plan: PromoteMainPlan) -> None:
     print(f"  Mode: {plan.mode}")
     print(f"  Repo: {plan.repo}")
     print(f"  Ticket: {plan.ticket_id}")
+    if plan.legacy_numeric_fallback_used:
+        print("  LEGACY_NUMERIC_FALLBACK_USED")
     print(f"  Candidate branch: {plan.candidate_branch}")
     print(f"  Source SHA: {plan.source_sha}")
     print(f"  GitOps SHA: {plan.gitops_commit_sha or NO_GITOPS_SHA}")
