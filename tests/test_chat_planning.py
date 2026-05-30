@@ -156,6 +156,13 @@ class ChatPlanningTests(unittest.TestCase):
             self.assertEqual(receipt_payload["planning_mode"], "minimal_context")
             self.assertEqual(receipt_payload["freshness"], "minimal_context")
             self.assertEqual(receipt_payload["files_to_inspect"], ["README.md"])
+            events = [
+                json.loads(line)
+                for line in Path(result.evidence["events_path"]).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(events)
+            self.assertTrue(all(event.get("context") == "local" for event in events))
 
     def test_minimal_context_rejects_out_of_repo_file(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-chat-plan-minimal-bounds-") as td:

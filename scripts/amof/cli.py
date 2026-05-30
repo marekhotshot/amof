@@ -185,12 +185,12 @@ def parse_args() -> argparse.Namespace:
 
     # Context command
     context_parser = subparsers.add_parser(
-        "context", help="Generate context for a given service"
+        "context", help="Manage runtime context or generate service context"
     )
     context_parser.add_argument(
         "service",
         nargs="?",
-        help="Service name from manifest, or one of: current, list, show, use, add",
+        help="Service name from manifest, or one of: current, list, show, use, doctor, add",
     )
     context_parser.add_argument(
         "context_target",

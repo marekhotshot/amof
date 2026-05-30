@@ -135,6 +135,7 @@ class RuntimeLogsContractTests(unittest.TestCase):
                     self.assertIn(key, event)
                 self.assertEqual(event.get("run_id"), result.session_id)
                 self.assertEqual(event.get("planning_mode"), "minimal_context")
+                self.assertEqual(event.get("context"), "local")
                 self.assertNotIn("provider_generation_id", event)
 
             finish_events = [e for e in events if (e.get("event_type") or e.get("type")) == "ial_request_finished"]

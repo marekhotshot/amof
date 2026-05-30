@@ -27,12 +27,14 @@ class EventLog:
         run_id: Optional[str] = None,
         ticket_id: Optional[str] = None,
         planning_mode: Optional[str] = None,
+        context: Optional[str] = None,
         actor: str = "amof.chat",
     ):
         self.session_id = session_id or datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         self.run_id = str(run_id or self.session_id)
         self.ticket_id = str(ticket_id).strip() if ticket_id is not None else None
         self.planning_mode = str(planning_mode).strip() if planning_mode is not None else None
+        self.context = str(context).strip() if context is not None else None
         self.actor = actor
         self._runs_dir = runs_dir or default_runs_dir()
         self._session_dir = self._runs_dir / self.session_id
@@ -57,6 +59,7 @@ class EventLog:
         actor = str(payload.pop("actor", self.actor) or self.actor)
         ticket_id = payload.pop("ticket_id", self.ticket_id)
         planning_mode = payload.pop("planning_mode", self.planning_mode)
+        context = payload.pop("context", self.context)
         event = {
             "event_id": f"{self.run_id}:{self._event_counter:04d}",
             "run_id": self.run_id,
@@ -67,6 +70,7 @@ class EventLog:
             "actor": actor,
             "ticket_id": ticket_id,
             "planning_mode": planning_mode,
+            "context": context,
             # Legacy aliases retained for existing readers/tests.
             "ts": timestamp,
             "type": event_type,
@@ -528,6 +532,7 @@ class EventLog:
         instance.run_id = session_id
         instance.ticket_id = None
         instance.planning_mode = None
+        instance.context = None
         instance.actor = "amof.chat"
         instance._runs_dir = log_path.parent.parent
         instance._session_dir = log_path.parent
@@ -547,6 +552,8 @@ class EventLog:
                                 instance._event_counter = max(instance._event_counter, int(maybe_counter))
                         if isinstance(event.get("run_id"), str) and event.get("run_id"):
                             instance.run_id = event["run_id"]
+                        if isinstance(event.get("context"), str) and event.get("context"):
+                            instance.context = event["context"]
                     except json.JSONDecodeError:
                         pass
         return instance

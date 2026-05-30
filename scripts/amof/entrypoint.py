@@ -62,7 +62,7 @@ def _resolve_root_shell_ecosystem(explicit_ecosystem: str | None) -> str | None:
 
 def _is_operational_context_command(args) -> bool:
     action = str(getattr(args, "service", "") or "").strip()
-    return action in {"current", "list", "show", "use", "add", "prompt", "banner"}
+    return action in {"current", "list", "show", "use", "doctor", "add", "prompt", "banner"}
 
 
 def _current_git_root() -> Path | None:

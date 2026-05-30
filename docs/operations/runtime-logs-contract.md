@@ -27,6 +27,7 @@ Every event line must include:
 - `actor`
 - `ticket_id` (when provided by command arguments)
 - `planning_mode`
+- `context` (resolved runtime context, for example `local`, `cloud-dev`, `msg-aws-dev`)
 
 Legacy aliases (`ts`, `type`) may remain for backward compatibility.
 

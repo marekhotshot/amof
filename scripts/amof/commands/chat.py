@@ -12,6 +12,7 @@ import sys
 from typing import Any
 
 from ..app_paths import evidence_dir, materialized_runs_dir, runs_dir
+from ..app_config import resolve_active_context_name
 from ..orchestrator.events import EventLog
 from ..orchestrator.llm.base import ProviderError
 from ..orchestrator.llm.remote_ial import RemoteIALClient
@@ -1725,12 +1726,14 @@ def plan_read_only_chat(
     session.ecosystem = repo_path.name
     session.add_user_message(objective_text)
     planning_mode = str(planning_receipt_payload.get("planning_mode") or "canonical_context")
+    resolved_context, _context_source = resolve_active_context_name()
     events = EventLog(
         session_id=session.id,
         runs_dir=runs_dir() / "chat-plans",
         run_id=session.id,
         ticket_id=ticket_id,
         planning_mode=planning_mode,
+        context=resolved_context,
     )
     events.log("run_created")
     events.log(

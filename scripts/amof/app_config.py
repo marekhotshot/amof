@@ -51,6 +51,74 @@ DEFAULT_LOCAL_CONTEXT = {
     },
 }
 
+DEFAULT_CLOUD_DEV_CONTEXT = {
+    "controlplane": {
+        "mode": "remote-api",
+        "url": None,
+        "deployment_variant": "cloud-dev",
+    },
+    "execution": {
+        "backend": "remote-worker",
+    },
+    "workspace": {
+        "backend": "local-appdata",
+        "default_registry_entry": None,
+    },
+    "evidence": {
+        "backend": "mirrored",
+    },
+    "credentials": {
+        "provider_profile_refs": [],
+        "kubeconfig_ref": None,
+    },
+    "safety": {
+        "protected": True,
+        "require_confirmation": True,
+        "no_push_default": True,
+        "dry_run_default": True,
+    },
+    "promotion": {
+        "default_policy": "evidence-gated-dry-run",
+    },
+}
+
+DEFAULT_MSG_AWS_DEV_CONTEXT = {
+    "controlplane": {
+        "mode": "remote-api",
+        "url": None,
+        "deployment_variant": "msg-aws-dev",
+    },
+    "execution": {
+        "backend": "remote-worker",
+    },
+    "workspace": {
+        "backend": "local-appdata",
+        "default_registry_entry": None,
+    },
+    "evidence": {
+        "backend": "mirrored",
+    },
+    "credentials": {
+        "provider_profile_refs": [],
+        "kubeconfig_ref": None,
+    },
+    "safety": {
+        "protected": True,
+        "require_confirmation": True,
+        "no_push_default": True,
+        "dry_run_default": True,
+    },
+    "promotion": {
+        "default_policy": "evidence-gated-dry-run",
+    },
+}
+
+DEFAULT_CONTEXTS = {
+    "local": DEFAULT_LOCAL_CONTEXT,
+    "cloud-dev": DEFAULT_CLOUD_DEV_CONTEXT,
+    "msg-aws-dev": DEFAULT_MSG_AWS_DEV_CONTEXT,
+}
+
 ALLOWED_CONTROLPLANE_MODES = {"local-cli", "remote-api"}
 ALLOWED_EXECUTION_BACKENDS = {"local", "remote-worker", "kubernetes-worker"}
 ALLOWED_WORKSPACE_BACKENDS = {"local-appdata", "remote-worker-pvc", "object-store"}
@@ -93,12 +161,13 @@ def save_global_config(payload: dict[str, Any]) -> Path:
 
 
 def load_contexts() -> dict[str, Any]:
-    payload = _load_yaml(contexts_file(), default={"contexts": {"local": deepcopy(DEFAULT_LOCAL_CONTEXT)}})
+    payload = _load_yaml(contexts_file(), default={"contexts": {}})
     contexts = payload.get("contexts")
     if not isinstance(contexts, dict):
         contexts = {}
-    if "local" not in contexts:
-        contexts["local"] = deepcopy(DEFAULT_LOCAL_CONTEXT)
+    for name, template in DEFAULT_CONTEXTS.items():
+        if name not in contexts:
+            contexts[name] = deepcopy(template)
     return {"contexts": contexts}
 
 
@@ -106,8 +175,9 @@ def save_contexts(payload: dict[str, Any]) -> Path:
     contexts = payload.get("contexts")
     if not isinstance(contexts, dict):
         contexts = {}
-    if "local" not in contexts:
-        contexts["local"] = deepcopy(DEFAULT_LOCAL_CONTEXT)
+    for name, template in DEFAULT_CONTEXTS.items():
+        if name not in contexts:
+            contexts[name] = deepcopy(template)
     return _write_yaml(contexts_file(), {"contexts": contexts})
 
 
@@ -117,8 +187,33 @@ def ensure_default_context_config() -> None:
 
 
 def get_current_context_name() -> str:
+    return resolve_active_context_name()[0]
+
+
+def resolve_active_context_name() -> tuple[str, str]:
+    """Resolve active runtime context and source.
+
+    Resolution order:
+      1. selected user-local context (config.current_context)
+      2. profile default context (config.profile_default_context, config.default_context)
+      3. built-in default local
+    """
+    initial_global_config = _load_yaml(config_file(), default={})
     ensure_default_context_config()
-    return str(load_global_config().get("current_context") or "local")
+    contexts = load_contexts()["contexts"]
+    global_config = initial_global_config
+
+    selected = str(global_config.get("current_context") or "").strip()
+    if selected and selected in contexts:
+        return selected, "selected_user_local_context"
+
+    profile_default = str(
+        global_config.get("profile_default_context") or global_config.get("default_context") or ""
+    ).strip()
+    if profile_default and profile_default in contexts:
+        return profile_default, "profile_default_context"
+
+    return "local", "built_in_default_local"
 
 
 def set_current_context_name(name: str) -> None:
@@ -310,19 +405,11 @@ def _apply_context_overrides(base_payload: dict[str, Any], overrides: dict[str, 
 
 def add_named_context(name: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     normalized = str(name or "").strip()
-    if normalized == "local":
-        payload = deepcopy(DEFAULT_LOCAL_CONTEXT)
-    elif normalized == "cloud-dev":
-        payload = deepcopy(DEFAULT_LOCAL_CONTEXT)
-        payload["controlplane"] = {
-            "mode": "remote-api",
-            "url": None,
-            "deployment_variant": "cloud-dev",
-        }
-        payload["evidence"] = {"backend": "mirrored"}
-        payload["safety"]["require_confirmation"] = True
+    if normalized in DEFAULT_CONTEXTS:
+        payload = deepcopy(DEFAULT_CONTEXTS[normalized])
     else:
-        raise ValueError("supported context names are: local, cloud-dev")
+        supported = ", ".join(sorted(DEFAULT_CONTEXTS))
+        raise ValueError(f"supported context names are: {supported}")
     payload = _apply_context_overrides(payload, overrides)
     upsert_context(normalized, payload)
     return payload
@@ -468,6 +555,9 @@ def get_registered_workspace(name: str) -> dict[str, Any]:
 
 __all__ = [
     "DEFAULT_LOCAL_CONTEXT",
+    "DEFAULT_CLOUD_DEV_CONTEXT",
+    "DEFAULT_MSG_AWS_DEV_CONTEXT",
+    "DEFAULT_CONTEXTS",
     "ALLOWED_CONTROLPLANE_MODES",
     "ALLOWED_BROWSER_BACKENDS",
     "ALLOWED_EVIDENCE_BACKENDS",
@@ -479,6 +569,7 @@ __all__ = [
     "ensure_default_context_config",
     "get_context",
     "get_current_context_name",
+    "resolve_active_context_name",
     "get_adopted_ecosystem_manifest",
     "get_provider_profile_refs",
     "get_registered_workspace",
