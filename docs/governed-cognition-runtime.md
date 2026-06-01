@@ -1,6 +1,6 @@
 # Governed Cognition Runtime
 
-Status: public architecture narrative for `v3.0.2`
+Status: public architecture narrative for `v3.0.3`
 
 AMOF is a governed cognition runtime with infrastructure awareness. It is not a
 replacement for a developer, editor, CI system, or production control plane.
@@ -91,12 +91,14 @@ decision logic that chooses providers, models, or operational routes.
 
 ## Current Verified Surface
 
-As of `v3.0.2`, the verified public Runtime Authority surface includes:
+As of `v3.0.3`, the verified public Runtime Authority surface includes:
 
 - explicit runtime context selection (`amof context`)
 - governed intake validation/submission (`amof intake`)
 - `amof intake template --kind bounded_intake_task`
 - runner registry metadata (`amof runner`)
+- `amof runner template --kind local-planning`
+- local runner registration/list/doctor/match readiness flow without dispatch
 - execution readiness scan/report (`amof execution`) with
   `NO_EXECUTION_PERFORMED`
 - bounded loops (`amof loop`) with `NO_MUTATION_PERFORMED` and
@@ -106,6 +108,7 @@ As of `v3.0.2`, the verified public Runtime Authority surface includes:
   (`REMOTE_IAL_SMOKE_STATUS_EXPLICIT=PASS`)
 - adopted repo context resolution for app-data ecosystems
 - aggregate intake missing-field validation reporting
+- standalone smoke current-version hygiene for released artifacts
 
 Current cloud-dev verification summary:
 

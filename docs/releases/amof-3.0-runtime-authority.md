@@ -1,7 +1,7 @@
 # AMOF 3.0 Runtime Authority is live.
 
 Status: released
-Canonical version: `v3.0.2`
+Canonical version: `v3.0.3`
 Code name: `AMOF-ULTRAPLAN-300`
 Related:
 - `docs/roadmap/AMOF-ULTRAPLAN-300.md`
@@ -10,13 +10,13 @@ Related:
 - `docs/releases/amof-3.0.0-tag.md`
 
 `v3.0.0` remains as historical evidence of a broken escaped release tag.
-Current install/update release truth is `v3.0.2`.
+Current install/update release truth is `v3.0.3`.
 
-`v3.0.2` is the dogfood UX fix release after `v3.0.1`, carrying adopted repo
-context resolution, dotted repo-name handling such as `hotshot.sk`, aggregate
-intake missing-field reporting, and
-`amof intake template --kind bounded_intake_task` without changing runtime
-execution semantics.
+`v3.0.3` packages the post-`v3.0.2` dogfood improvements already promoted on
+public `main`: `amof runner template --kind local-planning`, local runner
+register/list/doctor/match readiness flow, execution scan readiness reporting,
+and standalone smoke version-text hygiene, without changing runtime execution
+semantics.
 
 AMOF now owns runtime truth across intake, context, runners, scans, bounded
 loops, receipts, and evidence — while cognition workers remain replaceable.
@@ -119,6 +119,8 @@ IAL reference (auth-bound surface): [https://ial-cloud-dev.amof.dev/](https://ia
 - This release does not claim enterprise/customer deployment.
 - This release does not claim autonomous remote dispatch is live.
 - Public scope remains scan/report/read-only/planning-first with bounded loops.
+- Local planning runner registration and readiness remain planning-only with no
+  execution dispatch or mutation behavior introduced.
 - `hotshot.sk` external repo dogfood passed for public CLI adoption/context and
   intake-template validation; that is dogfood evidence, not a claim of full
   enterprise platform completion.

@@ -1,6 +1,6 @@
 # Public Surface Taxonomy
 
-Status: public v3.0.2 Runtime Authority taxonomy
+Status: public v3.0.3 Runtime Authority taxonomy
 Date: 2026-06-01
 
 AMOF keeps more code than the first-run public path because the repo also
@@ -25,6 +25,10 @@ These commands belong in the public quickstart and default first-run help:
 - `amof intake validate`
 - `amof intake submit`
 - `amof runner template --kind local-planning`
+- `amof runner register`
+- `amof runner list`
+- `amof runner doctor`
+- `amof runner match`
 - `amof agent --plan "Inspect this repo"`
 - `amof execution scan`
 - `amof execution report`
@@ -38,7 +42,7 @@ These commands belong in the public quickstart and default first-run help:
 The public install path is:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.2"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.3"
 ```
 
 After pipx install, the public command is the `amof` shim. System `python -m

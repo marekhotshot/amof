@@ -1,25 +1,25 @@
 # Public Smoke Matrix
 
-Status: public v3.0.2 Runtime Authority smoke matrix
+Status: public v3.0.3 Runtime Authority smoke matrix
 Date: 2026-06-01
 
-This matrix defines public smoke evidence for the current AMOF v3.0.2 Runtime
+This matrix defines public smoke evidence for the current AMOF v3.0.3 Runtime
 Authority surface. The default gate is no-key and local-only. Live provider
 calls are optional/manual and must never run as part of the default public
 smoke.
 
 ## 1. Public Pipx Install Smoke
 
-- Command: `pipx install --force "git+https://github.com/marekhotshot/amof.git@v3.0.2" && amof --version && pipx runpip amof show amof`
-- Expected result: installs public tag and reports AMOF v3.0.2 plus package metadata
+- Command: `pipx install --force "git+https://github.com/marekhotshot/amof.git@v3.0.3" && amof --version && pipx runpip amof show amof`
+- Expected result: installs public tag and reports AMOF v3.0.3 plus package metadata
 - Requires network: yes
 - Requires provider key: no
 - Mutates target repo: no
-- Pass/fail criteria: pass if install exits 0, `amof --version` is v3.0.2, and package metadata name is `amof`; fail on system `python -m amof` assumptions
+- Pass/fail criteria: pass if install exits 0, `amof --version` is v3.0.3, and package metadata name is `amof`; fail on system `python -m amof` assumptions
 
 ## 2. Source Checkout Install Smoke
 
-- Command: `git clone --branch v3.0.2 --single-branch https://github.com/marekhotshot/amof.git /tmp/amof-src && cd /tmp/amof-src && ./scripts/install-amof.sh && ./.venv/bin/amof doctor`
+- Command: `git clone --branch v3.0.3 --single-branch https://github.com/marekhotshot/amof.git /tmp/amof-src && cd /tmp/amof-src && ./scripts/install-amof.sh && ./.venv/bin/amof doctor`
 - Expected result: clean source checkout creates local venv and doctor passes or reports only understood warnings
 - Requires network: yes
 - Requires provider key: no
@@ -29,7 +29,7 @@ smoke.
 ## 3. Standalone Artifact Smoke
 
 - Command: `./scripts/build-standalone-amof.sh && ./scripts/smoke-standalone-amof.sh`
-- Expected result: builds `./dist/amof`, the artifact reports AMOF v3.0.2, and the standalone smoke passes without pipx
+- Expected result: builds `./dist/amof`, the artifact reports AMOF v3.0.3, and the standalone smoke passes without pipx
 - Requires network: yes, for dependency resolution during the build
 - Requires provider key: no
 - Mutates target repo: no, beyond initial disposable fixture commit

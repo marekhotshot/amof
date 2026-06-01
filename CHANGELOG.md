@@ -8,6 +8,45 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## v3.0.3 - Runner Template Release Packaging
+
+- Packaging-only release after `v3.0.2`.
+- Keeps runtime execution semantics unchanged.
+- Keeps dispatch and mutation behavior unchanged.
+
+### Added
+
+- `amof runner template --kind local-planning` is now part of the released
+  public CLI install truth.
+- The released CLI now includes the local planning runner registration/readiness
+  path: `amof runner register`, `amof runner list`, `amof runner doctor`, and
+  `amof runner match`.
+- The released CLI now includes the execution readiness scan path for
+  `NO_EXECUTION_PERFORMED` local-planning outcomes.
+
+### Fixed
+
+- The standalone smoke script now checks the current release version text for
+  the packaged artifact.
+
+### Notes
+
+- `v3.0.3` packages the post-`v3.0.2` dogfood improvements already promoted on
+  public `main`.
+- This release is local planning/readiness only.
+- No runtime execution semantics changed.
+- No execution dispatch or mutation behavior was introduced.
+
+### Validation
+
+- `git diff --check` passed.
+- `PYTHONPATH=scripts python3 -m unittest tests.test_runner_registration tests.test_remote_execution_scan_report tests.test_cli_intake tests.test_repo_adoption tests.test_update_uninstall` passed.
+- `PYTHONPATH=scripts python3 -m amof --version` reported `AMOF v3.0.3`.
+- `PYTHONPATH=scripts python3 -m amof update --check --version v3.0.3` reported current and target `v3.0.3`.
+- Source smoke passed for local planning runner template generation, local runner
+  registration/match, and execution scan readiness with
+  `NO_EXECUTION_PERFORMED`.
+
 ## v3.0.2 - Dogfood UX Fixes
 
 - Dogfood follow-up release after `v3.0.1`.
