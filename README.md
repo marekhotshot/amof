@@ -2,27 +2,29 @@
   <img src="docs/assets/amof-logo.svg" alt="AMOF logo" width="140" />
 </p>
 
-<h1 align="center">AMOF</h1>
+<h1 align="center">AMOF 3.0 Runtime Authority is live.</h1>
 
 <p align="center"><strong>Agentic Operations Fabric</strong></p>
 
-<p align="center">Governed cognition runtime with infrastructure awareness, receipts, and bounded execution.</p>
+<p align="center">AMOF now owns runtime truth across intake, context, runners, scans, bounded loops, receipts, and evidence — while cognition workers remain replaceable.</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v3.0.0-0A7FFF.svg" alt="release v3.0.0" />
+  <img src="https://img.shields.io/badge/release-v3.0.1-0A7FFF.svg" alt="release v3.0.1" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
-AMOF v3.0.0 is a local-first CLI for governed planning and execution around
-real repositories. It validates the workstation, stores app-data and receipts
-outside the target repo, records provider profile references, and can run
-read-only planning, bounded intake/handoff preparation, or explicitly requested
-bounded execution.
+AI agents are cheap. Runtime truth is not.
 
-AMOF is for platform and DevOps engineers who want an auditable cognition loop:
+AMOF v3.0.1 is the governed orchestration layer that controls context,
+execution readiness, policy attribution, receipts, and evidence before
+cognition workers mutate anything. It validates the workstation, stores
+app-data and receipts outside the target repo, records provider profile
+references, and supports planning-only/read-only flows plus bounded loops.
+
+AMOF is for platform and DevOps engineers who want an auditable runtime loop:
 LLM calls are workers inside a governed runtime, not the authority for source
-truth, runtime truth, or production mutation.
+truth, runtime truth, or mutation policy.
 
 ## What AMOF Is
 
@@ -35,8 +37,9 @@ AMOF turns a repository into a governed cognition runtime:
 - `amof chat start|ask|status|finalize` shape a bounded proposal-only intake session.
 - `amof chat approve` and `amof chat handoff` create explicit approval and handoff artifacts only.
 - `amof agent --plan` is read-only planning.
-- `amof agent --plan-execute` is bounded execution that still requires human
-  review of the resulting Git diff.
+- `amof execution scan|report` provides readiness/evidence surfaces without
+  execution dispatch.
+- `amof loop` provides bounded non-mutation runtime loops with evidence output.
 
 ```text
 source repo + runtime evidence
@@ -54,6 +57,83 @@ proposal, bounded plan, or explicitly approved execution artifact
 AMOF owns the loop around source truth, runtime truth, receipts, and approval
 boundaries. Vendor runtimes and local models are optional cognition workers
 behind that loop.
+
+## Runtime Authority
+
+AMOF does not trust chat output as runtime truth. Runtime truth is emitted as
+inspectable evidence through receipts, runtime logs, run records, intake
+records, selected context, runner metadata, and bounded loop reports.
+
+Public v3.0.1 runtime authority surfaces:
+
+- context selection via `amof context`
+- governed intake validation/submission via `amof intake`
+- runner registry metadata via `amof runner`
+- execution readiness scan/report via `amof execution` (`NO_EXECUTION_PERFORMED`)
+- bounded loops via `amof loop` (`NO_MUTATION_PERFORMED`, `NO_REMOTE_EXECUTION_DISPATCHED`)
+- run inspection via `amof runs`
+- runtime logs and receipt/evidence surfaces with public-safe metadata
+
+## Governed Intake
+
+AMOF accepts messy work through intake, validates contract shape and runtime
+constraints, preserves planning-only behavior when required, and routes work to
+governed execution readiness instead of ad hoc prompting.
+
+## Context Discipline
+
+AMOF uses explicit context selection. If required remote/cloud context is
+unavailable, AMOF fails closed and returns an error. It does not silently
+fallback to local execution.
+
+## Runner Registry
+
+Runners are metadata-driven and replaceable. Runtime coordination and policy
+attribution live in AMOF; individual cognition workers are not the authority.
+
+## Execution Scan / Report
+
+AMOF can preview readiness, match intake packets to eligible runners, surface
+blockers, and generate reports without dispatching remote execution.
+
+## Bounded Loops
+
+AMOF supports controlled long-running loops with explicit stop conditions,
+evidence output, and policy discipline.
+
+## Receipts and Evidence
+
+AMOF records runtime facts through receipts and evidence surfaces while keeping
+public safety boundaries: no secrets, no raw prompts, no raw
+`provider_generation_id`, no private customer topology, and no sensitive auth
+material in public surfaces.
+
+AMOF preserves provider cost truth:
+
+- missing provider cost remains unknown/null
+- missing cost is never reported as fake `0.0`
+
+## Operator Console Preview
+
+Label: **Cloud-dev live preview**
+
+The cloud-dev Operator Console exposes AMOF runtime receipts, intake
+submissions, selected runs, policy attribution, and sanitized evidence/debug
+surfaces. It is a live preview over the current AMOF runtime path, not a fake
+demo surface.
+
+Caution: Cloud-dev preview. Public-safe runtime surfaces only. Known gaps are
+tracked as follow-up slices.
+
+CTA: [Open Operator Console Preview](https://console-cloud-dev.amof.dev/)
+
+IAL reference (auth-bound gateway surface): [https://ial-cloud-dev.amof.dev/](https://ial-cloud-dev.amof.dev/)
+
+## Current Known Next Slices
+
+- Runtime logs viewer contract and minimal UI
+- Receipt count semantics contract
+- Console rollout guardrail comparing deployed hash vs intended source
 
 ## Why Evidence-First
 
@@ -73,7 +153,7 @@ Those belong outside the public product tree.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v3.0.0 surface:
+This public `main` intentionally keeps a narrow, installable v3.0.1 surface:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -87,13 +167,15 @@ This public `main` intentionally keeps a narrow, installable v3.0.0 surface:
 - `amof chat approve <session-id>`
 - `amof chat handoff <approval-id-or-path>`
 - `amof agent --plan "Inspect this repo"`
-- `amof agent --plan-execute "Make a bounded change"`
+- `amof execution scan --help`
+- `amof execution report --help`
+- `amof loop --help`
 - `amof bootstrap contract`
 - `amof bootstrap bundle`
 
 ## Released Public CLI Surface
 
-What works in v3.0.0:
+What works in v3.0.1:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -117,8 +199,7 @@ What works in v3.0.0:
 - `amof chat approve <session-id>`
 - `amof chat handoff <approval-id-or-path>`
 - `amof agent --plan "Inspect this repo"`
-- bounded `amof agent --plan-execute` runs in disposable or intentionally
-  prepared repos
+- bounded non-mutation runtime loops via `amof loop`
 - `amof bootstrap contract --json`
 - `amof bootstrap bundle --json`
 
@@ -192,7 +273,7 @@ an explicit checkout-local virtualenv.
 Use this if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.8.1"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.1"
 ```
 
 This installs the `amof` CLI from the public GitHub tag into a pipx-managed
@@ -221,7 +302,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v2.8.1
+amof update --version v3.0.1
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -266,7 +347,8 @@ The normal public path after install is:
 2. inspect app-data health with `amof doctor`
 3. configure a provider profile with `amof setup provider ...`
 4. run read-only planning with `amof agent --plan`
-5. only use `--plan-execute` when you are ready to review a bounded diff
+5. use `amof execution scan|report` and `amof loop` for governed non-mutation
+   runtime loops
 
 AMOF stores repo bindings, contexts, journals, run logs, and provider-profile
 references in app-data. It does not write `.amof`, `ecosystems`, or `context`
@@ -278,7 +360,7 @@ Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.8.1"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.1"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
@@ -294,25 +376,18 @@ default. Live LLM planning or execution still requires provider configuration;
 without provider keys, the agent should reach the provider setup/key validation
 message rather than fail on missing `--ecosystem/-e`.
 
-## Bounded Worker Execution
+## Bounded Loops and Scan/Report
 
-AMOF v2.8.1 includes a public default `code` runner for bounded
-`amof agent --plan-execute` demos in adopted repositories. The default runner is
-limited to repository read/write tools and does not include shell, delete,
-checkpoint, commit, or push tools.
+The v3.0.1 Runtime Authority release emphasizes governed non-mutation runtime
+flows:
 
-Use this path only when you are prepared to review the resulting Git diff:
+- `amof execution scan` and `amof execution report` for readiness and evidence
+  (`NO_EXECUTION_PERFORMED`)
+- `amof loop` for bounded long-running loops with stop conditions and evidence
+  (`NO_MUTATION_PERFORMED`, `NO_REMOTE_EXECUTION_DISPATCHED`)
 
-```bash
-amof agent --provider openrouter --plan-execute \
-  "Add a small pure function and matching test. Do not commit." \
-  --no-follow-up
-```
-
-Bounded worker execution must still be treated as draft output. Inspect
-`git status`, review the diff, and run relevant tests before committing. AMOF
-does not mutate, commit, or push unless you explicitly ask it to do so, and
-bounded worker output must still be reviewed as a Git diff.
+This release framing does not claim autonomous remote dispatch or unrestricted
+mutation execution in public runtime surfaces.
 
 ## Configure A Provider Profile
 
@@ -468,8 +543,9 @@ Additional public docs retained in this repo include:
 ## Release State
 
 - `AMOF_300_RELEASE_PUBLIC_DOCS_BACKFILL`
-- `v3.0.0` is tagged as the AMOF 3.0 Runtime Authority release.
-- Runtime Authority framing for public `v3.0.0` includes:
+- `v3.0.1` is the current AMOF 3.0 Runtime Authority correction release.
+- `v3.0.0` remains as a historical broken escaped tag and is not rewritten.
+- Runtime Authority framing for public `v3.0.1` includes:
   - explicit runtime context via `amof context`
   - intake contract and CLI intake via `amof intake`
   - runner capability registry via `amof runner`
@@ -477,14 +553,15 @@ Additional public docs retained in this repo include:
   - bounded loops with `NO_MUTATION_PERFORMED` and `NO_REMOTE_EXECUTION_DISPATCHED`
   - runtime evidence inspection via `amof runs` and runtime logs contract tests
   - remote IAL cost truth with `REMOTE_IAL_SMOKE_STATUS_EXPLICIT=PASS`
-- Current `v3.0.0` limitations:
+- Current `v3.0.1` limitations:
   - no remote execution dispatch
   - no mutation execution
-  - console runtime logs viewer is not part of `v3.0.0`
+  - console runtime logs viewer is not part of `v3.0.1`
 - Release evidence docs:
   - `docs/releases/amof-3.0-closeout.md`
   - `docs/releases/amof-3.0.0-tag.md`
-- This README release positioning was committed after `v3.0.0` tag creation as post-tag docs recovery and is not part of the original tagged source tree.
+- `docs/releases/amof-3.0-runtime-authority.md` tracks the current correction release truth (`v3.0.1`).
+- The `v3.0.0` tag documentation remains historical evidence of the broken escaped release.
 
 ## Change History
 

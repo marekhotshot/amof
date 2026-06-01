@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import subprocess
 import sys
+import tomllib
 import unittest
 
 
@@ -33,6 +34,11 @@ def _args(**overrides):
 
 
 class UpdateCommandTests(unittest.TestCase):
+    def test_package_metadata_version_matches_runtime_version(self) -> None:
+        pyproject = ROOT / "pyproject.toml"
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        self.assertEqual(data["project"]["version"], update_cmd.__version__)
+
     def test_update_command_is_no_ecosystem_command(self) -> None:
         import amof.entrypoint as entrypoint
 

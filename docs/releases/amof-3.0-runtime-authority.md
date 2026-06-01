@@ -1,77 +1,115 @@
-# AMOF 3.0 — Runtime Authority Release
+# AMOF 3.0 Runtime Authority is live.
 
-Status: planned  
-Canonical version: v3.0.0  
-Code name: AMOF-ULTRAPLAN-300  
-Date: 2026-05-29  
+Status: released
+Canonical version: `v3.0.1`
+Code name: `AMOF-ULTRAPLAN-300`
 Related:
-- docs/roadmap/AMOF-ULTRAPLAN-300.md
-- docs/governed-cognition-runtime.md
+- `docs/roadmap/AMOF-ULTRAPLAN-300.md`
+- `docs/governed-cognition-runtime.md`
+- `docs/releases/amof-3.0-closeout.md`
+- `docs/releases/amof-3.0.0-tag.md`
 
-## Release Thesis
+`v3.0.0` remains as historical evidence of a broken escaped release tag.
+Current install/update correction release truth is `v3.0.1`.
 
-AMOF owns runtime truth; cognition workers are replaceable.
+AMOF now owns runtime truth across intake, context, runners, scans, bounded
+loops, receipts, and evidence — while cognition workers remain replaceable.
 
-## Prerequisite Gate
+AI agents are cheap. Runtime truth is not.
 
-Required prerequisite: `AMOF-REMOTE-IAL-OPENROUTER-COST-TRUTH-001`
+AMOF is the governed orchestration layer that controls context, execution
+readiness, policy attribution, receipts, and evidence before cognition workers
+mutate anything.
 
-Accepted evidence:
-- promoted public main: `feaa393fb7fc73eab260eea5b23c6f9a013cb887`
-- smoke run: `run-20260529-220052`
-- request id: `f5701fd4-61ab-401a-9371-7c3c1e2909c6`
-- verdict: `CLIENT_IAL_SMOKE_CONTRACT_OK`
-- `cost_status=observed`
-- `estimated_cost=0.0003426`
-- `prompt_tokens=1456`
-- `completion_tokens=207`
-- `provider_usage.cost=0.0003426`
-- `provider_usage.total_tokens=1663`
-- private generation identifier present in private evidence
-- safe `provider_generation_ref` present
-- console receipt sanitized/hash-safe
+## Runtime Authority
 
-## Ordered Ticket Sequence
+AMOF does not treat chat output as runtime truth. Runtime truth is recorded and
+exposed through:
 
-1. `AMOF-REMOTE-IAL-OPENROUTER-COST-TRUTH-001`
-2. `AMOF-CONFIG-LAYER-MVP-001`
-3. `AMOF-RUNTIME-LOGS-CONTRACT-001`
-4. `AMOF-RUNS-CLI-001`
-5. `AMOF-RUNTIME-CONTEXT-SWITCHING-001`
-6. `AMOF-INTAKE-CONTRACT-001`
-7. `AMOF-CLI-INTAKE-001`
-8. `AMOF-CONSOLE-INTAKE-001`
-9. `AMOF-RUNNER-REGISTRATION-001`
-10. `AMOF-REMOTE-EXECUTION-SCAN-REPORT-001`
-11. `AMOF-300-RELEASE-CLOSEOUT-001`
+- context selection records
+- intake validation/submission records
+- runner registry metadata
+- execution scan/report artifacts
+- bounded loop summaries
+- run inspection records
+- runtime logs
+- receipts and evidence surfaces
 
-## Per-Track Summary
+## Governed Intake
 
-| Track | Current inventory | Classification | Proposed minimal ticket | Acceptance criteria | Validation command | Out-of-scope | Risk | Boundary impact |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| runtime logs | Session and event telemetry exists in `scripts/amof/orchestrator/telemetry.py` and `scripts/amof/orchestrator/events.py` | required | `AMOF-RUNTIME-LOGS-CONTRACT-001` | Public runtime emits stable cost truth fields and unknown-cost semantics | `python3 tests/test_remote_ial.py` | New execution engine | medium | Public contract only, no private internals |
-| config/profile layer | Provider templates exist under `templates/provider-profiles/` | blocker | `AMOF-CONFIG-LAYER-MVP-001` | Profile/config contract chooses runtime authority defaults safely | `amof setup provider --list` | Full config migration | high | Public env-var-only references |
-| cloud workspace context | Operator runbooks and cloud-dev receipts exist in operator workspace | cleanup | `AMOF-REMOTE-EXECUTION-SCAN-REPORT-001` | Runtime authority docs map cloud context boundaries | `python3 scripts/amof.py doctor --json` | Cluster redesign | medium | Public/private split explicitly documented |
-| local CLI intake | Intake contract examples are JSON under `contracts/examples/` | required | `AMOF-CLI-INTAKE-001` | Local intake path is contractized and validation-backed | `python3 scripts/amof.py ticket --help` | Voice intake | medium | Public intake schema only |
-| console intake | Operator console exists privately; public contract needs intake boundary | required | `AMOF-CONSOLE-INTAKE-001` | Console intake contract references safe surfaces only | `python3 scripts/amof.py chat --help` | Dashboard analytics | medium | No private gateway leak |
-| installable CLI | Install and first-run guidance already in `README.md`/runbooks | required | `AMOF-RUNS-CLI-001` | Installed CLI exposes runtime authority workflow safely | `python3 scripts/amof.py --version` | Installer rewrite | low | Public install contract only |
-| remote execution | Remote IAL path and receipts are proven by cost-truth smoke | required | `AMOF-REMOTE-EXECUTION-SCAN-REPORT-001` | Remote run evidence contract recorded without unsafe payloads | `python3 tests/test_remote_ial.py` | Runner implementation | medium | Hash-safe references only |
-| context switching | No finalized runtime context-switch contract yet | blocker | `AMOF-RUNTIME-CONTEXT-SWITCHING-001` | Explicit runtime context switch rules and guardrails documented | `python3 scripts/amof.py status` | Auto-fallback behavior | high | Must forbid silent local fallback |
-| remote IAL usage/cost truth | Cost truth promoted on main and smoke evidence accepted | required | `AMOF-REMOTE-IAL-OPENROUTER-COST-TRUTH-001` (closed) | Missing provider cost never treated as truth `0.0`; `cost_status` persisted | `python3 tests/test_remote_ial.py` | Provider policy expansion | low | `provider_generation_ref` public-safe, raw id private |
-| receipts and evidence | Receipts taxonomy and fresh-clone verification already used in operations | required | `AMOF-300-RELEASE-CLOSEOUT-001` | Release closeout links promotion and fresh-clone proof | `scripts/fresh-clone-verify.sh <sha> --ticket <id>` | Analytics pipeline | medium | Public receipts remain sanitized |
+AMOF accepts messy work through intake, validates contract shape and policy
+constraints, preserves planning-only behavior where required, and routes work
+toward governed execution readiness instead of ad hoc prompting.
 
-## Explicit Non-Goals
+## Context Discipline
 
-- no Jira sync
-- no voice intake
-- no agent arena authority
-- no dashboard analytics
-- no fake `cost: 0.0` for missing provider cost
-- no silent local fallback
+AMOF context is explicit. If required remote/cloud context is unavailable,
+AMOF fails closed with a clear error and does not silently fallback to local.
 
-## Validation
+## Runner Registry
 
-- Verified prerequisite promotion SHA on canonical public main: `feaa393fb7fc73eab260eea5b23c6f9a013cb887`.
-- Verified accepted smoke evidence bundle includes observed cost truth and hash-safe receipt surfaces.
-- Verified this release slice creates planning/contract artifacts only and introduces no runtime behavior change.
-- Verified public artifact scope remains documentation/examples and excludes private provider internals.
+Workers/runners are metadata-driven and replaceable. The AMOF runtime owns
+coordination and authority; any individual cognition worker is not the runtime
+authority.
+
+## Execution Scan / Report
+
+AMOF can scan readiness, match intake to runners, identify blockers, and emit
+reports without dispatching remote execution.
+
+Truth markers:
+- `NO_EXECUTION_PERFORMED`
+
+## Bounded Loops
+
+AMOF supports controlled long-running loops with stop conditions, evidence, and
+policy discipline.
+
+Truth markers:
+- `NO_MUTATION_PERFORMED`
+- `NO_REMOTE_EXECUTION_DISPATCHED`
+
+## Receipts and Evidence
+
+AMOF records runtime facts through receipts and evidence surfaces while
+preserving public-safe boundaries:
+
+- no secrets
+- no raw prompts
+- no raw `provider_generation_id`
+- no private customer topology
+- no sensitive auth material in public surfaces
+
+AMOF preserves provider cost truth:
+
+- missing provider cost remains unknown/null
+- missing provider cost is never reported as fake `0.0`
+
+## Operator Console Preview
+
+Label: **Cloud-dev live preview**
+
+The cloud-dev Operator Console exposes AMOF runtime receipts, intake
+submissions, selected runs, policy attribution, and sanitized evidence/debug
+surfaces. It is a live preview over the current AMOF runtime path, not a fake
+demo surface.
+
+Caution: Cloud-dev preview. Public-safe runtime surfaces only. Known gaps are
+tracked as follow-up slices.
+
+CTA: [Open Operator Console Preview](https://console-cloud-dev.amof.dev/)
+
+IAL reference (auth-bound surface): [https://ial-cloud-dev.amof.dev/](https://ial-cloud-dev.amof.dev/)
+
+## Current Known Next Slices
+
+- Runtime logs viewer contract and minimal UI
+- Receipt count semantics contract
+- Console rollout guardrail comparing deployed hash vs intended source
+
+## Scope Boundaries
+
+- This release does not claim production readiness.
+- This release does not claim enterprise/customer deployment.
+- This release does not claim autonomous remote dispatch is live.
+- Public scope remains scan/report/read-only/planning-first with bounded loops.

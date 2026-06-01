@@ -2,7 +2,7 @@
 
 Ticket: `AMOF-IAL-PUBLIC-CLIENT-001`
 
-Status: `PUBLIC_CLIENT_CONTRACT_ONLY`, updated for `v2.8.1`
+Status: `PUBLIC_CLIENT_CONTRACT_ONLY`, updated for `v3.0.1`
 
 ## Purpose
 
@@ -121,6 +121,8 @@ Optional hardening modes:
 - `journal: disabled` skips journal generation entirely
 - `journal: redacted` preserves the journal workflow while redacting sensitive
   session content
+- unknown/missing provider cost remains unknown/null and is never represented
+  as fake `0.0`
 
 These are local evidence controls only. Public `amof` does not own private
 gateway receipt policy.
@@ -150,7 +152,7 @@ The public client/evidence contract has been proven against the private gateway:
   - public client
   - private gateway
   - live OpenRouter upstream
-- installed `AMOF v2.8.1` completed `amof chat plan` through the remote IAL
+- installed `AMOF v3.0.1` completed `amof chat plan` through the remote IAL
   client after the cloud-dev gateway provider secret was refreshed
 - private receipts remained hash-only
 - public messages remained hash-only when configured

@@ -1,6 +1,6 @@
 # Governed Cognition Runtime
 
-Status: public architecture narrative
+Status: public architecture narrative for `v3.0.1`
 
 AMOF is a governed cognition runtime with infrastructure awareness. It is not a
 replacement for a developer, editor, CI system, or production control plane.
@@ -91,15 +91,23 @@ decision logic that chooses providers, models, or operational routes.
 
 ## Current Verified Surface
 
-As of `v2.8.1`, the verified public surface includes:
+As of `v3.0.1`, the verified public Runtime Authority surface includes:
 
-- install/update through the public package
-- app-data based repo adoption and evidence storage
-- read-only planning and bounded intake
-- explicit approval/handoff artifacts
-- bounded `plan-execute` with human diff review
-- remote IAL client support for structured planning through `amof chat plan`
-- release and promotion receipts for public main verification
+- explicit runtime context selection (`amof context`)
+- governed intake validation/submission (`amof intake`)
+- runner registry metadata (`amof runner`)
+- execution readiness scan/report (`amof execution`) with
+  `NO_EXECUTION_PERFORMED`
+- bounded loops (`amof loop`) with `NO_MUTATION_PERFORMED` and
+  `NO_REMOTE_EXECUTION_DISPATCHED`
+- run inspection and runtime logs evidence (`amof runs`)
+- remote IAL client support with cost-truth semantics
+  (`REMOTE_IAL_SMOKE_STATUS_EXPLICIT=PASS`)
+
+Current cloud-dev verification summary:
+
+- `VERIFIED_RUNTIME_SURFACES=console-cloud-dev.amof.dev:LOW_RISK_EXPOSURE;ial-cloud-dev.amof.dev:SAFE_PUBLIC_SURFACE`
+- `REGRESSIONS_FOUND=receipt_sidebar_polling_regression_detected_and_fixed;admin_context_switch_surfaces_missing_with_mixed_intent_classification`
 
 This is the shipped surface. Anything beyond it should be documented as future
 direction or private/operator evidence, not as public capability.
