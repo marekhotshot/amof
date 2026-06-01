@@ -1,7 +1,7 @@
 # Public Surface Taxonomy
 
-Status: public baseline taxonomy
-Date: 2026-05-17
+Status: public v3.0.2 Runtime Authority taxonomy
+Date: 2026-06-01
 
 AMOF keeps more code than the first-run public path because the repo also
 contains source-checkout utilities, advanced evidence tooling, optional provider
@@ -20,7 +20,14 @@ These commands belong in the public quickstart and default first-run help:
 - `amof paths`
 - `amof setup provider`
 - `amof init --adopt .`
+- `amof context <adopted-ecosystem>`
+- `amof intake template --kind bounded_intake_task`
+- `amof intake validate`
+- `amof intake submit`
 - `amof agent --plan "Inspect this repo"`
+- `amof execution scan`
+- `amof execution report`
+- `amof loop`
 - `amof bootstrap contract`
 - `amof bootstrap bundle`
 - `amof update`
@@ -30,18 +37,20 @@ These commands belong in the public quickstart and default first-run help:
 The public install path is:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.3.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.2"
 ```
 
 After pipx install, the public command is the `amof` shim. System `python -m
 amof` is not a public pipx contract.
+
+AMOF is a local-first CLI and Runtime Authority surface for governed AI work.
+It is not just a chatbot or a generic AI wrapper.
 
 ## Advanced Public Surface
 
 These commands can be useful, but should be labeled as advanced or manual:
 
 - `amof status`
-- `amof context`
 - `amof preview`
 - `amof manifest`
 - `amof generated-build`

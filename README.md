@@ -16,15 +16,20 @@
 
 AI agents are cheap. Runtime truth is not.
 
-AMOF v3.0.2 is the governed orchestration layer that controls context,
-execution readiness, policy attribution, receipts, and evidence before
-cognition workers mutate anything. It validates the workstation, stores
-app-data and receipts outside the target repo, records provider profile
-references, and supports planning-only/read-only flows plus bounded loops.
+AMOF v3.0.2 is a local-first CLI and Runtime Authority surface for governed AI
+work. It controls context, execution readiness, policy attribution, receipts,
+and evidence before cognition workers mutate anything. It validates the
+workstation, stores app-data and receipts outside the target repo, records
+provider profile references, and supports planning-only/read-only flows plus
+bounded loops.
 
 AMOF is for platform and DevOps engineers who want an auditable runtime loop:
 LLM calls are workers inside a governed runtime, not the authority for source
 truth, runtime truth, or mutation policy.
+
+It is not just a chatbot and not a generic AI wrapper. The public contract is a
+governed cognition runtime around bounded loops, runtime truth, and execution
+evidence.
 
 ## What AMOF Is
 
@@ -555,6 +560,8 @@ Additional public docs retained in this repo include:
   - runtime evidence inspection via `amof runs` and runtime logs contract tests
   - remote IAL cost truth with `REMOTE_IAL_SMOKE_STATUS_EXPLICIT=PASS`
   - adopted repo context resolution for app-data ecosystems
+  - external repo dogfood through `hotshot.sk`, including dotted repo-name
+    context resolution
   - aggregate intake missing-field reporting
   - `amof intake template --kind bounded_intake_task`
 - Current `v3.0.2` limitations:

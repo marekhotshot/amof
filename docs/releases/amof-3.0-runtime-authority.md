@@ -13,7 +13,8 @@ Related:
 Current install/update release truth is `v3.0.2`.
 
 `v3.0.2` is the dogfood UX fix release after `v3.0.1`, carrying adopted repo
-context resolution, aggregate intake missing-field reporting, and
+context resolution, dotted repo-name handling such as `hotshot.sk`, aggregate
+intake missing-field reporting, and
 `amof intake template --kind bounded_intake_task` without changing runtime
 execution semantics.
 
@@ -22,9 +23,9 @@ loops, receipts, and evidence — while cognition workers remain replaceable.
 
 AI agents are cheap. Runtime truth is not.
 
-AMOF is the governed orchestration layer that controls context, execution
-readiness, policy attribution, receipts, and evidence before cognition workers
-mutate anything.
+AMOF is a local-first CLI and governed cognition runtime that controls context,
+execution readiness, policy attribution, receipts, and evidence before cognition
+workers mutate anything. It is not just a chatbot or a generic AI wrapper.
 
 ## Runtime Authority
 
@@ -118,3 +119,6 @@ IAL reference (auth-bound surface): [https://ial-cloud-dev.amof.dev/](https://ia
 - This release does not claim enterprise/customer deployment.
 - This release does not claim autonomous remote dispatch is live.
 - Public scope remains scan/report/read-only/planning-first with bounded loops.
+- `hotshot.sk` external repo dogfood passed for public CLI adoption/context and
+  intake-template validation; that is dogfood evidence, not a claim of full
+  enterprise platform completion.

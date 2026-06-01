@@ -17,6 +17,8 @@ AMOF installs a local CLI that can:
 - adopt an existing repo without polluting it
 - store provider profile references
 - run read-only planning or explicitly requested bounded execution
+- expose Runtime Authority surfaces for runtime truth, bounded loops, execution
+  evidence, intake templates, and runner/execution readiness checks
 
 AMOF is evidence-first. It does not auto-commit or push on its own, and it does
 not store raw provider secrets in profile setup.
@@ -74,8 +76,14 @@ end-user installs do not pull in pytest.
 Use this path if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v2.6.1"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.2"
 amof --version
+```
+
+Expected version:
+
+```text
+AMOF v3.0.2
 ```
 
 ## First Commands After Install
