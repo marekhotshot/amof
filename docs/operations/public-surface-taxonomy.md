@@ -24,6 +24,7 @@ These commands belong in the public quickstart and default first-run help:
 - `amof intake template --kind bounded_intake_task`
 - `amof intake validate`
 - `amof intake submit`
+- `amof runner template --kind local-planning`
 - `amof agent --plan "Inspect this repo"`
 - `amof execution scan`
 - `amof execution report`

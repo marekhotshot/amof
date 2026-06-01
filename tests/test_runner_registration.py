@@ -11,12 +11,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_ROOT = ROOT / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from amof.app_config import set_current_context_name
+from amof.commands.execution import cmd_execution
 from amof.commands.intake import cmd_intake
 from amof.commands.runner import cmd_runner
 
@@ -27,6 +30,7 @@ def _runner_args(runner_cmd: str, **overrides: object) -> SimpleNamespace:
         "file": None,
         "runner_id": None,
         "intake_ref": None,
+        "kind": None,
         "json": False,
     }
     payload.update(overrides)
@@ -35,6 +39,17 @@ def _runner_args(runner_cmd: str, **overrides: object) -> SimpleNamespace:
 
 def _intake_args(intake_cmd: str, **overrides: object) -> SimpleNamespace:
     payload: dict[str, object] = {"intake_cmd": intake_cmd, "file": None, "intake_id": None, "json": False}
+    payload.update(overrides)
+    return SimpleNamespace(**payload)
+
+
+def _execution_args(execution_cmd: str, **overrides: object) -> SimpleNamespace:
+    payload: dict[str, object] = {
+        "execution_cmd": execution_cmd,
+        "intake_ref": None,
+        "scan_id": None,
+        "json": False,
+    }
     payload.update(overrides)
     return SimpleNamespace(**payload)
 
@@ -52,6 +67,14 @@ def _run_intake_cmd(args: SimpleNamespace) -> tuple[int, str, str]:
     stderr = io.StringIO()
     with redirect_stdout(stdout), redirect_stderr(stderr):
         code = cmd_intake(args)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+def _run_execution_cmd(args: SimpleNamespace) -> tuple[int, str, str]:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        code = cmd_execution(args)
     return code, stdout.getvalue(), stderr.getvalue()
 
 
@@ -112,6 +135,85 @@ def _write(path: Path, content: str) -> Path:
 
 
 class RunnerRegistrationTests(unittest.TestCase):
+    def test_template_outputs_valid_local_planning_runner(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-template-") as td:
+            home = Path(td) / "home"
+            code, stdout, stderr = _run_runner_cmd(_runner_args("template", kind="local-planning"))
+            self.assertEqual(code, 0)
+            self.assertEqual(stderr, "")
+
+            payload = yaml.safe_load(stdout)
+            self.assertEqual(payload["runner_id"], "local-planning")
+            self.assertEqual(payload["context"], "local")
+            self.assertEqual(payload["allowed_mutation_modes"], ["read_only"])
+            self.assertIn("intake.validate", payload["capabilities"])
+            self.assertIn("intake.plan", payload["capabilities"])
+            self.assertIn("execution.scan_report", payload["capabilities"])
+            self.assertNotIn("endpoint_ref", payload)
+
+            runner_path = _write(Path(td) / "runner.yaml", stdout)
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                set_current_context_name("local")
+                register_code, register_stdout, register_stderr = _run_runner_cmd(
+                    _runner_args("register", file=str(runner_path))
+                )
+            self.assertEqual(register_code, 0)
+            self.assertIn("REGISTERED runner_id=local-planning", register_stdout)
+            self.assertEqual(register_stderr, "")
+
+    def test_generated_intake_and_runner_template_match_and_scan(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-template-dogfood-") as td:
+            home = Path(td) / "home"
+            runner_code, runner_stdout, runner_stderr = _run_runner_cmd(
+                _runner_args("template", kind="local-planning")
+            )
+            self.assertEqual(runner_code, 0)
+            self.assertEqual(runner_stderr, "")
+            runner_path = _write(Path(td) / "runner.yaml", runner_stdout)
+
+            intake_code, intake_stdout, intake_stderr = _run_intake_cmd(
+                _intake_args("template", kind="bounded_intake_task")
+            )
+            self.assertEqual(intake_code, 0)
+            self.assertEqual(intake_stderr, "")
+            intake_path = _write(Path(td) / "intake.yaml", intake_stdout)
+
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                set_current_context_name("local")
+
+                code, stdout, stderr = _run_intake_cmd(_intake_args("validate", file=str(intake_path)))
+                self.assertEqual(code, 0)
+                self.assertIn("VALID intake_id=replace-me-intake-id", stdout)
+                self.assertEqual(stderr, "")
+
+                code, stdout, stderr = _run_runner_cmd(_runner_args("register", file=str(runner_path)))
+                self.assertEqual(code, 0)
+                self.assertIn("REGISTERED runner_id=local-planning", stdout)
+                self.assertEqual(stderr, "")
+
+                code, stdout, stderr = _run_runner_cmd(_runner_args("doctor"))
+                self.assertEqual(code, 0)
+                self.assertIn("RUNNER_REGISTRY_OK", stdout)
+                self.assertEqual(stderr, "")
+
+                code, stdout, stderr = _run_runner_cmd(_runner_args("list"))
+                self.assertEqual(code, 0)
+                self.assertIn("local-planning", stdout)
+                self.assertEqual(stderr, "")
+
+                code, stdout, stderr = _run_runner_cmd(_runner_args("match", intake_ref=str(intake_path)))
+                self.assertEqual(code, 0)
+                self.assertIn("candidates=1", stdout)
+                self.assertIn("no_dispatch=yes", stdout)
+                self.assertEqual(stderr, "")
+
+                code, stdout, stderr = _run_execution_cmd(_execution_args("scan", intake_ref=str(intake_path)))
+                self.assertEqual(code, 0)
+                self.assertIn("outcome=NO_EXECUTION_PERFORMED", stdout)
+                self.assertIn("status=ready", stdout)
+                self.assertIn("eligible_runners=1", stdout)
+                self.assertEqual(stderr, "")
+
     def test_register_valid_runner_passes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-runner-register-valid-") as td:
             home = Path(td) / "home"

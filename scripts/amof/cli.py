@@ -779,6 +779,17 @@ def parse_args() -> argparse.Namespace:
     )
     runner_sub = runner_parser.add_subparsers(dest="runner_cmd", required=True)
 
+    runner_template = runner_sub.add_parser(
+        "template",
+        help="Print a safe local planning runner YAML template",
+    )
+    runner_template.add_argument(
+        "--kind",
+        default="local-planning",
+        choices=["local-planning"],
+        help="Template kind to print (default: local-planning)",
+    )
+
     runner_register = runner_sub.add_parser(
         "register",
         help="Register one runner metadata YAML/JSON file locally",

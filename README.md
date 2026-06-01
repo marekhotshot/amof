@@ -174,6 +174,7 @@ This public `main` intentionally keeps a narrow, installable v3.0.2 surface:
 - `amof agent --plan "Inspect this repo"`
 - `amof execution scan --help`
 - `amof execution report --help`
+- `amof runner template --kind local-planning`
 - `amof loop --help`
 - `amof bootstrap contract`
 - `amof bootstrap bundle`
@@ -358,6 +359,26 @@ The normal public path after install is:
 AMOF stores repo bindings, contexts, journals, run logs, and provider-profile
 references in app-data. It does not write `.amof`, `ecosystems`, or `context`
 directories into the adopted target repo by default.
+
+## Local Planning Runner Dogfood Path
+
+Use this local-only path to move from intake capture to runner matching and an
+execution readiness scan without dispatching work:
+
+```bash
+amof init --adopt "$PWD" --name my-repo
+amof context my-repo
+amof intake template --kind bounded_intake_task > intake.yaml
+amof intake validate intake.yaml
+amof runner template --kind local-planning > runner.yaml
+amof runner register runner.yaml
+amof runner match intake.yaml
+amof execution scan intake.yaml
+```
+
+The generated runner is planning/readiness metadata only: local context,
+`read_only` mutation mode, no endpoint URL, no credentials, no dispatch, and no
+execution.
 
 ## Adopt A Repo For Agent Planning
 

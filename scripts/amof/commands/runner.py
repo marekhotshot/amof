@@ -49,6 +49,7 @@ RUNNER_STATUS_ALLOWED = {
 RUNNER_ELIGIBLE_STATUSES = {"available", "registered", "ready"}
 ALLOWED_MUTATION_MODES = {"read_only"}
 REQUIRED_MATCH_CAPABILITIES = {"intake.validate", "intake.plan"}
+SUPPORTED_TEMPLATE_KINDS = ("local-planning",)
 
 SENSITIVE_KEY_PATTERN = re.compile(
     r"(secret|token|password|api[_-]?key|access[_-]?key|private[_-]?key|bearer|credential)",
@@ -256,6 +257,39 @@ def _validate_runner(payload: dict[str, Any]) -> ValidatedRunner:
         registration_source=registration_source,
         endpoint_ref=endpoint_ref,
     )
+
+
+def _template_payload(kind: str) -> dict[str, Any]:
+    if kind != "local-planning":
+        supported = ", ".join(SUPPORTED_TEMPLATE_KINDS)
+        raise RunnerCliError(f"unsupported runner template kind: {kind} (supported: {supported})")
+    return {
+        "version": "1.0.0",
+        "runner_id": "local-planning",
+        "name": "Local Planning Runner",
+        "context": "local",
+        "status": "available",
+        "capabilities": [
+            "intake.validate",
+            "intake.plan",
+            "execution.scan_report",
+        ],
+        "supported_task_kinds": [
+            "other",
+            "documentation",
+        ],
+        "allowed_mutation_modes": [
+            "read_only",
+        ],
+        "max_concurrency": 1,
+        "labels": [
+            "local",
+            "planning-only",
+            "no-dispatch",
+        ],
+        "trust_level": "local",
+        "registration_source": "amof.runner.template.local-planning",
+    }
 
 
 def _load_runners() -> list[dict[str, Any]]:
@@ -531,9 +565,18 @@ def _cmd_match(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_template(args: argparse.Namespace) -> int:
+    kind = str(getattr(args, "kind", "") or "local-planning").strip() or "local-planning"
+    payload = _template_payload(kind)
+    print(yaml.safe_dump(payload, sort_keys=False).rstrip())
+    return 0
+
+
 def cmd_runner(args: argparse.Namespace) -> int:
     action = str(getattr(args, "runner_cmd", "") or "").strip()
     try:
+        if action == "template":
+            return _cmd_template(args)
         if action == "register":
             return _cmd_register(args)
         if action == "list":
@@ -544,7 +587,7 @@ def cmd_runner(args: argparse.Namespace) -> int:
             return _cmd_doctor(args)
         if action == "match":
             return _cmd_match(args)
-        sys.stderr.write("Usage: amof runner {register,list,show,doctor,match} ...\n")
+        sys.stderr.write("Usage: amof runner {template,register,list,show,doctor,match} ...\n")
         return 1
     except RunnerCliError as exc:
         sys.stderr.write(f"[runner] {exc}\n")
