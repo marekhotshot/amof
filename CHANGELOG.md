@@ -8,6 +8,33 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## v3.0.2 - Dogfood UX Fixes
+
+- Dogfood follow-up release after `v3.0.1`.
+- Keeps runtime execution semantics unchanged.
+
+### Fixed
+
+- Adopted external repos can now resolve through the documented `amof context`
+  path using the adopted ecosystem alias.
+- Single-repo adopted context generation also accepts the adopted repo name,
+  including dotted names such as `hotshot.sk`.
+- Re-adopting the same repo path now cleans up stale prior adopted ecosystem
+  aliases instead of leaving confusing duplicate app-data state.
+- `amof intake validate` now reports all missing required top-level fields
+  together.
+
+### Added
+
+- `amof intake template --kind bounded_intake_task`
+
+### Validation
+
+- `git diff --check` passed.
+- `PYTHONPATH=scripts python3 -m unittest tests.test_repo_adoption tests.test_cli_intake tests.test_update_uninstall` passed.
+- `PYTHONPATH=scripts python3 -m amof --version` reported `AMOF v3.0.2`.
+- `PYTHONPATH=scripts python3 -m amof update --check --version v3.0.2` reported current and target `v3.0.2`.
+
 ## v3.0.0 - Runtime Authority
 
 Marker: `AMOF_300_RELEASE_PUBLIC_DOCS_BACKFILL`

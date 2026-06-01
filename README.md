@@ -10,13 +10,13 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v3.0.1-0A7FFF.svg" alt="release v3.0.1" />
+  <img src="https://img.shields.io/badge/release-v3.0.2-0A7FFF.svg" alt="release v3.0.2" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
 AI agents are cheap. Runtime truth is not.
 
-AMOF v3.0.1 is the governed orchestration layer that controls context,
+AMOF v3.0.2 is the governed orchestration layer that controls context,
 execution readiness, policy attribution, receipts, and evidence before
 cognition workers mutate anything. It validates the workstation, stores
 app-data and receipts outside the target repo, records provider profile
@@ -64,7 +64,7 @@ AMOF does not trust chat output as runtime truth. Runtime truth is emitted as
 inspectable evidence through receipts, runtime logs, run records, intake
 records, selected context, runner metadata, and bounded loop reports.
 
-Public v3.0.1 runtime authority surfaces:
+Public v3.0.2 runtime authority surfaces:
 
 - context selection via `amof context`
 - governed intake validation/submission via `amof intake`
@@ -153,7 +153,7 @@ Those belong outside the public product tree.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v3.0.1 surface:
+This public `main` intentionally keeps a narrow, installable v3.0.2 surface:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -175,7 +175,7 @@ This public `main` intentionally keeps a narrow, installable v3.0.1 surface:
 
 ## Released Public CLI Surface
 
-What works in v3.0.1:
+What works in v3.0.2:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -273,7 +273,7 @@ an explicit checkout-local virtualenv.
 Use this if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.1"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.2"
 ```
 
 This installs the `amof` CLI from the public GitHub tag into a pipx-managed
@@ -302,7 +302,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v3.0.1
+amof update --version v3.0.2
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -360,7 +360,7 @@ Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.1"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.2"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
@@ -378,7 +378,7 @@ message rather than fail on missing `--ecosystem/-e`.
 
 ## Bounded Loops and Scan/Report
 
-The v3.0.1 Runtime Authority release emphasizes governed non-mutation runtime
+The v3.0.2 Runtime Authority release emphasizes governed non-mutation runtime
 flows:
 
 - `amof execution scan` and `amof execution report` for readiness and evidence
@@ -543,9 +543,10 @@ Additional public docs retained in this repo include:
 ## Release State
 
 - `AMOF_300_RELEASE_PUBLIC_DOCS_BACKFILL`
-- `v3.0.1` is the current AMOF 3.0 Runtime Authority correction release.
+- `v3.0.2` is the current AMOF 3.0 Runtime Authority dogfood UX fix release.
 - `v3.0.0` remains as a historical broken escaped tag and is not rewritten.
-- Runtime Authority framing for public `v3.0.1` includes:
+- `v3.0.1` remains as the prior correction release in this line.
+- Runtime Authority framing for public `v3.0.2` includes:
   - explicit runtime context via `amof context`
   - intake contract and CLI intake via `amof intake`
   - runner capability registry via `amof runner`
@@ -553,14 +554,17 @@ Additional public docs retained in this repo include:
   - bounded loops with `NO_MUTATION_PERFORMED` and `NO_REMOTE_EXECUTION_DISPATCHED`
   - runtime evidence inspection via `amof runs` and runtime logs contract tests
   - remote IAL cost truth with `REMOTE_IAL_SMOKE_STATUS_EXPLICIT=PASS`
-- Current `v3.0.1` limitations:
+  - adopted repo context resolution for app-data ecosystems
+  - aggregate intake missing-field reporting
+  - `amof intake template --kind bounded_intake_task`
+- Current `v3.0.2` limitations:
   - no remote execution dispatch
   - no mutation execution
-  - console runtime logs viewer is not part of `v3.0.1`
+  - console runtime logs viewer is not part of `v3.0.2`
 - Release evidence docs:
   - `docs/releases/amof-3.0-closeout.md`
   - `docs/releases/amof-3.0.0-tag.md`
-- `docs/releases/amof-3.0-runtime-authority.md` tracks the current correction release truth (`v3.0.1`).
+- `docs/releases/amof-3.0-runtime-authority.md` tracks the current release truth (`v3.0.2`).
 - The `v3.0.0` tag documentation remains historical evidence of the broken escaped release.
 
 ## Change History

@@ -1,7 +1,7 @@
 # AMOF 3.0 Runtime Authority is live.
 
 Status: released
-Canonical version: `v3.0.1`
+Canonical version: `v3.0.2`
 Code name: `AMOF-ULTRAPLAN-300`
 Related:
 - `docs/roadmap/AMOF-ULTRAPLAN-300.md`
@@ -10,7 +10,12 @@ Related:
 - `docs/releases/amof-3.0.0-tag.md`
 
 `v3.0.0` remains as historical evidence of a broken escaped release tag.
-Current install/update correction release truth is `v3.0.1`.
+Current install/update release truth is `v3.0.2`.
+
+`v3.0.2` is the dogfood UX fix release after `v3.0.1`, carrying adopted repo
+context resolution, aggregate intake missing-field reporting, and
+`amof intake template --kind bounded_intake_task` without changing runtime
+execution semantics.
 
 AMOF now owns runtime truth across intake, context, runners, scans, bounded
 loops, receipts, and evidence — while cognition workers remain replaceable.

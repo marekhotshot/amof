@@ -2,7 +2,7 @@
 
 Ticket: `AMOF-IAL-PUBLIC-CLIENT-001`
 
-Status: `PUBLIC_CLIENT_CONTRACT_ONLY`, updated for `v3.0.1`
+Status: `PUBLIC_CLIENT_CONTRACT_ONLY`, updated for `v3.0.2`
 
 ## Purpose
 
@@ -152,7 +152,7 @@ The public client/evidence contract has been proven against the private gateway:
   - public client
   - private gateway
   - live OpenRouter upstream
-- installed `AMOF v3.0.1` completed `amof chat plan` through the remote IAL
+- installed `AMOF v3.0.2` completed `amof chat plan` through the remote IAL
   client after the cloud-dev gateway provider secret was refreshed
 - private receipts remained hash-only
 - public messages remained hash-only when configured
