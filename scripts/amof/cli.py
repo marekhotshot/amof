@@ -194,7 +194,7 @@ def parse_args() -> argparse.Namespace:
     context_parser.add_argument(
         "service",
         nargs="?",
-        help="Service name from manifest, or one of: current, list, show, use, doctor, add",
+        help="Service name from manifest/adopted ecosystem, or one of: current, list, show, use, doctor, add",
     )
     context_parser.add_argument(
         "context_target",
@@ -760,6 +760,18 @@ def parse_args() -> argparse.Namespace:
     )
     intake_show.add_argument("intake_id", help="Intake identifier")
     intake_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    intake_template = intake_sub.add_parser(
+        "template",
+        help="Print a minimal valid intake YAML/JSON skeleton",
+    )
+    intake_template.add_argument(
+        "--kind",
+        default="bounded_intake_task",
+        choices=["bounded_intake_task"],
+        help="Template kind to print (default: bounded_intake_task)",
+    )
+    intake_template.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     runner_parser = subparsers.add_parser(
         "runner",

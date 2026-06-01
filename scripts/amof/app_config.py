@@ -509,6 +509,7 @@ def adopt_repo_binding(
     now = _utc_timestamp()
     previous = registry["repo_bindings"].get(root)
     created_at = previous.get("created_at") if isinstance(previous, dict) else None
+    previous_ecosystem = str(previous.get("ecosystem") or "").strip() if isinstance(previous, dict) else ""
     entry = {
         "git_root": root,
         "ecosystem": normalized_ecosystem,
@@ -519,6 +520,8 @@ def adopt_repo_binding(
         "updated_at": now,
     }
     registry["repo_bindings"][root] = entry
+    if previous_ecosystem and previous_ecosystem != normalized_ecosystem:
+        registry["adopted_ecosystems"].pop(previous_ecosystem, None)
     registry["adopted_ecosystems"][normalized_ecosystem] = build_adopted_ecosystem_manifest(
         ecosystem=normalized_ecosystem,
         repo_name=normalized_repo_name,

@@ -105,7 +105,21 @@ class CliIntakeTests(unittest.TestCase):
             with patch.dict(os.environ, {"AMOF_HOME": str(Path(td) / "home")}, clear=False):
                 code, _stdout, stderr = _run_intake_cmd(_intake_args("validate", file=str(packet)))
             self.assertEqual(code, 1)
-            self.assertIn("missing required field: ticket_id", stderr)
+            self.assertIn("missing required fields: ticket_id", stderr)
+
+    def test_validate_reports_all_missing_required_top_level_fields(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-intake-validate-missing-many-") as td:
+            packet = _write_packet(
+                Path(td) / "intake.yaml",
+                "kind: bounded_intake_task\n",
+            )
+            with patch.dict(os.environ, {"AMOF_HOME": str(Path(td) / "home")}, clear=False):
+                code, _stdout, stderr = _run_intake_cmd(_intake_args("validate", file=str(packet)))
+            self.assertEqual(code, 1)
+            self.assertIn(
+                "missing required fields: id, version, ticket_id, rough_intent, bounded_goal, task_kind, repo_scope, paths_to_inspect, profile_ref, mutations, validation_gates, cost_truth_policy",
+                stderr,
+            )
 
     def test_validate_rejects_fake_zero_cost_policy(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-intake-validate-cost-") as td:
@@ -114,6 +128,25 @@ class CliIntakeTests(unittest.TestCase):
                 code, _stdout, stderr = _run_intake_cmd(_intake_args("validate", file=str(packet)))
             self.assertEqual(code, 1)
             self.assertIn("cannot be 0.0", stderr)
+
+    def test_template_outputs_minimal_valid_bounded_intake_task(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-intake-template-") as td:
+            home = Path(td) / "home"
+            code, stdout, stderr = _run_intake_cmd(
+                _intake_args("template", kind="bounded_intake_task")
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(stderr, "")
+
+            packet = _write_packet(Path(td) / "template.yaml", stdout)
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                validate_code, validate_stdout, validate_stderr = _run_intake_cmd(
+                    _intake_args("validate", file=str(packet))
+                )
+
+            self.assertEqual(validate_code, 0)
+            self.assertIn("VALID intake_id=replace-me-intake-id", validate_stdout)
+            self.assertEqual(validate_stderr, "")
 
     def test_submit_creates_record_and_runs_are_discoverable(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-intake-submit-pass-") as td:

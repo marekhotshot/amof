@@ -654,6 +654,23 @@ def generate_context_markdown(
     return "\n".join(lines)
 
 
+def _resolve_service_repo(manifest: Dict[str, Any], service: str) -> Dict[str, Any] | None:
+    repo = find_repo(manifest, service)
+    if repo:
+        return repo
+    repos = manifest.get("repos", [])
+    if len(repos) != 1:
+        return None
+    aliases = {
+        str(manifest.get("ecosystem") or "").strip(),
+        str(manifest.get("name") or "").strip(),
+    }
+    aliases.discard("")
+    if service in aliases:
+        return repos[0]
+    return None
+
+
 def cmd_context(
     manifest: Dict[str, Any],
     service: str | None = None,
@@ -691,7 +708,7 @@ def cmd_context(
         return 0
     
     # Service-specific mode
-    repo = find_repo(manifest, service)
+    repo = _resolve_service_repo(manifest, service)
     if not repo:
         sys.stderr.write(f"Service '{service}' not found in manifest.\n")
         return 1

@@ -132,6 +132,45 @@ class RepoAdoptionTests(unittest.TestCase):
         self.assertNotIn("no ecosystem resolved", result.stderr)
         self.assertNotIn("--ecosystem/-e is required", result.stderr)
 
+    def test_context_command_resolves_adopted_ecosystem_alias_and_repo_name(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-adopt-context-") as td:
+            temp = Path(td)
+            repo = temp / "hotshot.sk"
+            amof_home = temp / ".amof-home"
+            _init_git_repo(repo)
+            init_result = _run_amof(repo, amof_home, "init", "--adopt", ".", "--name", "hotshot-sk")
+            self.assertEqual(init_result.returncode, 0, init_result.stderr)
+
+            ecosystem_result = _run_amof(repo, amof_home, "context", "hotshot-sk")
+            repo_name_result = _run_amof(repo, amof_home, "context", "hotshot.sk")
+
+        self.assertEqual(ecosystem_result.returncode, 0, ecosystem_result.stderr)
+        self.assertEqual(repo_name_result.returncode, 0, repo_name_result.stderr)
+        self.assertIn("Context generated under context/hotshot-sk", ecosystem_result.stdout)
+        self.assertIn("Context generated under context/hotshot.sk", repo_name_result.stdout)
+        self.assertNotIn("not found in manifest", ecosystem_result.stderr)
+        self.assertNotIn("not found in manifest", repo_name_result.stderr)
+
+    def test_re_adopt_same_repo_replaces_old_ecosystem_alias_without_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-adopt-idempotent-") as td:
+            temp = Path(td)
+            repo = temp / "hotshot.sk"
+            amof_home = temp / ".amof-home"
+            _init_git_repo(repo)
+
+            first = _run_amof(repo, amof_home, "init", "--adopt", ".", "--name", "hotshot-sk")
+            second = _run_amof(repo, amof_home, "init", "--adopt", ".", "--name", "hotshot-sk-renamed")
+            registry_path = amof_home / "config" / "workspaces.yaml"
+            payload = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(len(payload["repo_bindings"]), 1)
+        self.assertEqual(payload["repo_bindings"][str(repo)]["ecosystem"], "hotshot-sk-renamed")
+        self.assertIn("hotshot-sk-renamed", payload["adopted_ecosystems"])
+        self.assertNotIn("hotshot-sk", payload["adopted_ecosystems"])
+        self.assertEqual(len(payload["adopted_ecosystems"]), 1)
+
     def test_active_openrouter_profile_drives_agent_default_provider(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-adopt-provider-") as td:
             temp = Path(td)

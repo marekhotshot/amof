@@ -274,7 +274,7 @@ def main() -> None:
         if args.command == "context":
             if _is_operational_context_command(args):
                 sys.exit(cmd_operational_context(args))
-            eco = ecosystem or _resolve_root_shell_ecosystem(None)
+            eco = ecosystem or _resolve_adopted_repo_ecosystem() or _resolve_root_shell_ecosystem(None)
             manifest = load_manifest(eco) if eco else {"repos": []}
             sys.exit(
                 cmd_context(

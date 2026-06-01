@@ -36,6 +36,7 @@ REQUIRED_FIELDS = (
     "validation_gates",
     "cost_truth_policy",
 )
+SUPPORTED_TEMPLATE_KINDS = ("bounded_intake_task",)
 
 
 class IntakeCliError(RuntimeError):
@@ -113,6 +114,10 @@ def _required_string(payload: dict[str, Any], key: str) -> str:
     return value
 
 
+def _optional_string(payload: dict[str, Any], key: str) -> str:
+    return str(payload.get(key) or "").strip()
+
+
 def _required_string_list(payload: dict[str, Any], key: str) -> list[str]:
     value = payload.get(key)
     if not isinstance(value, list) or not value:
@@ -174,32 +179,139 @@ def _validate_missing_cost_representation(payload: dict[str, Any]) -> str:
     return normalized
 
 
+def _raise_validation_errors(errors: list[str]) -> None:
+    if not errors:
+        return
+    if len(errors) == 1:
+        raise IntakeCliError(errors[0])
+    raise IntakeCliError("validation failed:\n- " + "\n- ".join(errors))
+
+
 def _validate_packet(payload: dict[str, Any]) -> ValidatedIntake:
-    for key in REQUIRED_FIELDS:
-        if key not in payload:
-            raise IntakeCliError(f"missing required field: {key}")
+    errors: list[str] = []
+    missing_fields = [key for key in REQUIRED_FIELDS if key not in payload]
+    if missing_fields:
+        errors.append("missing required fields: " + ", ".join(missing_fields))
 
-    kind = _required_string(payload, "kind")
-    if kind != "bounded_intake_task":
-        raise IntakeCliError("kind must be bounded_intake_task")
+    intake_id = _optional_string(payload, "id") if "id" in payload else ""
+    if "id" in payload and not intake_id:
+        errors.append("missing required field: id")
 
-    allowed_mutations, forbidden_mutations = _validate_mutations(payload)
+    version = _optional_string(payload, "version") if "version" in payload else ""
+    if "version" in payload and not version:
+        errors.append("missing required field: version")
 
-    validated = ValidatedIntake(
-        intake_id=_required_string(payload, "id"),
-        ticket_id=_required_string(payload, "ticket_id"),
-        version=_required_string(payload, "version"),
+    kind = _optional_string(payload, "kind") if "kind" in payload else ""
+    if "kind" in payload:
+        if not kind:
+            errors.append("missing required field: kind")
+        elif kind != "bounded_intake_task":
+            errors.append("kind must be bounded_intake_task")
+
+    ticket_id = _optional_string(payload, "ticket_id") if "ticket_id" in payload else ""
+    if "ticket_id" in payload and not ticket_id:
+        errors.append("missing required field: ticket_id")
+
+    rough_intent = _optional_string(payload, "rough_intent") if "rough_intent" in payload else ""
+    if "rough_intent" in payload and not rough_intent:
+        errors.append("missing required field: rough_intent")
+
+    bounded_goal = _optional_string(payload, "bounded_goal") if "bounded_goal" in payload else ""
+    if "bounded_goal" in payload and not bounded_goal:
+        errors.append("missing required field: bounded_goal")
+
+    task_kind = _optional_string(payload, "task_kind") if "task_kind" in payload else ""
+    if "task_kind" in payload and not task_kind:
+        errors.append("missing required field: task_kind")
+
+    profile_ref = _optional_string(payload, "profile_ref") if "profile_ref" in payload else ""
+    if "profile_ref" in payload and not profile_ref:
+        errors.append("missing required field: profile_ref")
+
+    repo_scope: list[str] = []
+    if "repo_scope" in payload:
+        try:
+            repo_scope = _required_string_list(payload, "repo_scope")
+        except IntakeCliError as exc:
+            errors.append(str(exc))
+
+    paths_to_inspect: list[str] = []
+    if "paths_to_inspect" in payload:
+        try:
+            paths_to_inspect = _required_string_list(payload, "paths_to_inspect")
+        except IntakeCliError as exc:
+            errors.append(str(exc))
+
+    allowed_mutations: list[str] = []
+    forbidden_mutations: list[str] = []
+    if "mutations" in payload:
+        try:
+            allowed_mutations, forbidden_mutations = _validate_mutations(payload)
+        except IntakeCliError as exc:
+            errors.append(str(exc))
+
+    validation_gates: list[dict[str, Any]] = []
+    if "validation_gates" in payload:
+        try:
+            validation_gates = _validate_gates(payload)
+        except IntakeCliError as exc:
+            errors.append(str(exc))
+
+    missing_cost_representation = ""
+    if "cost_truth_policy" in payload:
+        try:
+            missing_cost_representation = _validate_missing_cost_representation(payload)
+        except IntakeCliError as exc:
+            errors.append(str(exc))
+
+    _raise_validation_errors(errors)
+
+    return ValidatedIntake(
+        intake_id=intake_id,
+        ticket_id=ticket_id,
+        version=version,
         kind=kind,
-        task_kind=_required_string(payload, "task_kind"),
-        profile_ref=_required_string(payload, "profile_ref"),
-        repo_scope=_required_string_list(payload, "repo_scope"),
-        paths_to_inspect=_required_string_list(payload, "paths_to_inspect"),
+        task_kind=task_kind,
+        profile_ref=profile_ref,
+        repo_scope=repo_scope,
+        paths_to_inspect=paths_to_inspect,
         mutations_allowed=allowed_mutations,
         mutations_forbidden=forbidden_mutations,
-        validation_gates=_validate_gates(payload),
-        missing_cost_representation=_validate_missing_cost_representation(payload),
+        validation_gates=validation_gates,
+        missing_cost_representation=missing_cost_representation,
     )
-    return validated
+
+
+def _template_payload(kind: str) -> dict[str, Any]:
+    if kind != "bounded_intake_task":
+        supported = ", ".join(SUPPORTED_TEMPLATE_KINDS)
+        raise IntakeCliError(f"unsupported intake template kind: {kind} (supported: {supported})")
+    return {
+        "version": "1.0.0",
+        "id": "replace-me-intake-id",
+        "kind": "bounded_intake_task",
+        "ticket_id": "AMOF-XXXX",
+        "rough_intent": "Describe the operator's rough intent.",
+        "bounded_goal": "State the bounded goal and stop conditions.",
+        "task_kind": "other",
+        "repo_scope": ["."],
+        "paths_to_inspect": ["."],
+        "profile_ref": "replace-me-profile-ref",
+        "mutations": {
+            "allowed": [],
+            "forbidden": ["edit", "deploy", "promote", "push"],
+        },
+        "validation_gates": [
+            {
+                "name": "read_only",
+                "requirement": "Intake remains planning-only.",
+                "failure_action": "stop",
+            }
+        ],
+        "cost_truth_policy": {
+            "missing_cost_representation": "unknown",
+        },
+    }
 
 
 def _resolve_context_fail_closed() -> tuple[str, str]:
@@ -451,6 +563,16 @@ def _cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_template(args: argparse.Namespace) -> int:
+    kind = str(getattr(args, "kind", "") or "bounded_intake_task").strip() or "bounded_intake_task"
+    payload = _template_payload(kind)
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(payload, indent=2))
+    else:
+        print(yaml.safe_dump(payload, sort_keys=False).rstrip())
+    return 0
+
+
 def cmd_intake(args: argparse.Namespace) -> int:
     action = str(getattr(args, "intake_cmd", "") or "").strip()
     try:
@@ -462,7 +584,9 @@ def cmd_intake(args: argparse.Namespace) -> int:
             return _cmd_list(args)
         if action == "show":
             return _cmd_show(args)
-        sys.stderr.write("Usage: amof intake {validate,submit,list,show} ...\n")
+        if action == "template":
+            return _cmd_template(args)
+        sys.stderr.write("Usage: amof intake {validate,submit,list,show,template} ...\n")
         return 1
     except IntakeCliError as exc:
         sys.stderr.write(f"[intake] {exc}\n")
