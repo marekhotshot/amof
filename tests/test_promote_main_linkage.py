@@ -73,6 +73,85 @@ class PromoteMainLinkageTests(unittest.TestCase):
 
         return temp_root, repo, source_sha, expected_main_sha
 
+    def _prepare_stale_base_workspace(self, *, overlapping: bool) -> tuple[Path, str, str, str]:
+        temp_root = Path(tempfile.mkdtemp(prefix="amof-promote-linkage-stale-"))
+        remote = temp_root / "remote.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+
+        seed = temp_root / "seed"
+        subprocess.run(["git", "init", "-b", "main", str(seed)], check=True, capture_output=True, text=True)
+        (seed / "README.md").write_text("# base\n", encoding="utf-8")
+        (seed / "scripts" / "amof" / "commands").mkdir(parents=True, exist_ok=True)
+        (seed / "tests").mkdir(parents=True, exist_ok=True)
+        (seed / "scripts" / "amof" / "commands" / "promote_main.py").write_text("base promote\n", encoding="utf-8")
+        (seed / "tests" / "test_promote_main_cli.py").write_text("base cli\n", encoding="utf-8")
+        (seed / "tests" / "test_promote_main_linkage.py").write_text("base linkage\n", encoding="utf-8")
+        (seed / "docs").mkdir(parents=True, exist_ok=True)
+        (seed / "docs" / "status.md").write_text("base status\n", encoding="utf-8")
+        _git(seed, "add", ".")
+        _git(seed, "commit", "-m", "base")
+        _git(seed, "remote", "add", "origin", str(remote))
+        _git(seed, "push", "-u", "origin", "main")
+
+        repo = temp_root / "repos" / "amof"
+        repo.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "clone", str(remote), str(repo)], check=True, capture_output=True, text=True)
+        _git(repo, "fetch", "origin", "main")
+
+        branch = "ticket/AMOF-PROMOTE-MAIN-STALE-BASE-GUARD-001-promote-main-stale-base-guard"
+        _git(repo, "checkout", "-b", branch)
+        if overlapping:
+            (repo / "scripts" / "amof" / "commands" / "promote_main.py").write_text(
+                "candidate promote\n",
+                encoding="utf-8",
+            )
+            (repo / "tests" / "test_promote_main_cli.py").write_text("candidate cli\n", encoding="utf-8")
+            (repo / "tests" / "test_promote_main_linkage.py").write_text(
+                "candidate linkage\n",
+                encoding="utf-8",
+            )
+            _git(
+                repo,
+                "add",
+                "scripts/amof/commands/promote_main.py",
+                "tests/test_promote_main_cli.py",
+                "tests/test_promote_main_linkage.py",
+            )
+        else:
+            (repo / "README.md").write_text("# candidate only\n", encoding="utf-8")
+            _git(repo, "add", "README.md")
+        _git(repo, "commit", "-m", "candidate branch changes")
+        source_sha = _git(repo, "rev-parse", "HEAD")
+
+        _git(repo, "checkout", "main")
+        if overlapping:
+            (repo / "scripts" / "amof" / "commands" / "promote_main.py").write_text(
+                "main promote\n",
+                encoding="utf-8",
+            )
+            (repo / "tests" / "test_promote_main_cli.py").write_text("main cli\n", encoding="utf-8")
+            (repo / "tests" / "test_promote_main_linkage.py").write_text(
+                "main linkage\n",
+                encoding="utf-8",
+            )
+            _git(
+                repo,
+                "add",
+                "scripts/amof/commands/promote_main.py",
+                "tests/test_promote_main_cli.py",
+                "tests/test_promote_main_linkage.py",
+            )
+        else:
+            (repo / "docs" / "status.md").write_text("main only\n", encoding="utf-8")
+            _git(repo, "add", "docs/status.md")
+        _git(repo, "commit", "-m", "advance main")
+        _git(repo, "push", "origin", "main")
+        _git(repo, "fetch", "origin", "main")
+        expected_main_sha = _git(repo, "rev-parse", "origin/main")
+        _git(repo, "checkout", branch)
+
+        return temp_root, branch, source_sha, expected_main_sha
+
     def test_infer_ticket_id_supports_descriptive_ids(self) -> None:
         branch = "ticket/AMOF-RUNTIME-CONTEXT-SWITCHING-001-runtime-context-switching"
         self.assertEqual(infer_ticket_id(branch), "AMOF-RUNTIME-CONTEXT-SWITCHING-001")
@@ -166,6 +245,75 @@ class PromoteMainLinkageTests(unittest.TestCase):
             self.assertTrue(plan.ok)
             self.assertEqual(Path(plan.repo_path), repo)
             self.assertTrue(plan.validation_checks["origin_main_matches_expected_main_sha"])
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def test_plan_promote_main_rejects_stale_base_overlap_with_clear_replay_guidance(self) -> None:
+        temp_root, branch, source_sha, expected_main_sha = self._prepare_stale_base_workspace(overlapping=True)
+        try:
+            manifest = {
+                "repos": [
+                    {
+                        "name": "amof",
+                        "path": str(temp_root / "repos" / "amof"),
+                    }
+                ]
+            }
+            bundle = PromoteMainInput(
+                repo="amof",
+                ticket_id="AMOF-PROMOTE-MAIN-STALE-BASE-GUARD-001",
+                candidate_branch=branch,
+                source_sha=source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=expected_main_sha,
+                promotion_reason="test stale overlap rejection",
+                dry_run=True,
+            )
+            plan = plan_promote_main_dry_run(
+                manifest,
+                bundle,
+                ecosystem="amof-dev",
+                workspace_root=temp_root,
+            )
+            self.assertFalse(plan.ok)
+            self.assertFalse(plan.validation_checks["stale_base_overlap_free"])
+            self.assertIn("stale-base overlap detected", plan.rejection_reason or "")
+            self.assertIn("scripts/amof/commands/promote_main.py", plan.rejection_reason or "")
+            self.assertIn("tests/test_promote_main_cli.py", plan.rejection_reason or "")
+            self.assertIn("tests/test_promote_main_linkage.py", plan.rejection_reason or "")
+            self.assertIn("Replay or rebase", plan.rejection_reason or "")
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def test_plan_promote_main_allows_stale_base_without_overlap(self) -> None:
+        temp_root, branch, source_sha, expected_main_sha = self._prepare_stale_base_workspace(overlapping=False)
+        try:
+            manifest = {
+                "repos": [
+                    {
+                        "name": "amof",
+                        "path": str(temp_root / "repos" / "amof"),
+                    }
+                ]
+            }
+            bundle = PromoteMainInput(
+                repo="amof",
+                ticket_id="AMOF-PROMOTE-MAIN-STALE-BASE-GUARD-001",
+                candidate_branch=branch,
+                source_sha=source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=expected_main_sha,
+                promotion_reason="test stale non-overlap",
+                dry_run=True,
+            )
+            plan = plan_promote_main_dry_run(
+                manifest,
+                bundle,
+                ecosystem="amof-dev",
+                workspace_root=temp_root,
+            )
+            self.assertTrue(plan.ok, plan.rejection_reason)
+            self.assertTrue(plan.validation_checks["stale_base_overlap_free"])
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
 

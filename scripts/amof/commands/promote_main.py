@@ -627,6 +627,24 @@ def _name_status_diff(
     return entries
 
 
+def _changed_files(repo_path: Path, base: str, head: str) -> list[str]:
+    return [path for _, path in _name_status_diff(repo_path, base, head)]
+
+
+def _stale_base_overlap_details(
+    repo_path: Path,
+    *,
+    source_sha: str,
+    current_origin_main_sha: str,
+) -> tuple[str, list[str]]:
+    merge_base = _git_ok(repo_path, "merge-base", source_sha, current_origin_main_sha)
+    if _is_ancestor(repo_path, current_origin_main_sha, source_sha):
+        return merge_base, []
+    main_changed_files = set(_changed_files(repo_path, merge_base, current_origin_main_sha))
+    candidate_changed_files = set(_changed_files(repo_path, merge_base, source_sha))
+    return merge_base, sorted(main_changed_files & candidate_changed_files)
+
+
 def _patch_text(repo_path: Path, base: str, head: str, *, pathspecs: list[str] | None = None) -> str:
     args = ["diff", "--binary", "--full-index", f"{base}..{head}"]
     if pathspecs:
@@ -1170,6 +1188,7 @@ def plan_promote_main_dry_run(
         "env_commit_matches_source_sha": False,
         "ticket_linkage_consistent": False,
         "origin_main_matches_expected_main_sha": False,
+        "stale_base_overlap_free": False,
     }
     if bundle.require_run_summary or bundle.require_promotion_readiness_result:
         validation_checks["promotion_readiness_evidence_path_allowed"] = False
@@ -1323,6 +1342,25 @@ def plan_promote_main_dry_run(
                             f"origin/main drifted to {current_origin_main_sha}; expected {expected_main_sha}"
                         )
                         failure_classification = "remote_diverged"
+
+            if rejection_reason is None and current_origin_main_sha is not None:
+                merge_base, overlapping_files = _stale_base_overlap_details(
+                    repo_path,
+                    source_sha=source_sha,
+                    current_origin_main_sha=current_origin_main_sha,
+                )
+                if overlapping_files:
+                    rejection_reason = (
+                        "stale-base overlap detected: "
+                        f"candidate merge-base {merge_base}; "
+                        f"expected_main_sha={expected_main_sha}; "
+                        f"current_origin_main_sha={current_origin_main_sha}; "
+                        "overlapping files: "
+                        f"{', '.join(overlapping_files)}. "
+                        "Replay or rebase the candidate on current origin/main and regenerate the promotion bundle."
+                    )
+                else:
+                    validation_checks["stale_base_overlap_free"] = True
 
             if rejection_reason is None:
                 synthetic_tree_sha, materialize_error = _materialize_synthetic_tree(
