@@ -1,0 +1,20 @@
+{
+  "decision_class": "refuse",
+  "rationale": "untrusted context cannot upgrade authority for action eligibility",
+  "present_context_classes": [
+    "external_untrusted",
+    "transcript_untrusted"
+  ],
+  "eligible_tools": [],
+  "ineligible_tools": [
+    {
+      "tool_name": "Read",
+      "reason": "untrusted context cannot upgrade authority for action eligibility"
+    }
+  ],
+  "blockers": [
+    "untrusted context cannot upgrade authority for action eligibility"
+  ],
+  "expected_evidence": [],
+  "emitted_evidence_refs": []
+}

@@ -1,0 +1,35 @@
+id: amof-intake-authority-fixture
+version: "1.0.0"
+kind: bounded_intake_task
+ticket_id: AMOF-INTAKE-AUTHORITY-EVALUATION-001
+rough_intent: Validate authority evaluation on a real intake path.
+bounded_goal: Produce a machine-readable authority decision artifact without execution.
+task_kind: other
+repo_scope:
+  - .
+paths_to_inspect:
+  - scripts/amof/commands/intake.py
+profile_ref: remote-ial-openrouter
+mutations:
+  allowed: []
+  forbidden:
+    - edit
+    - deploy
+    - promote
+    - push
+validation_gates:
+  - name: read_only
+    requirement: Intake remains planning-only.
+    failure_action: stop
+cost_truth_policy:
+  missing_cost_representation: unknown
+authority:
+  decision_class: bounded_action
+  rationale: Fixture intake requests bounded read authority evaluation only.
+  present_context_classes:
+    - operator_asserted
+    - repo_truth
+  requested_tools:
+    - Read
+    - Shell
+    - MissingTool

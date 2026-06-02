@@ -1,0 +1,58 @@
+{
+  "decision_class": "bounded_action",
+  "rationale": "Fixture intake requests bounded read authority evaluation only.",
+  "present_context_classes": [
+    "operator_asserted",
+    "repo_truth"
+  ],
+  "eligible_tools": [
+    {
+      "tool_name": "Read",
+      "policy": {
+        "risk_class": "read_only",
+        "requires_approval": false,
+        "allowed_context_classes": [
+          "operator_asserted",
+          "repo_truth"
+        ],
+        "minimum_evidence": [
+          "operator_intent",
+          "path_scope"
+        ],
+        "refusal_reason_template": "{tool_name} requires operator intent and bounded path scope."
+      }
+    }
+  ],
+  "ineligible_tools": [
+    {
+      "tool_name": "Shell",
+      "policy": {
+        "risk_class": "execution",
+        "requires_approval": true,
+        "allowed_context_classes": [
+          "operator_asserted",
+          "runtime_truth"
+        ],
+        "minimum_evidence": [
+          "operator_intent",
+          "command_scope",
+          "approval_ref"
+        ],
+        "refusal_reason_template": "{tool_name} requires explicit approval before command execution."
+      },
+      "reason": "Shell requires explicit approval before command execution."
+    },
+    {
+      "tool_name": "MissingTool",
+      "reason": "missing tool policy metadata"
+    }
+  ],
+  "blockers": [],
+  "expected_evidence": [
+    "operator_intent",
+    "path_scope"
+  ],
+  "emitted_evidence_refs": [
+    "tests/fixtures/intake-authority-bounded.yaml"
+  ]
+}

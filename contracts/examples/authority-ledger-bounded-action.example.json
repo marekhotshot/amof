@@ -1,0 +1,35 @@
+{
+  "decision_class": "bounded_action",
+  "rationale": "Read-only repository inspection is bounded by operator intent and path scope.",
+  "present_context_classes": [
+    "operator_asserted",
+    "repo_truth"
+  ],
+  "eligible_tools": [
+    {
+      "tool_name": "Read",
+      "policy": {
+        "risk_class": "read_only",
+        "requires_approval": false,
+        "allowed_context_classes": [
+          "operator_asserted",
+          "repo_truth"
+        ],
+        "minimum_evidence": [
+          "operator_intent",
+          "path_scope"
+        ],
+        "refusal_reason_template": "{tool_name} requires operator intent and bounded path scope."
+      }
+    }
+  ],
+  "ineligible_tools": [],
+  "blockers": [],
+  "expected_evidence": [
+    "operator_intent",
+    "path_scope"
+  ],
+  "emitted_evidence_refs": [
+    "docs/operations/authority-ledger.md"
+  ]
+}

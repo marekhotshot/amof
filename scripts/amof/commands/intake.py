@@ -17,6 +17,11 @@ import yaml
 
 from ..app_config import resolve_active_context_name
 from ..app_paths import get_app_paths, runs_dir
+from ..intake.authority_ledger import (
+    AuthorityDecisionArtifact,
+    IntakeDecisionClass,
+    evaluate_intake_authority,
+)
 from ..orchestrator.events import EventLog
 
 REMOTE_CONTEXT_REQUIRED_ENV = {
@@ -518,6 +523,69 @@ def _record_summary(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _authority_config(packet: dict[str, Any]) -> dict[str, Any]:
+    authority = packet.get("authority")
+    if authority is None:
+        return {}
+    if not isinstance(authority, dict):
+        raise IntakeCliError("authority must be an object when provided")
+    return authority
+
+
+def _optional_string_list(value: Any, *, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise IntakeCliError(f"authority.{field_name} must be a list")
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _evaluate_authority(
+    *,
+    packet: dict[str, Any],
+    validated: ValidatedIntake,
+    packet_path: Path,
+) -> AuthorityDecisionArtifact:
+    authority = _authority_config(packet)
+    requested_decision_class = str(authority.get("decision_class") or "bounded_action").strip()
+    present_context_classes = _optional_string_list(
+        authority.get("present_context_classes"),
+        field_name="present_context_classes",
+    ) or ["operator_asserted", "repo_truth"]
+    requested_tools = _optional_string_list(
+        authority.get("requested_tools"),
+        field_name="requested_tools",
+    ) or ["Read", "Grep", "Glob"]
+    blockers = _optional_string_list(authority.get("blockers"), field_name="blockers")
+    emitted_evidence_refs = _optional_string_list(
+        authority.get("emitted_evidence_refs"),
+        field_name="emitted_evidence_refs",
+    ) or [str(packet_path)]
+    approval_granted = bool(authority.get("approval_granted", False))
+    rationale = str(authority.get("rationale") or "").strip()
+    if not rationale:
+        rationale = f"Intake {validated.intake_id} evaluated for {requested_decision_class}."
+
+    try:
+        return evaluate_intake_authority(
+            requested_decision_class=requested_decision_class,
+            present_context_classes=present_context_classes,
+            requested_tools=requested_tools,
+            approval_granted=approval_granted,
+            rationale=rationale,
+            blockers=blockers,
+            emitted_evidence_refs=emitted_evidence_refs,
+        )
+    except ValueError as exc:
+        raise IntakeCliError(f"invalid authority evaluation input: {exc}") from exc
+
+
+def _write_authority_artifact(path: Path, artifact: AuthorityDecisionArtifact) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(artifact.to_dict(), indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def _print_list(records: list[dict[str, Any]], *, as_json: bool) -> None:
     summaries = [_record_summary(record) for record in records]
     if as_json:
@@ -573,6 +641,10 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         raise IntakeCliError("intake file path is required")
     packet = _read_packet(packet_path)
     validated = _validate_packet(packet)
+    if bool(getattr(args, "authority_json", False)):
+        authority_artifact = _evaluate_authority(packet=packet, validated=validated, packet_path=packet_path)
+        print(json.dumps(authority_artifact.to_dict(), indent=2))
+        return 0
     output = {
         "valid": True,
         "file": str(packet_path),
@@ -595,6 +667,15 @@ def _cmd_submit(args: argparse.Namespace) -> int:
         packet = _read_packet(packet_path)
         validated = _validate_packet(packet)
         context, context_source = _resolve_context_fail_closed()
+        authority_artifact_path = str(getattr(args, "authority_artifact", "") or "").strip()
+        if authority_artifact_path:
+            authority_artifact = _evaluate_authority(packet=packet, validated=validated, packet_path=packet_path)
+            _write_authority_artifact(Path(authority_artifact_path), authority_artifact)
+            if authority_artifact.decision_class in {IntakeDecisionClass.REFUSE, IntakeDecisionClass.ESCALATE}:
+                raise IntakeCliError(
+                    f"authority decision blocked submit: {authority_artifact.decision_class.value}; "
+                    f"{authority_artifact.rationale}"
+                )
         if not _is_read_only_intake(validated):
             raise IntakeCliError(
                 "MVP submit supports planning-only no-mutation intake only (mutations.allowed must be empty and read_only gate must stop)."
@@ -664,6 +745,8 @@ def _cmd_submit(args: argparse.Namespace) -> int:
                 "forbidden": validated.mutations_forbidden,
             },
         }
+        if authority_artifact_path:
+            record["authority_decision_path"] = authority_artifact_path
         record_path = _record_path(validated.intake_id)
         record_path.parent.mkdir(parents=True, exist_ok=True)
         record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")

@@ -1,0 +1,18 @@
+runner_id: authority-local-planning
+name: Authority Local Planning Runner
+context: local
+status: available
+capabilities:
+  - intake.validate
+  - intake.plan
+supported_task_kinds:
+  - other
+allowed_mutation_modes:
+  - read_only
+max_concurrency: 1
+labels:
+  - local
+  - authority
+trust_level: local
+registration_source: fixture
+endpoint_ref: local-only

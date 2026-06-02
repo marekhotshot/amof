@@ -740,6 +740,11 @@ def parse_args() -> argparse.Namespace:
     )
     intake_validate.add_argument("file", help="Path to intake YAML/JSON")
     intake_validate.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    intake_validate.add_argument(
+        "--authority-json",
+        action="store_true",
+        help="Emit only the machine-readable authority decision artifact",
+    )
 
     intake_submit = intake_sub.add_parser(
         "submit",
@@ -747,6 +752,10 @@ def parse_args() -> argparse.Namespace:
     )
     intake_submit.add_argument("file", help="Path to intake YAML/JSON")
     intake_submit.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    intake_submit.add_argument(
+        "--authority-artifact",
+        help="Optional path to persist the authority decision artifact",
+    )
 
     intake_list = intake_sub.add_parser(
         "list",
@@ -821,6 +830,10 @@ def parse_args() -> argparse.Namespace:
         help="Planning-only intake-to-runner compatibility check (no dispatch)",
     )
     runner_match.add_argument("intake_ref", help="Intake file path or known intake id")
+    runner_match.add_argument(
+        "--authority-artifact",
+        help="Optional authority decision artifact to gate runner eligibility",
+    )
     runner_match.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     runner_local_forensic = runner_sub.add_parser(

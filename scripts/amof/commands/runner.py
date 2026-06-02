@@ -508,6 +508,87 @@ def _resolve_intake_reference(reference: str) -> tuple[dict[str, Any], str]:
     return _read_intake_payload(packet_path), str(packet_path)
 
 
+def _authority_artifact_path_for_reference(reference: str) -> str:
+    submission_path = get_app_paths().data_root / "intake" / "submissions" / f"{reference}.json"
+    if not submission_path.exists():
+        return ""
+    try:
+        submission = json.loads(submission_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(submission, dict):
+        return ""
+    return str(submission.get("authority_decision_path") or "").strip()
+
+
+def _load_authority_artifact(path: str) -> dict[str, Any]:
+    artifact_path = Path(path)
+    if not artifact_path.exists():
+        raise RunnerCliError(f"authority artifact not found: {path}")
+    try:
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RunnerCliError(f"authority artifact is invalid JSON: {path}") from exc
+    if not isinstance(artifact, dict):
+        raise RunnerCliError(f"authority artifact must be a JSON object: {path}")
+    return artifact
+
+
+def _tool_names(items: Any) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    names: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("tool_name") or "").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _authority_gate(artifact: dict[str, Any], *, artifact_ref: str) -> dict[str, Any]:
+    decision_class = str(artifact.get("decision_class") or "").strip()
+    blockers = [str(item) for item in artifact.get("blockers", []) if str(item)] if isinstance(artifact.get("blockers"), list) else []
+    eligible_tools = _tool_names(artifact.get("eligible_tools"))
+    ineligible_tools = _tool_names(artifact.get("ineligible_tools"))
+    allowed = decision_class in {"bounded_action", "answer_only"} and bool(eligible_tools or decision_class == "answer_only")
+    if decision_class in {"refuse", "escalate", "privileged_action"}:
+        allowed = False
+    if decision_class == "bounded_action" and not eligible_tools:
+        blockers = blockers or ["authority decision has no eligible tools"]
+        allowed = False
+    if decision_class == "answer_only":
+        blockers = blockers or ["answer_only authority does not permit runner execution selection"]
+        allowed = False
+    return {
+        "artifact_ref": artifact_ref,
+        "decision_class": decision_class,
+        "allowed": allowed,
+        "blockers": blockers,
+        "eligible_tools": eligible_tools,
+        "ineligible_tools": ineligible_tools,
+        "rationale": str(artifact.get("rationale") or ""),
+    }
+
+
+def _authority_candidate_evidence(
+    record: dict[str, Any],
+    *,
+    authority_gate: dict[str, Any] | None,
+    runner_reason: str,
+) -> dict[str, Any]:
+    return {
+        "runner_id": str(record.get("runner_id") or ""),
+        "runner_reason": runner_reason,
+        "authority_decision_class": str((authority_gate or {}).get("decision_class") or ""),
+        "authority_allowed": bool((authority_gate or {}).get("allowed", False)) if authority_gate else None,
+        "authority_eligible_tools": list((authority_gate or {}).get("eligible_tools") or []),
+        "authority_ineligible_tools": list((authority_gate or {}).get("ineligible_tools") or []),
+        "authority_blockers": list((authority_gate or {}).get("blockers") or []),
+    }
+
+
 def _has_read_only_stop_gate(validated: Any) -> bool:
     for gate in validated.validation_gates:
         if str(gate.get("name") or "").lower() == "read_only" and str(gate.get("failure_action") or "").lower() == "stop":
@@ -738,8 +819,13 @@ def _cmd_match(args: argparse.Namespace) -> int:
     if not _is_read_only_intake(validated_intake):
         raise RunnerCliError("runner match supports planning-only intake only (read_only/no dispatch)")
     active_context = _resolve_context_fail_closed()
+    authority_artifact_ref = str(getattr(args, "authority_artifact", "") or "").strip() or _authority_artifact_path_for_reference(reference)
+    authority_gate: dict[str, Any] | None = None
+    if authority_artifact_ref:
+        authority_gate = _authority_gate(_load_authority_artifact(authority_artifact_ref), artifact_ref=authority_artifact_ref)
     reasons: list[str] = []
     candidates: list[dict[str, Any]] = []
+    ineligible_candidates: list[dict[str, Any]] = []
     for record in _load_runners():
         eligible, reason = _eligible_runner(
             record,
@@ -747,18 +833,29 @@ def _cmd_match(args: argparse.Namespace) -> int:
             task_kind=validated_intake.task_kind,
             mutation_mode="read_only",
         )
+        evidence = _authority_candidate_evidence(record, authority_gate=authority_gate, runner_reason=reason)
         reasons.append(reason)
+        if authority_gate and not authority_gate["allowed"]:
+            eligible = False
+            reason = f"{str(record.get('runner_id') or '<unknown>')}: authority blocked ({authority_gate['decision_class']})"
+            reasons[-1] = reason
+            evidence = _authority_candidate_evidence(record, authority_gate=authority_gate, runner_reason=reason)
         if eligible:
+            candidate = {
+                "runner_id": str(record.get("runner_id") or ""),
+                "context": str(record.get("context") or ""),
+                "status": str(record.get("status") or ""),
+                "supported_task_kinds": list(record.get("supported_task_kinds") or []),
+                "allowed_mutation_modes": list(record.get("allowed_mutation_modes") or []),
+                "capabilities": list(record.get("capabilities") or []),
+            }
+            if authority_gate:
+                candidate["authority_evidence"] = evidence
             candidates.append(
-                {
-                    "runner_id": str(record.get("runner_id") or ""),
-                    "context": str(record.get("context") or ""),
-                    "status": str(record.get("status") or ""),
-                    "supported_task_kinds": list(record.get("supported_task_kinds") or []),
-                    "allowed_mutation_modes": list(record.get("allowed_mutation_modes") or []),
-                    "capabilities": list(record.get("capabilities") or []),
-                }
+                candidate
             )
+        else:
+            ineligible_candidates.append(evidence)
     result = {
         "planning_only": True,
         "dispatch": "none",
@@ -770,12 +867,21 @@ def _cmd_match(args: argparse.Namespace) -> int:
         "candidates": candidates,
         "reasons": reasons,
     }
+    if authority_gate:
+        result["authority_gate"] = authority_gate
+        result["ineligible_candidates"] = ineligible_candidates
     _emit_event(
         "runner_match_planned",
         intake_id=validated_intake.intake_id,
         active_context=active_context,
         candidate_count=len(candidates),
     )
+    if authority_gate and not authority_gate["allowed"]:
+        if bool(getattr(args, "json", False)):
+            print(json.dumps(result, indent=2))
+            return 1
+        blockers = "; ".join(authority_gate["blockers"]) or authority_gate["rationale"] or "authority gate denied runner match"
+        raise RunnerCliError(f"authority gate denied runner match: {authority_gate['decision_class']}; {blockers}")
     if bool(getattr(args, "json", False)):
         print(json.dumps(result, indent=2))
     else:
