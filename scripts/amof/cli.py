@@ -823,6 +823,13 @@ def parse_args() -> argparse.Namespace:
     runner_match.add_argument("intake_ref", help="Intake file path or known intake id")
     runner_match.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
+    runner_local_forensic = runner_sub.add_parser(
+        "run-local-forensic",
+        help="Run the bounded local read-only forensic command pack for one intake",
+    )
+    runner_local_forensic.add_argument("intake_ref", help="Intake file path or known intake id")
+    runner_local_forensic.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
     execution_parser = subparsers.add_parser(
         "execution",
         help="Produce no-execution remote execution readiness scan/report artifacts",

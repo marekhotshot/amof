@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -50,6 +51,7 @@ RUNNER_ELIGIBLE_STATUSES = {"available", "registered", "ready"}
 ALLOWED_MUTATION_MODES = {"read_only"}
 REQUIRED_MATCH_CAPABILITIES = {"intake.validate", "intake.plan"}
 SUPPORTED_TEMPLATE_KINDS = ("local-planning",)
+LOCAL_FORENSIC_TIMEOUT_SECONDS = 15.0
 
 SENSITIVE_KEY_PATTERN = re.compile(
     r"(secret|token|password|api[_-]?key|access[_-]?key|private[_-]?key|bearer|credential)",
@@ -100,6 +102,25 @@ class ValidatedRunner:
         }
 
 
+@dataclass(frozen=True)
+class ForensicCommand:
+    label: str
+    command: str
+
+
+LOCAL_FORENSIC_COMMAND_PACK: tuple[ForensicCommand, ...] = (
+    ForensicCommand("pwd", "pwd"),
+    ForensicCommand("git-status-short", "git status --short"),
+    ForensicCommand("git-rev-parse-head", "git rev-parse HEAD"),
+    ForensicCommand("file-inventory", "find . -maxdepth 3 -type f | sort | sed 's#^\\./##' | head -300"),
+    ForensicCommand(
+        "image-static-grep",
+        'grep -RIn "primaryImage\\|/uploads\\|products/\\|express.static\\|multer\\|DATA_ROOT" . --exclude-dir=node_modules --exclude-dir=.git | head -300',
+    ),
+)
+LOCAL_FORENSIC_ALLOWED_COMMANDS = {item.command for item in LOCAL_FORENSIC_COMMAND_PACK}
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -110,6 +131,10 @@ def _runner_registry_dir() -> Path:
 
 def _runner_events_dir() -> Path:
     return runs_dir() / "runner-registry"
+
+
+def _local_forensic_runs_dir() -> Path:
+    return runs_dir() / "local-forensic"
 
 
 def _runner_record_path(runner_id: str) -> Path:
@@ -483,6 +508,203 @@ def _resolve_intake_reference(reference: str) -> tuple[dict[str, Any], str]:
     return _read_intake_payload(packet_path), str(packet_path)
 
 
+def _has_read_only_stop_gate(validated: Any) -> bool:
+    for gate in validated.validation_gates:
+        if str(gate.get("name") or "").lower() == "read_only" and str(gate.get("failure_action") or "").lower() == "stop":
+            return True
+    return False
+
+
+def _validate_local_forensic_intake(validated: Any) -> list[dict[str, str]]:
+    gates: list[dict[str, str]] = []
+    if validated.mutations_allowed:
+        raise RunnerCliError("local forensic runner requires mutations.allowed == []")
+    gates.append({"name": "mutations.allowed", "status": "pass", "requirement": "must be empty"})
+    if not _has_read_only_stop_gate(validated):
+        raise RunnerCliError("local forensic runner requires validation gate named read_only with failure_action=stop")
+    gates.append({"name": "read_only", "status": "pass", "requirement": "read-only gate must stop on failure"})
+    return gates
+
+
+def _resolve_local_forensic_paths(paths_to_inspect: list[str]) -> list[Path]:
+    resolved: list[Path] = []
+    for raw_path in paths_to_inspect:
+        path = Path(raw_path).expanduser().resolve(strict=False)
+        if not path.exists():
+            raise RunnerCliError(f"inspection path not found: {raw_path}")
+        if not path.is_dir():
+            raise RunnerCliError(f"inspection path is not a directory: {raw_path}")
+        resolved.append(path)
+    if not resolved:
+        raise RunnerCliError("local forensic runner requires at least one path to inspect")
+    return resolved
+
+
+def _local_forensic_run_id(intake_id: str) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    safe_intake_id = re.sub(r"[^A-Za-z0-9._-]+", "-", intake_id).strip("-") or "intake"
+    return f"local-forensic-{stamp}-{safe_intake_id}"
+
+
+def _write_text(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+
+
+def _execute_local_forensic_command(command: str, *, cwd: Path, timeout_seconds: float = LOCAL_FORENSIC_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
+    if command not in LOCAL_FORENSIC_ALLOWED_COMMANDS:
+        raise RunnerCliError(f"command is not in local forensic allowlist: {command}")
+    try:
+        return subprocess.run(
+            ["bash", "-lc", command],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerCliError(f"local forensic command timed out after {timeout_seconds:g}s: {command}") from exc
+
+
+def _report_section(title: str, body: str) -> str:
+    return f"## {title}\n{body.rstrip() or '-'}\n"
+
+
+def _build_local_forensic_report(summary: dict[str, Any], command_records: list[dict[str, Any]]) -> str:
+    lines: list[str] = ["# AMOF Local Forensic Executor Report\n"]
+    lines.append(_report_section("Verdict", f"status: {summary['status']}\nmutation_mode: read_only"))
+    lines.append(
+        _report_section(
+            "Intake",
+            f"intake_id: {summary['intake_id']}\nticket_id: {summary['ticket_id']}\npacket_ref: {summary['packet_ref']}",
+        )
+    )
+    lines.append(_report_section("Paths Inspected", "\n".join(f"- {path}" for path in summary["paths_inspected"])))
+    lines.append(
+        _report_section(
+            "Safety Gates",
+            "\n".join(f"- {gate['name']}: {gate['status']} ({gate['requirement']})" for gate in summary["safety_gates"]),
+        )
+    )
+    lines.append(_report_section("Blocked Reasons", "\n".join(f"- {item}" for item in summary["blocked_reasons"])))
+    lines.append("## Commands\n")
+    for record in command_records:
+        lines.append(f"### command-{record['sequence']:03d} {record['label']}\n")
+        lines.append(f"- cwd: {record['cwd']}\n")
+        lines.append(f"- command: `{record['command']}`\n")
+        lines.append(f"- exit_code: {record['exit_code']}\n")
+        stdout = Path(record["stdout_path"]).read_text(encoding="utf-8")
+        stderr = Path(record["stderr_path"]).read_text(encoding="utf-8")
+        lines.append("\nstdout:\n```text\n")
+        lines.append(stdout[:12000])
+        if len(stdout) > 12000:
+            lines.append("\n... truncated ...\n")
+        lines.append("\n```\n")
+        if stderr:
+            lines.append("\nstderr:\n```text\n")
+            lines.append(stderr[:4000])
+            if len(stderr) > 4000:
+                lines.append("\n... truncated ...\n")
+            lines.append("\n```\n")
+    lines.append("\n## Stop Boundary\nNo mutation, cloud execution, kubectl, curl, DB, restart, deploy, migration, push, or secret dump was performed.\n")
+    return "\n".join(lines)
+
+
+def _cmd_run_local_forensic(args: argparse.Namespace) -> int:
+    reference = str(getattr(args, "intake_ref", "") or "").strip()
+    if not reference:
+        raise RunnerCliError("intake reference is required")
+    payload, packet_ref = _resolve_intake_reference(reference)
+    try:
+        validated_intake = _validate_packet(payload)
+    except IntakeCliError as exc:
+        raise RunnerCliError(f"intake validation failed: {exc}") from exc
+
+    safety_gates = _validate_local_forensic_intake(validated_intake)
+    inspection_paths = _resolve_local_forensic_paths(validated_intake.paths_to_inspect)
+    run_id = _local_forensic_run_id(validated_intake.intake_id)
+    events = EventLog(
+        session_id=run_id,
+        runs_dir=_local_forensic_runs_dir(),
+        run_id=run_id,
+        ticket_id=validated_intake.ticket_id,
+        planning_mode="local_forensic_read_only",
+        context="local",
+        actor="amof.runner.local_forensic",
+    )
+    events.log(
+        "run_created",
+        mode="local_forensic",
+        intake_id=validated_intake.intake_id,
+        packet_ref=packet_ref,
+        mutation_mode="read_only",
+    )
+
+    command_records: list[dict[str, Any]] = []
+    sequence = 0
+    status = "completed"
+    blocked_reasons: list[str] = []
+    try:
+        for repo_path in inspection_paths:
+            for spec in LOCAL_FORENSIC_COMMAND_PACK:
+                sequence += 1
+                stdout_path = events.session_dir / f"command-{sequence:03d}.stdout"
+                stderr_path = events.session_dir / f"command-{sequence:03d}.stderr"
+                events.log("command_started", sequence=sequence, cwd=str(repo_path), command=spec.command, label=spec.label)
+                completed = _execute_local_forensic_command(spec.command, cwd=repo_path)
+                _write_text(stdout_path, completed.stdout or "")
+                _write_text(stderr_path, completed.stderr or "")
+                record = {
+                    "sequence": sequence,
+                    "label": spec.label,
+                    "cwd": str(repo_path),
+                    "command": spec.command,
+                    "exit_code": completed.returncode,
+                    "stdout_path": str(stdout_path),
+                    "stderr_path": str(stderr_path),
+                }
+                command_records.append(record)
+                events.log("command_finished", **record)
+    except RunnerCliError as exc:
+        status = "blocked"
+        blocked_reasons.append(str(exc))
+        events.log("run_blocked", reason=str(exc), severity="error")
+
+    summary = {
+        "run_id": run_id,
+        "intake_id": validated_intake.intake_id,
+        "ticket_id": validated_intake.ticket_id,
+        "status": status,
+        "mutation_mode": "read_only",
+        "paths_inspected": [str(path) for path in inspection_paths],
+        "commands_run": command_records,
+        "packet_ref": packet_ref,
+        "report_path": str(events.session_dir / "report.md"),
+        "events_path": str(events.log_path),
+        "run_path": str(events.session_dir / "run.json"),
+        "safety_gates": safety_gates,
+        "blocked_reasons": blocked_reasons,
+    }
+    _write_text(events.session_dir / "report.md", _build_local_forensic_report(summary, command_records))
+    _write_text(events.session_dir / "run.json", json.dumps(summary, indent=2) + "\n")
+    events.log(
+        "run_finished",
+        status=status,
+        receipt_ref=summary["run_path"],
+        report_path=summary["report_path"],
+        cost_status="unknown",
+        cost=None,
+        estimated_cost=None,
+    )
+    if blocked_reasons:
+        raise RunnerCliError("; ".join(blocked_reasons))
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(summary, indent=2))
+    else:
+        print(f"LOCAL_FORENSIC_RUN run_id={run_id} status={status} report={summary['report_path']}")
+    return 0
+
+
 def _eligible_runner(record: dict[str, Any], *, active_context: str, task_kind: str, mutation_mode: str) -> tuple[bool, str]:
     runner_id = str(record.get("runner_id") or "").strip() or "<unknown>"
     status = str(record.get("status") or "").lower()
@@ -587,11 +809,19 @@ def cmd_runner(args: argparse.Namespace) -> int:
             return _cmd_doctor(args)
         if action == "match":
             return _cmd_match(args)
-        sys.stderr.write("Usage: amof runner {template,register,list,show,doctor,match} ...\n")
+        if action == "run-local-forensic":
+            return _cmd_run_local_forensic(args)
+        sys.stderr.write("Usage: amof runner {template,register,list,show,doctor,match,run-local-forensic} ...\n")
         return 1
     except RunnerCliError as exc:
         sys.stderr.write(f"[runner] {exc}\n")
         return 1
 
 
-__all__ = ["RunnerCliError", "ValidatedRunner", "cmd_runner"]
+__all__ = [
+    "LOCAL_FORENSIC_ALLOWED_COMMANDS",
+    "LOCAL_FORENSIC_COMMAND_PACK",
+    "RunnerCliError",
+    "ValidatedRunner",
+    "cmd_runner",
+]
