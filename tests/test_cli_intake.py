@@ -148,6 +148,31 @@ class CliIntakeTests(unittest.TestCase):
             self.assertIn("VALID intake_id=replace-me-intake-id", validate_stdout)
             self.assertEqual(validate_stderr, "")
 
+    def test_draft_compiles_raw_text_to_validate_ready_packet(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-intake-draft-") as td:
+            raw_text = (
+                "AMOF-901 urgent: patch services/operator-console/src/app/api/intake/route.ts today\n"
+                "blocked by missing AMOF_OPERATOR_CONSOLE_IAL_TOKEN in cloud-dev"
+            )
+            code, stdout, stderr = _run_intake_cmd(
+                _intake_args("draft", raw_text=raw_text, json=True)
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(stderr, "")
+            payload = json.loads(stdout)
+            self.assertEqual(payload["classification"], "defer")
+            self.assertTrue(payload["packet_text"])
+
+            packet = Path(td) / "draft-packet.json"
+            packet.write_text(payload["packet_text"], encoding="utf-8")
+            with patch.dict(os.environ, {"AMOF_HOME": str(Path(td) / "home")}, clear=False):
+                validate_code, validate_stdout, validate_stderr = _run_intake_cmd(
+                    _intake_args("validate", file=str(packet))
+                )
+            self.assertEqual(validate_code, 0)
+            self.assertIn("VALID intake_id=", validate_stdout)
+            self.assertEqual(validate_stderr, "")
+
     def test_submit_creates_record_and_runs_are_discoverable(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-intake-submit-pass-") as td:
             home = Path(td) / "home"

@@ -782,6 +782,17 @@ def parse_args() -> argparse.Namespace:
     )
     intake_template.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
+    intake_draft = intake_sub.add_parser(
+        "draft",
+        help="Compile raw intake text into a canonical draft packet",
+    )
+    intake_draft.add_argument(
+        "--raw-text",
+        required=True,
+        help="Raw operator capture text to compile",
+    )
+    intake_draft.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
     runner_parser = subparsers.add_parser(
         "runner",
         help="Register and match planning-only runner metadata from AMOF_HOME",

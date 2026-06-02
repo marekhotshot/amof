@@ -23,10 +23,22 @@ from amof.api.routers.release import (
 from amof.cli import get_available_ecosystems
 from amof.intake.amof_commit import build_amof_commit_event, decide_amof_commit_build_write
 from amof.intake.build_write import RUNTIME_DECISION_STATE
+from amof.intake.draft_compiler import compile_intake_draft
 from amof.intake.github_push import decide_github_push_payload
 from amof.state import get_all_tickets
 
 router = APIRouter(prefix="/intake", tags=["intake"])
+
+
+@router.post("/draft", dependencies=[Depends(require_step_up_user)])
+def intake_draft(body: dict[str, Any]) -> dict[str, Any]:
+    raw_text = str(body.get("raw_text") or "").strip()
+    if not raw_text:
+        raise HTTPException(status_code=400, detail="raw_text is required")
+    try:
+        return compile_intake_draft(raw_text).to_dict()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _legacy_env_path(workspace_root: Path) -> Path:

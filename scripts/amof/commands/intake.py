@@ -22,6 +22,7 @@ from ..intake.authority_ledger import (
     IntakeDecisionClass,
     evaluate_intake_authority,
 )
+from ..intake.draft_compiler import compile_intake_draft
 from ..orchestrator.events import EventLog
 
 REMOTE_CONTEXT_REQUIRED_ENV = {
@@ -823,6 +824,18 @@ def _cmd_template(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_draft(args: argparse.Namespace) -> int:
+    raw_text = str(getattr(args, "raw_text", "") or "").strip()
+    if not raw_text:
+        raise IntakeCliError("raw_text is required")
+    draft = compile_intake_draft(raw_text).to_dict()
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(draft, indent=2))
+    else:
+        print(yaml.safe_dump(draft, sort_keys=False).rstrip())
+    return 0
+
+
 def cmd_intake(args: argparse.Namespace) -> int:
     action = str(getattr(args, "intake_cmd", "") or "").strip()
     try:
@@ -836,7 +849,9 @@ def cmd_intake(args: argparse.Namespace) -> int:
             return _cmd_show(args)
         if action == "template":
             return _cmd_template(args)
-        sys.stderr.write("Usage: amof intake {validate,submit,list,show,template} ...\n")
+        if action == "draft":
+            return _cmd_draft(args)
+        sys.stderr.write("Usage: amof intake {validate,submit,list,show,template,draft} ...\n")
         return 1
     except IntakeCliError as exc:
         sys.stderr.write(f"[intake] {exc}\n")
