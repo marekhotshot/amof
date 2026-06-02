@@ -27,7 +27,6 @@ from ..app_paths import evidence_dir, locks_dir
 from ..intake.build_write import ENV_ONLY_COMMIT_MESSAGE_RE, ENV_PATH_PREFIX, infer_ticket_id
 from ..manifest import get_ecosystem_root, resolve_workspace_root, simple_parse_yaml
 from ..utils import ensure_dir
-from .doctor import _detect_layout
 from .workspace import _load_dotenv
 
 ALLOWED_GITOPS_PREFIXES = (ENV_PATH_PREFIX,)
@@ -938,12 +937,30 @@ def _create_synthetic_commit(
             _git(repo_path, "worktree", "remove", "--force", str(temp_path))
 
 
+def _promotion_receipts_root(workspace_root: Path, ticket_id: str) -> Path:
+    ticket_dir = str(ticket_id).strip()
+    if len(workspace_root.parts) >= 3 and tuple(workspace_root.parts[-3:]) == ("receipts", "promote-main", ticket_dir):
+        return workspace_root
+    return workspace_root / "receipts" / "promote-main" / ticket_dir
+
+
+def _promotion_audit_dir(
+    workspace_root: Path,
+    *,
+    ecosystem: str | None,
+    ticket_id: str,
+) -> Path:
+    if ecosystem:
+        return get_ecosystem_root(ecosystem, str(workspace_root)) / AUDIT_SUBDIR
+    return _promotion_receipts_root(workspace_root, ticket_id) / AUDIT_SUBDIR
+
+
 def _write_audit_record(
     workspace_root: Path,
-    ecosystem: str,
+    ecosystem: str | None,
     plan: PromoteMainPlan,
 ) -> Path:
-    audit_dir = get_ecosystem_root(ecosystem, str(workspace_root)) / AUDIT_SUBDIR
+    audit_dir = _promotion_audit_dir(workspace_root, ecosystem=ecosystem, ticket_id=plan.ticket_id)
     ensure_dir(audit_dir)
     timestamp = time.strftime("%Y-%m-%d-%H%M%S")
     filename = f"{timestamp}-promote-main-{_slugify(plan.ticket_id)}.json"
@@ -961,10 +978,10 @@ def _finalize_plan(
     plan: PromoteMainPlan,
     *,
     workspace_root: Path,
-    ecosystem: str,
+    ecosystem: str | None,
     lock_final_status: str,
 ) -> PromoteMainPlan:
-    audit_dir = get_ecosystem_root(ecosystem, str(workspace_root)) / AUDIT_SUBDIR
+    audit_dir = _promotion_audit_dir(workspace_root, ecosystem=ecosystem, ticket_id=plan.ticket_id)
     ensure_dir(audit_dir)
     timestamp = time.strftime("%Y-%m-%d-%H%M%S")
     filename = f"{timestamp}-promote-main-{_slugify(plan.ticket_id)}.json"
@@ -1072,24 +1089,43 @@ def _revert_synthetic_commit(
             _git(repo_path, "worktree", "remove", "--force", str(temp_path))
 
 
+def _workspace_repo_path_candidates(workspace_root: Path, repo_name: str) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in (workspace_root, *workspace_root.parents):
+        if repo_name == "amof" and (candidate / ".git").exists() and (candidate / "scripts" / "amof").is_dir():
+            repo_path = candidate.resolve()
+            if repo_path not in seen:
+                seen.add(repo_path)
+                candidates.append(repo_path)
+        repo_path = (candidate / "repos" / repo_name).resolve()
+        if repo_path in seen:
+            continue
+        seen.add(repo_path)
+        candidates.append(repo_path)
+    return candidates
+
+
 def _resolve_repo_path(manifest: dict[str, Any], workspace_root: Path, repo_name: str) -> Path:
     for repo in manifest.get("repos", []):
         if repo.get("name") == repo_name:
             configured_path = (workspace_root / str(repo.get("path") or f"repos/{repo_name}")).resolve()
             if configured_path.exists():
                 return configured_path
-            layout_mode, layout_root = _detect_layout(workspace_root)
-            if layout_mode == "standalone_repo" and repo_name == "amof":
-                return layout_root.resolve()
             return configured_path
-    raise RuntimeError(f"repo {repo_name} is not configured in the manifest")
+    for repo_path in _workspace_repo_path_candidates(workspace_root, repo_name):
+        if repo_path.exists():
+            return repo_path
+    raise RuntimeError(
+        f"repo {repo_name} could not be resolved from manifest or workspace layout starting at {workspace_root}"
+    )
 
 
 def plan_promote_main_dry_run(
     manifest: dict[str, Any],
     bundle: PromoteMainInput,
     *,
-    ecosystem: str,
+    ecosystem: str | None,
     workspace_root: Path | None = None,
 ) -> PromoteMainPlan:
     workspace_root = (workspace_root or resolve_workspace_root()).resolve()
@@ -1430,7 +1466,7 @@ def execute_promote_main_push(
     manifest: dict[str, Any],
     bundle: PromoteMainInput,
     *,
-    ecosystem: str,
+    ecosystem: str | None,
     workspace_root: Path | None = None,
 ) -> PromoteMainPlan:
     workspace_root = (workspace_root or resolve_workspace_root()).resolve()
@@ -1804,10 +1840,6 @@ def cmd_promote_main(manifest: dict[str, Any], args: Any, ecosystem: str | None 
             "[promote-main] Use only one of --require-run-summary or --require-promotion-readiness-result.\n"
         )
         return 1
-    if not ecosystem:
-        sys.stderr.write("[promote-main] Ecosystem could not be resolved.\n")
-        return 1
-
     bundle = PromoteMainInput(
         repo=str(args.repo).strip(),
         ticket_id=_normalize_ticket_id(args.ticket_id),

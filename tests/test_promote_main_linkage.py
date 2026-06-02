@@ -144,6 +144,80 @@ class PromoteMainLinkageTests(unittest.TestCase):
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
 
+    def test_plan_promote_main_resolves_repo_without_ecosystem_when_manifest_is_empty(self) -> None:
+        temp_root, repo, source_sha, expected_main_sha = self._prepare_workspace()
+        try:
+            bundle = PromoteMainInput(
+                repo="amof",
+                ticket_id="AMOF-RUNTIME-CONTEXT-SWITCHING-001",
+                candidate_branch="ticket/AMOF-RUNTIME-CONTEXT-SWITCHING-001-runtime-context-switching",
+                source_sha=source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=expected_main_sha,
+                promotion_reason="test no ecosystem repo resolution",
+                dry_run=True,
+            )
+            plan = plan_promote_main_dry_run(
+                {"repos": []},
+                bundle,
+                ecosystem=None,
+                workspace_root=temp_root,
+            )
+            self.assertTrue(plan.ok)
+            self.assertEqual(Path(plan.repo_path), repo)
+            self.assertTrue(plan.validation_checks["origin_main_matches_expected_main_sha"])
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def test_plan_promote_main_uses_workspace_receipts_audit_path_when_ecosystem_missing(self) -> None:
+        temp_root, _repo, source_sha, expected_main_sha = self._prepare_workspace()
+        try:
+            receipts_root = temp_root / "receipts" / "promote-main" / "AMOF-RUNTIME-CONTEXT-SWITCHING-001"
+            bundle = PromoteMainInput(
+                repo="amof",
+                ticket_id="AMOF-RUNTIME-CONTEXT-SWITCHING-001",
+                candidate_branch="ticket/AMOF-RUNTIME-CONTEXT-SWITCHING-001-runtime-context-switching",
+                source_sha=source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=expected_main_sha,
+                promotion_reason="test no ecosystem audit path",
+                dry_run=True,
+            )
+            plan = plan_promote_main_dry_run(
+                {"repos": []},
+                bundle,
+                ecosystem=None,
+                workspace_root=receipts_root,
+            )
+            self.assertTrue(plan.audit_record_path.startswith("audit/"))
+            audit_path = receipts_root / plan.audit_record_path
+            self.assertTrue(audit_path.exists())
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def test_plan_promote_main_missing_repo_fails_with_clear_resolution_error(self) -> None:
+        temp_root = Path(tempfile.mkdtemp(prefix="amof-promote-linkage-missing-repo-"))
+        try:
+            bundle = PromoteMainInput(
+                repo="amof",
+                ticket_id="AMOF-RUNTIME-CONTEXT-SWITCHING-001",
+                candidate_branch="ticket/AMOF-RUNTIME-CONTEXT-SWITCHING-001-runtime-context-switching",
+                source_sha="e497ee272ac4c8569539b860c2b622c4d95c8432",
+                gitops_commit_sha=None,
+                expected_main_sha="e497ee272ac4c8569539b860c2b622c4d95c8432",
+                promotion_reason="test missing repo error",
+                dry_run=True,
+            )
+            with self.assertRaisesRegex(RuntimeError, "could not be resolved from manifest or workspace layout"):
+                plan_promote_main_dry_run(
+                    {"repos": []},
+                    bundle,
+                    ecosystem=None,
+                    workspace_root=temp_root,
+                )
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
     def test_legacy_numeric_fallback_detection_is_explicit(self) -> None:
         self.assertTrue(_is_legacy_numeric_ticket_id("AMOF-221"))
         self.assertFalse(_is_legacy_numeric_ticket_id("AMOF-RUNTIME-CONTEXT-SWITCHING-001"))
