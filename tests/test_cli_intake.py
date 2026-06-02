@@ -225,6 +225,158 @@ class CliIntakeTests(unittest.TestCase):
             self.assertIn("FAIL_CLOSED", stderr)
             self.assertIn("No silent fallback", stderr)
 
+    def test_remote_context_uses_remote_intake_api_for_submit_list_and_show(self) -> None:
+        class FakeResponse:
+            def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+                self.status_code = status_code
+                self._payload = payload
+                self.text = json.dumps(payload)
+
+            def json(self) -> dict[str, object]:
+                return self._payload
+
+        with tempfile.TemporaryDirectory(prefix="amof-intake-submit-remote-") as td:
+            home = Path(td) / "home"
+            packet = _write_packet(Path(td) / "intake.yaml")
+            detail_reads = 0
+            calls: list[dict[str, object]] = []
+            remote_summary = {
+                "intake_id": "amof-cli-intake-smoke",
+                "ticket_id": "AMOF-CLI-INTAKE-001",
+                "status": "submitted",
+                "context": "cloud-dev",
+                "created_at": "2026-06-02T10:44:32.902438+00:00",
+                "mutation_mode": "read_only",
+                "validation": "pass",
+                "source": "amof_cli",
+                "intake_backend": "s3",
+                "intake_s3_key": "clouddev/private-ial-intakes/2026/06/02/amof-cli-intake-smoke.json",
+                "intake_upload_status": "uploaded",
+            }
+
+            def fake_request(
+                method: str,
+                url: str,
+                headers: dict[str, str] | None = None,
+                params: dict[str, object] | None = None,
+                json: dict[str, object] | None = None,
+                timeout: float | None = None,
+            ) -> FakeResponse:
+                del timeout
+                calls.append(
+                    {
+                        "method": method,
+                        "url": url,
+                        "headers": dict(headers or {}),
+                        "params": dict(params or {}),
+                        "json": dict(json or {}),
+                    }
+                )
+                self.assertEqual(headers and headers.get("Authorization"), "Bearer unit-test-token")
+                if method == "GET" and url.endswith("/v1/ial/intakes/amof-cli-intake-smoke"):
+                    nonlocal detail_reads
+                    detail_reads += 1
+                    if detail_reads == 1:
+                        return FakeResponse(
+                            404,
+                            {
+                                "detail": {
+                                    "code": "ial_intake_not_found",
+                                    "message": "Planning-only intake was not found for the requested intake_id.",
+                                }
+                            },
+                        )
+                    return FakeResponse(
+                        200,
+                        {
+                            "intake_id": "amof-cli-intake-smoke",
+                            "summary": remote_summary,
+                            "object": {
+                                "backend": "s3",
+                                "s3_key": remote_summary["intake_s3_key"],
+                                "object_url": None,
+                            },
+                            "source": {
+                                "backend": "s3",
+                                "configured_backend": "s3",
+                                "fallback_used": False,
+                            },
+                        },
+                    )
+                if method == "POST" and url.endswith("/v1/ial/intakes"):
+                    self.assertEqual(json and json.get("intake_id"), "amof-cli-intake-smoke")
+                    self.assertEqual(json and json.get("ticket_id"), "AMOF-CLI-INTAKE-001")
+                    self.assertEqual(json and json.get("context"), "cloud-dev")
+                    self.assertEqual(json and json.get("source"), "amof_cli")
+                    return FakeResponse(
+                        200,
+                        {
+                            "intake_id": "amof-cli-intake-smoke",
+                            "summary": remote_summary,
+                            "source": {
+                                "backend": "s3",
+                                "configured_backend": "s3",
+                                "fallback_used": False,
+                            },
+                        },
+                    )
+                if method == "GET" and url.endswith("/v1/ial/intakes"):
+                    self.assertEqual(params, {"limit": 200})
+                    return FakeResponse(
+                        200,
+                        {
+                            "items": [remote_summary],
+                            "count": 1,
+                            "limit": 200,
+                            "next_cursor": None,
+                            "source": {
+                                "backend": "s3",
+                                "configured_backend": "s3",
+                                "fallback_used": False,
+                            },
+                        },
+                    )
+                raise AssertionError(f"Unexpected request: {method} {url}")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "AMOF_HOME": str(home),
+                    "AMOF_REMOTE_IAL_BASE_URL": "https://ial.example.test",
+                    "AMOF_REMOTE_IAL_API_KEY": "unit-test-token",
+                },
+                clear=False,
+            ):
+                set_current_context_name("cloud-dev")
+                with patch("amof.commands.intake.requests.request", side_effect=fake_request):
+                    code, stdout, stderr = _run_intake_cmd(_intake_args("submit", file=str(packet), json=True))
+                    self.assertEqual(code, 0)
+                    self.assertEqual(stderr, "")
+                    submit_payload = json.loads(stdout)
+                    self.assertEqual(submit_payload["intake_id"], "amof-cli-intake-smoke")
+                    self.assertEqual(submit_payload["context"], "cloud-dev")
+                    self.assertEqual(submit_payload["source"], "amof_cli")
+                    self.assertEqual(submit_payload["intake_backend"], "s3")
+
+                    code, stdout, stderr = _run_intake_cmd(_intake_args("list", json=True))
+                    self.assertEqual(code, 0)
+                    self.assertEqual(stderr, "")
+                    list_payload = json.loads(stdout)
+                    self.assertEqual([row["intake_id"] for row in list_payload], ["amof-cli-intake-smoke"])
+                    self.assertEqual(list_payload[0]["run_id"], "")
+
+                    code, stdout, stderr = _run_intake_cmd(_intake_args("show", intake_id="amof-cli-intake-smoke", json=True))
+                    self.assertEqual(code, 0)
+                    self.assertEqual(stderr, "")
+                    show_payload = json.loads(stdout)
+                    self.assertEqual(show_payload["intake_id"], "amof-cli-intake-smoke")
+                    self.assertEqual(show_payload["source_backend"], "s3")
+                    self.assertEqual(show_payload["intake_s3_key"], remote_summary["intake_s3_key"])
+
+            record_path = home / "share" / "intake" / "submissions" / "amof-cli-intake-smoke.json"
+            self.assertFalse(record_path.exists())
+            self.assertEqual([call["method"] for call in calls], ["GET", "POST", "GET", "GET"])
+
     def test_submit_does_not_mutate_target_repo(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-intake-submit-no-mutate-") as td:
             repo = Path(td) / "repo"

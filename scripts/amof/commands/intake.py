@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
+import requests
 import yaml
 
 from ..app_config import resolve_active_context_name
@@ -37,6 +40,7 @@ REQUIRED_FIELDS = (
     "cost_truth_policy",
 )
 SUPPORTED_TEMPLATE_KINDS = ("bounded_intake_task",)
+DEFAULT_REMOTE_INTAKE_TIMEOUT_SECONDS = 30.0
 
 
 class IntakeCliError(RuntimeError):
@@ -89,6 +93,148 @@ def _intake_store_dir() -> Path:
 
 def _intake_runs_dir() -> Path:
     return runs_dir() / "intake-submissions"
+
+
+def _is_remote_intake_context(context: str) -> bool:
+    return bool(REMOTE_CONTEXT_REQUIRED_ENV.get(context))
+
+
+def _normalize_remote_base_url(base_url: str) -> str:
+    normalized = str(base_url or "").strip().rstrip("/")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise IntakeCliError(
+            "FAIL_CLOSED: AMOF_REMOTE_IAL_BASE_URL must be a valid http(s) URL for remote intake operations."
+        )
+    return normalized
+
+
+def _remote_intake_timeout_seconds() -> float:
+    raw = str(os.environ.get("AMOF_REMOTE_IAL_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return DEFAULT_REMOTE_INTAKE_TIMEOUT_SECONDS
+    try:
+        timeout = float(raw)
+    except ValueError:
+        return DEFAULT_REMOTE_INTAKE_TIMEOUT_SECONDS
+    return timeout if timeout > 0 else DEFAULT_REMOTE_INTAKE_TIMEOUT_SECONDS
+
+
+def _remote_intake_request(
+    method: str,
+    path: str = "",
+    *,
+    params: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+    allow_not_found: bool = False,
+) -> dict[str, Any] | None:
+    base_url = _normalize_remote_base_url(str(os.environ.get("AMOF_REMOTE_IAL_BASE_URL") or ""))
+    api_key = str(os.environ.get("AMOF_REMOTE_IAL_API_KEY") or "").strip()
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    try:
+        response = requests.request(
+            method,
+            f"{base_url}/v1/ial/intakes{path}",
+            headers=headers,
+            params=params,
+            json=payload,
+            timeout=_remote_intake_timeout_seconds(),
+        )
+    except requests.RequestException as exc:
+        raise IntakeCliError(f"remote intake request failed: {exc}") from exc
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    detail = body.get("detail")
+    if not isinstance(detail, dict):
+        detail = body
+    if response.status_code == 404 and allow_not_found:
+        detail_code = str(detail.get("code") or "").strip()
+        if not detail_code or detail_code == "ial_intake_not_found":
+            return None
+    if response.status_code >= 400:
+        message = str(
+            detail.get("message")
+            or detail.get("detail")
+            or response.text.strip()
+            or f"remote intake request failed with status {response.status_code}"
+        )
+        raise IntakeCliError(f"remote intake request failed: {message}")
+    return body
+
+
+def _remote_submission_payload(
+    *,
+    packet: dict[str, Any],
+    validated: ValidatedIntake,
+    context: str,
+) -> dict[str, Any]:
+    rough_intent = str(packet.get("rough_intent") or "").strip()
+    bounded_goal = str(packet.get("bounded_goal") or "").strip()
+    repo_hint = next((item for item in validated.repo_scope if item != "."), "")
+    return {
+        "intake_id": validated.intake_id,
+        "ticket_id": validated.ticket_id,
+        "context": context,
+        "summary": rough_intent,
+        "prompt": bounded_goal or rough_intent,
+        "repo": repo_hint or None,
+        "workspace": context,
+        "mode": "planning_only",
+        "mutation_mode": "read_only",
+        "dispatch_allowed": False,
+        "remote_execution": False,
+        "mutations": {
+            "allowed": [],
+            "forbidden": validated.mutations_forbidden,
+        },
+        "source": "amof_cli",
+    }
+
+
+def _remote_list_records(context: str) -> list[dict[str, Any]]:
+    del context
+    payload = _remote_intake_request("GET", params={"limit": 200})
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _remote_get_detail(intake_id: str) -> dict[str, Any] | None:
+    payload = _remote_intake_request("GET", f"/{intake_id}", allow_not_found=True)
+    return payload if isinstance(payload, dict) else None
+
+
+def _remote_cli_output_from_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    output = _record_summary(summary)
+    output["validation_result"] = str(summary.get("validation") or "")
+    output["source"] = str(summary.get("source") or "")
+    output["intake_backend"] = str(summary.get("intake_backend") or "")
+    output["intake_s3_key"] = str(summary.get("intake_s3_key") or "")
+    output["intake_upload_status"] = str(summary.get("intake_upload_status") or "")
+    return output
+
+
+def _remote_cli_output_from_detail(detail: dict[str, Any]) -> dict[str, Any]:
+    summary = detail.get("summary") if isinstance(detail.get("summary"), dict) else {}
+    source = detail.get("source") if isinstance(detail.get("source"), dict) else {}
+    obj = detail.get("object") if isinstance(detail.get("object"), dict) else {}
+    output = _remote_cli_output_from_summary(summary)
+    output["configured_backend"] = str(source.get("configured_backend") or "")
+    output["source_backend"] = str(source.get("backend") or obj.get("backend") or "")
+    output["intake_s3_key"] = str(obj.get("s3_key") or output.get("intake_s3_key") or "")
+    return output
 
 
 def _read_packet(path: Path) -> dict[str, Any]:
@@ -315,8 +461,6 @@ def _template_payload(kind: str) -> dict[str, Any]:
 
 
 def _resolve_context_fail_closed() -> tuple[str, str]:
-    import os
-
     context, source = resolve_active_context_name()
     required_env = REMOTE_CONTEXT_REQUIRED_ENV.get(context, ())
     missing = [name for name in required_env if not str(os.environ.get(name) or "").strip()]
@@ -455,6 +599,18 @@ def _cmd_submit(args: argparse.Namespace) -> int:
             raise IntakeCliError(
                 "MVP submit supports planning-only no-mutation intake only (mutations.allowed must be empty and read_only gate must stop)."
             )
+        if _is_remote_intake_context(context):
+            if _remote_get_detail(validated.intake_id) is not None:
+                raise IntakeCliError(f"intake already submitted: {validated.intake_id}")
+            remote_payload = _remote_submission_payload(packet=packet, validated=validated, context=context)
+            created = _remote_intake_request("POST", payload=remote_payload)
+            summary = created.get("summary") if isinstance(created, dict) and isinstance(created.get("summary"), dict) else {}
+            output = _remote_cli_output_from_summary(summary)
+            if bool(getattr(args, "json", False)):
+                print(json.dumps(output, indent=2))
+            else:
+                print(f"SUBMITTED intake_id={validated.intake_id} context={context} source=remote_ial")
+            return 0
         if _record_path(validated.intake_id).exists():
             raise IntakeCliError(f"intake already submitted: {validated.intake_id}")
 
@@ -532,7 +688,11 @@ def _cmd_submit(args: argparse.Namespace) -> int:
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    records = _load_submission_records()
+    context, _context_source = _resolve_context_fail_closed()
+    if _is_remote_intake_context(context):
+        records = _remote_list_records(context)
+    else:
+        records = _load_submission_records()
     _print_list(records, as_json=bool(getattr(args, "json", False)))
     return 0
 
@@ -541,20 +701,27 @@ def _cmd_show(args: argparse.Namespace) -> int:
     intake_id = str(getattr(args, "intake_id", "") or "").strip()
     if not intake_id:
         raise IntakeCliError("intake_id is required")
-    records = _load_submission_records()
-    matches = [record for record in records if str(record.get("intake_id") or "") == intake_id]
-    if not matches:
-        raise IntakeCliError(f"intake not found: {intake_id}")
-    if len(matches) > 1:
-        raise IntakeCliError(f"intake id is ambiguous: {intake_id}")
-    record = matches[0]
-    output = {
-        **_record_summary(record),
-        "events_path": str(record.get("events_path") or ""),
-        "session_path": str(record.get("session_path") or ""),
-        "packet_path": str(record.get("packet_path") or ""),
-        "validation_result": str(record.get("validation_result") or ""),
-    }
+    context, _context_source = _resolve_context_fail_closed()
+    if _is_remote_intake_context(context):
+        detail = _remote_get_detail(intake_id)
+        if detail is None:
+            raise IntakeCliError(f"intake not found: {intake_id}")
+        output = _remote_cli_output_from_detail(detail)
+    else:
+        records = _load_submission_records()
+        matches = [record for record in records if str(record.get("intake_id") or "") == intake_id]
+        if not matches:
+            raise IntakeCliError(f"intake not found: {intake_id}")
+        if len(matches) > 1:
+            raise IntakeCliError(f"intake id is ambiguous: {intake_id}")
+        record = matches[0]
+        output = {
+            **_record_summary(record),
+            "events_path": str(record.get("events_path") or ""),
+            "session_path": str(record.get("session_path") or ""),
+            "packet_path": str(record.get("packet_path") or ""),
+            "validation_result": str(record.get("validation_result") or ""),
+        }
     if bool(getattr(args, "json", False)):
         print(json.dumps(output, indent=2))
     else:
