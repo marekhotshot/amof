@@ -1,0 +1,41 @@
+id: amof-execution-e2e-safe-001
+version: "1.0.0"
+kind: bounded_intake_task
+ticket_id: AMOF-EXECUTION-E2E-PACKET-001
+rough_intent: Prove the smallest safe AMOF intake-to-loop execution evidence flow.
+bounded_goal: Run one planning-only bounded loop and collect local evidence artifacts.
+task_kind: other
+repo_scope:
+  - .
+paths_to_inspect:
+  - scripts/amof/commands/intake.py
+  - scripts/amof/commands/runner.py
+  - scripts/amof/commands/execution.py
+  - scripts/amof/commands/loop.py
+  - scripts/amof/commands/runs.py
+profile_ref: local-planning-runner
+mutations:
+  allowed: []
+  forbidden:
+    - edit
+    - deploy
+    - promote
+    - push
+validation_gates:
+  - name: read_only
+    requirement: Planning-only execution with no repository or runtime mutation.
+    failure_action: stop
+cost_truth_policy:
+  missing_cost_representation: unknown
+mode: planning_only
+mutation_mode: read_only
+dispatch_allowed: false
+remote_execution: false
+stop_policy:
+  terminal_on_ready: false
+expected_evidence:
+  - intake submission record under AMOF app-data
+  - runner match result
+  - execution scan report
+  - bounded loop report for max_loops=1
+  - runs list/show/logs visibility
