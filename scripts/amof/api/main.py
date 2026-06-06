@@ -15,6 +15,7 @@ from amof.api.routers import (
     intake,
     logs,
     models,
+    repo_adoption,
     release,
     run,
     runpod,
@@ -86,6 +87,7 @@ api_v1_control.include_router(release.router)
 api_v1_control.include_router(deployments.router)
 api_v1_control.include_router(agents_catalog.router)
 api_v1_control.include_router(intake.router)
+api_v1_control.include_router(repo_adoption.router)
 api_v1_control.include_router(run.router)
 api_v1_control.include_router(logs.router)
 api_v1_control.include_router(models.router)
