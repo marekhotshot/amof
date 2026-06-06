@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -20,7 +21,7 @@ import subprocess
 import sys
 import time
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -155,6 +156,62 @@ class AgentPlanExecuteEnvelope:
         }
 
 
+@dataclass(frozen=True)
+class ExternalAgentPlanExecuteRequest:
+    schema_version: int
+    request_id: str
+    mode: str
+    request: AgentPlanExecuteJsonRequest
+
+
+@dataclass(frozen=True)
+class AgentPlanExecuteCorrelationEnvelope:
+    schema_version: int
+    request_id: Optional[str]
+    result: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "request_id": self.request_id,
+            "result": dict(self.result),
+        }
+
+
+_AGENT_PLAN_EXECUTE_JSON_FIELDS = {
+    field.name for field in fields(AgentPlanExecuteJsonRequest)
+}
+_REQUEST_JSON_EXECUTION_OVERRIDES = (
+    ("provider", "--provider"),
+    ("plan", "--plan"),
+    ("model", "--model"),
+    ("verbose", "--verbose"),
+    ("max_cost", "--max-cost"),
+    ("budget", "--budget"),
+    ("cost_limit", "--cost-limit"),
+    ("subtask_budget", "--subtask-budget"),
+    ("add_budget", "--add-budget"),
+    ("require_budget_approval", "--require-budget-approval"),
+    ("budget_strict", "--budget-strict"),
+    ("budget_status", "--budget-status"),
+    ("model_ladder", "--model-ladder"),
+    ("fast_model", "--fast-model"),
+    ("strong_model", "--strong-model"),
+    ("planner_model", "--planner-model"),
+    ("index", "--index"),
+    ("resume", "--resume"),
+    ("follow_up", "--follow-up"),
+    ("follow_up_file", "--follow-up-file"),
+    ("plan_file", "--plan-file"),
+    ("no_follow_up", "--no-follow-up"),
+    ("approve_plan", "--approve-plan"),
+    ("continue_budget", "--continue-budget"),
+    ("approve_capabilities", "--approve-capabilities"),
+    ("approve_tool_packs", "--approve-tool-pack"),
+    ("approve_writable_roots", "--approve-writable-root"),
+)
+
+
 def _optional_text(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -213,6 +270,99 @@ def parse_agent_plan_execute_json_request(payload: Any) -> AgentPlanExecuteJsonR
             payload.get("approve_writable_roots"), field_name="approve_writable_roots"
         ),
         no_follow_up=True,
+    )
+
+
+def _external_agent_plan_execute_request_schema_path() -> Path:
+    return (
+        Path(__file__).resolve().parents[3]
+        / "contracts"
+        / "external-agent-plan-execute-request.schema.json"
+    )
+
+
+def _validate_external_agent_plan_execute_request_fallback(payload: Any) -> None:
+    schema_path = _external_agent_plan_execute_request_schema_path()
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("JSON request body must be an object.")
+    allowed = set(schema.get("properties") or {})
+    extra = sorted(set(payload) - allowed)
+    if extra:
+        raise ValueError(f"Unknown fields: {extra}")
+    required = list(schema.get("required") or [])
+    missing = [key for key in required if key not in payload]
+    if missing:
+        raise ValueError(f"Missing required fields: {missing}")
+    if payload.get("schema_version") != 1:
+        raise ValueError("schema_version must equal 1")
+    request_id = payload.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise ValueError("request_id must be a non-empty string")
+    if payload.get("mode") != "plan-execute":
+        raise ValueError("mode must equal plan-execute")
+    goal = payload.get("goal")
+    if not isinstance(goal, str) or not goal.strip():
+        raise ValueError("goal must be a non-empty string")
+    if payload.get("no_follow_up") is not True:
+        raise ValueError("no_follow_up must be true")
+    for key in ("provider", "model", "planner_model", "resume", "follow_up"):
+        value = payload.get(key)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError(f"{key} must be a non-empty string or null")
+    for key in ("budget", "subtask_budget"):
+        value = payload.get(key)
+        if value is not None and (
+            not isinstance(value, (int, float)) or float(value) <= 0
+        ):
+            raise ValueError(f"{key} must be > 0 or null")
+    if "budget_strict" in payload and not isinstance(
+        payload.get("budget_strict"), bool
+    ):
+        raise ValueError("budget_strict must be boolean")
+    for key in ("approve_capabilities", "approve_tool_packs", "approve_writable_roots"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, list):
+            raise ValueError(f"{key} must be an array of strings")
+        if any((not isinstance(item, str)) or (not item.strip()) for item in value):
+            raise ValueError(f"{key} must contain only non-empty strings")
+    if isinstance(payload.get("follow_up"), str) and not isinstance(
+        payload.get("resume"), str
+    ):
+        raise ValueError("follow_up requires resume")
+
+
+def validate_external_agent_plan_execute_request(payload: Any) -> None:
+    schema_path = _external_agent_plan_execute_request_schema_path()
+    if importlib.util.find_spec("jsonschema") is not None and schema_path.exists():
+        import jsonschema
+
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        try:
+            jsonschema.validate(instance=payload, schema=schema)
+            return
+        except jsonschema.ValidationError as exc:
+            raise ValueError(exc.message) from exc
+    _validate_external_agent_plan_execute_request_fallback(payload)
+
+
+def parse_external_agent_plan_execute_request(
+    payload: Any,
+) -> ExternalAgentPlanExecuteRequest:
+    validate_external_agent_plan_execute_request(payload)
+    assert isinstance(payload, dict)
+    runtime_payload = {
+        key: payload.get(key)
+        for key in payload
+        if key in _AGENT_PLAN_EXECUTE_JSON_FIELDS
+    }
+    return ExternalAgentPlanExecuteRequest(
+        schema_version=1,
+        request_id=str(payload.get("request_id") or "").strip(),
+        mode="plan-execute",
+        request=parse_agent_plan_execute_json_request(runtime_payload),
     )
 
 
@@ -290,10 +440,9 @@ def _failed_json_envelope(
     )
 
 
-def run_agent_plan_execute_envelope(
-    manifest: Dict[str, Any], payload: Any
+def _run_agent_plan_execute_request(
+    manifest: Dict[str, Any], request: AgentPlanExecuteJsonRequest
 ) -> AgentPlanExecuteEnvelope:
-    request = parse_agent_plan_execute_json_request(payload)
     with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
         result = cmd_agent(
             manifest,
@@ -320,6 +469,129 @@ def run_agent_plan_execute_envelope(
         stop_reason="invalid_json_mode_result",
         final_text="JSON plan-execute mode did not produce a structured result envelope.",
     )
+
+
+def run_agent_plan_execute_envelope(
+    manifest: Dict[str, Any], payload: Any
+) -> AgentPlanExecuteEnvelope:
+    request = parse_agent_plan_execute_json_request(payload)
+    return _run_agent_plan_execute_request(manifest, request)
+
+
+def run_external_agent_plan_execute_envelope(
+    manifest: Dict[str, Any], payload: Any
+) -> AgentPlanExecuteCorrelationEnvelope:
+    external_request = parse_external_agent_plan_execute_request(payload)
+    envelope = _run_agent_plan_execute_request(manifest, external_request.request)
+    return AgentPlanExecuteCorrelationEnvelope(
+        schema_version=1,
+        request_id=external_request.request_id,
+        result=envelope.to_dict(),
+    )
+
+
+def _correlated_failed_json_envelope(
+    *,
+    stop_reason: str,
+    final_text: str,
+    request_id: Optional[str] = None,
+) -> AgentPlanExecuteCorrelationEnvelope:
+    return AgentPlanExecuteCorrelationEnvelope(
+        schema_version=1,
+        request_id=request_id,
+        result=_failed_json_envelope(
+            stop_reason=stop_reason,
+            final_text=final_text,
+        ).to_dict(),
+    )
+
+
+def _emit_single_json_document(payload: Dict[str, Any]) -> None:
+    sys.stdout.write(json.dumps(payload))
+    sys.stdout.write("\n")
+
+
+def _request_id_from_payload(payload: Any) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    request_id = payload.get("request_id")
+    if not isinstance(request_id, str):
+        return None
+    request_id = request_id.strip()
+    return request_id or None
+
+
+def _load_request_json_payload(request_json: str) -> Any:
+    if request_json != "-":
+        raise ValueError(
+            "--request-json currently supports stdin only; use --request-json -."
+        )
+    raw_text = sys.stdin.read()
+    if not raw_text.strip():
+        raise ValueError("request-json input is empty.")
+    stripped = raw_text.lstrip()
+    decoder = json.JSONDecoder()
+    try:
+        payload, end = decoder.raw_decode(stripped)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Malformed request-json input: {exc.msg}") from exc
+    if stripped[end:].strip():
+        raise ValueError("request-json input must contain exactly one JSON document.")
+    return payload
+
+
+def _cli_flag_was_supplied(value: Any) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return bool(value)
+    return True
+
+
+def _validate_request_json_cli_args(args: Any) -> Optional[str]:
+    if not getattr(args, "json", False):
+        return "--request-json requires --json."
+    if not getattr(args, "plan_execute", False):
+        return "--request-json requires --plan-execute."
+    if _cli_flag_was_supplied(getattr(args, "goal", None)):
+        return "--request-json rejects positional goal text."
+    overrides = [
+        flag
+        for attr, flag in _REQUEST_JSON_EXECUTION_OVERRIDES
+        if _cli_flag_was_supplied(getattr(args, attr, None))
+    ]
+    if overrides:
+        return "--request-json rejects separate CLI execution overrides: " + ", ".join(
+            overrides
+        )
+    return None
+
+
+def cmd_agent_request_json(manifest: Dict[str, Any], args: Any) -> int:
+    validation_error = _validate_request_json_cli_args(args)
+    if validation_error:
+        response = _correlated_failed_json_envelope(
+            stop_reason="invalid_request_json_cli",
+            final_text=validation_error,
+        )
+        _emit_single_json_document(response.to_dict())
+        return 1
+    payload = None
+    try:
+        payload = _load_request_json_payload(str(getattr(args, "request_json", "")))
+        response = run_external_agent_plan_execute_envelope(manifest, payload)
+    except ValueError as exc:
+        response = _correlated_failed_json_envelope(
+            stop_reason="invalid_request",
+            final_text=str(exc),
+            request_id=_request_id_from_payload(payload),
+        )
+    _emit_single_json_document(response.to_dict())
+    result = response.result if isinstance(response.result, dict) else {}
+    exit_code = result.get("exit_code") if isinstance(result, dict) else None
+    return int(exit_code) if exit_code is not None else 1
 
 
 def cmd_agent_json(manifest: Dict[str, Any], payload: Any) -> int:

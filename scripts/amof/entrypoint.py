@@ -512,6 +512,11 @@ def main() -> None:
 
         sys.exit(cmd_agent_install())
 
+    if args.command == "agent" and getattr(args, "request_json", None) is not None:
+        from amof.commands.agent_cmd import cmd_agent_request_json
+
+        sys.exit(cmd_agent_request_json(manifest, args))
+
     if args.command == "agent" and getattr(args, "json", False):
         import json as _json
 

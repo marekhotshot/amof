@@ -1283,6 +1283,12 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     agent_parser.add_argument(
+        "--request-json",
+        default=None,
+        metavar="PATH",
+        help="Read one canonical external handoff request packet (use '-' for stdin; bounded local adapter mode).",
+    )
+    agent_parser.add_argument(
         "--json",
         action="store_true",
         default=False,
