@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/external-agent-plan-execute-request.schema.json",
+  "title": "External Agent Plan-Execute Request",
+  "description": "Versioned bounded external request packet for invoking the canonical governed `amof agent --plan-execute --json` runtime. Packet metadata is schema_version, request_id, and mode; all other fields map deterministically to the existing runtime JSON request surface.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "request_id",
+    "mode",
+    "goal",
+    "no_follow_up"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque correlation identifier for the external caller. Not runtime authority."
+    },
+    "mode": {
+      "type": "string",
+      "const": "plan-execute",
+      "description": "External handoff mode. Only the canonical plan-execute JSON runtime is supported."
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provider": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "planner_model": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "budget": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "exclusiveMinimum": 0
+    },
+    "budget_strict": {
+      "type": "boolean",
+      "default": false
+    },
+    "subtask_budget": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "exclusiveMinimum": 0
+    },
+    "resume": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "follow_up": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "approve_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "approve_tool_packs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "approve_writable_roots": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "no_follow_up": {
+      "type": "boolean",
+      "const": true,
+      "description": "Must remain true in JSON mode to preserve the governed non-interactive runtime semantics."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "follow_up"
+        ],
+        "properties": {
+          "follow_up": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "resume"
+        ],
+        "properties": {
+          "resume": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

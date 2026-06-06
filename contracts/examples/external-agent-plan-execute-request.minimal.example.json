@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "request_id": "external-request-minimal-001",
+  "mode": "plan-execute",
+  "goal": "One bounded execution goal.",
+  "no_follow_up": true
+}

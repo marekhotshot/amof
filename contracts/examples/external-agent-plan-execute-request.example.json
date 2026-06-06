@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "request_id": "external-request-001",
+  "mode": "plan-execute",
+  "goal": "Inspect this repo and summarize the release blockers.",
+  "provider": "openrouter",
+  "model": "openai/gpt-4o-mini",
+  "planner_model": "anthropic/claude-sonnet-4.5",
+  "budget": 1.0,
+  "budget_strict": true,
+  "subtask_budget": 0.25,
+  "resume": null,
+  "follow_up": null,
+  "approve_capabilities": [],
+  "approve_tool_packs": [],
+  "approve_writable_roots": [],
+  "no_follow_up": true
+}
