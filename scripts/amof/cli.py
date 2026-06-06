@@ -31,6 +31,7 @@ PUBLIC_HELP_COMMANDS = (
     "help",
     "troubleshoot",
     "shell",
+    "handoff",
 )
 
 PUBLIC_HELP_COMMANDS_METAVAR = "{" + ",".join(PUBLIC_HELP_COMMANDS) + "}"
@@ -60,6 +61,7 @@ def parse_args() -> argparse.Namespace:
         "  amof init --adopt .                Adopt the current Git repo\n"
         '  amof chat plan "Inspect this repo"  Route read-only planning through remote IAL\n'
         '  amof agent --plan "Inspect this repo"  Run a read-only plan\n'
+        "  amof handoff prepare --payload-kind selected-text --source chatgpt --target zed --preview\n"
         "  amof bootstrap bundle --json       Emit bootstrap evidence\n"
         "\n"
         "Advanced, workspace, and maintainer commands remain callable when known.\n"
@@ -171,6 +173,44 @@ def parse_args() -> argparse.Namespace:
         "--write-local",
         action="store_true",
         help="Reserved for future local repo metadata writes; app-data is used by default",
+    )
+
+    handoff_parser = subparsers.add_parser(
+        "handoff",
+        help="Prepare one bounded local outbox handoff packet",
+    )
+    handoff_sub = handoff_parser.add_subparsers(dest="handoff_cmd", required=True)
+    handoff_prepare = handoff_sub.add_parser(
+        "prepare",
+        help="Preview one local payload from stdin and optionally write one prepared outbox packet",
+    )
+    handoff_prepare.add_argument(
+        "--payload-kind",
+        required=True,
+        choices=["selected-text", "last-response"],
+        help="Operator-selected payload kind to prepare",
+    )
+    handoff_prepare.add_argument(
+        "--source",
+        required=True,
+        help="Opaque source metadata label (for example: chatgpt)",
+    )
+    handoff_prepare.add_argument(
+        "--target",
+        required=True,
+        help="Opaque target metadata label (for example: zed)",
+    )
+    handoff_prepare.add_argument(
+        "--preview",
+        action="store_true",
+        default=False,
+        help="Show stderr preview before optional write (preview is always shown before --confirm writes)",
+    )
+    handoff_prepare.add_argument(
+        "--confirm",
+        action="store_true",
+        default=False,
+        help="Explicitly confirm writing one prepared packet to the local AMOF outbox",
     )
 
     # Repo management command
