@@ -11,9 +11,8 @@ from importlib import import_module
 from pathlib import Path
 
 from amof.cli import parse_args
-from amof.state import get_state
 from amof.manifest import list_available_ecosystems, load_manifest
-
+from amof.state import get_state
 
 NO_ECOSYSTEM_COMMANDS = {
     "ecosystem",
@@ -66,7 +65,16 @@ def _resolve_root_shell_ecosystem(explicit_ecosystem: str | None) -> str | None:
 
 def _is_operational_context_command(args) -> bool:
     action = str(getattr(args, "service", "") or "").strip()
-    return action in {"current", "list", "show", "use", "doctor", "add", "prompt", "banner"}
+    return action in {
+        "current",
+        "list",
+        "show",
+        "use",
+        "doctor",
+        "add",
+        "prompt",
+        "banner",
+    }
 
 
 def _current_git_root() -> Path | None:
@@ -106,7 +114,7 @@ def _resolve_default_ecosystem_from_cwd_config() -> str | None:
         if line.startswith("default_ecosystem:"):
             val = line.split(":", 1)[1].strip()
             if " #" in val:
-                val = val[:val.index(" #")].rstrip()
+                val = val[: val.index(" #")].rstrip()
             if val:
                 return val
     return None
@@ -146,7 +154,9 @@ cmd_spin = _lazy_command("spin", "cmd_spin")
 cmd_sync = _lazy_command("sync", "cmd_sync")
 cmd_status = _lazy_command("status", "cmd_status")
 cmd_context = _lazy_command("context", "cmd_context")
-cmd_operational_context = _lazy_command("operational_context", "cmd_operational_context")
+cmd_operational_context = _lazy_command(
+    "operational_context", "cmd_operational_context"
+)
 cmd_add_repo = _lazy_command("repo", "cmd_add_repo")
 cmd_init = _lazy_command("init", "cmd_init")
 cmd_repo_promote = _lazy_command("repo", "cmd_repo_promote")
@@ -158,8 +168,12 @@ cmd_workspace_list = _lazy_command("workspace", "cmd_workspace_list")
 cmd_workspace_registry_list = _lazy_command("workspace", "cmd_workspace_registry_list")
 cmd_workspace_register = _lazy_command("workspace", "cmd_workspace_register")
 cmd_workspace_show = _lazy_command("workspace", "cmd_workspace_show")
-cmd_workspace_materialize_run = _lazy_command("workspace", "cmd_workspace_materialize_run")
-cmd_workspace_materialize_from_intake = _lazy_command("workspace", "cmd_workspace_materialize_from_intake")
+cmd_workspace_materialize_run = _lazy_command(
+    "workspace", "cmd_workspace_materialize_run"
+)
+cmd_workspace_materialize_from_intake = _lazy_command(
+    "workspace", "cmd_workspace_materialize_from_intake"
+)
 cmd_open = _lazy_command("workspace", "cmd_open")
 cmd_push = _lazy_command("workspace", "cmd_push")
 cmd_discard = _lazy_command("discard", "cmd_discard")
@@ -231,7 +245,10 @@ def main() -> None:
                 gb_argv.extend(["--output", getattr(args, "output")])
             if getattr(args, "service", None):
                 gb_argv.extend(["--service", getattr(args, "service")])
-            if getattr(args, "timeout", None) is not None and getattr(args, "generated_build_cmd", None) == "runtime-proof":
+            if (
+                getattr(args, "timeout", None) is not None
+                and getattr(args, "generated_build_cmd", None) == "runtime-proof"
+            ):
                 gb_argv.extend(["--timeout", str(getattr(args, "timeout"))])
             sys.exit(generated_build_main(gb_argv))
         if args.command == "help":
@@ -274,7 +291,11 @@ def main() -> None:
         if args.command == "context":
             if _is_operational_context_command(args):
                 sys.exit(cmd_operational_context(args))
-            eco = ecosystem or _resolve_adopted_repo_ecosystem() or _resolve_root_shell_ecosystem(None)
+            eco = (
+                ecosystem
+                or _resolve_adopted_repo_ecosystem()
+                or _resolve_root_shell_ecosystem(None)
+            )
             manifest = load_manifest(eco) if eco else {"repos": []}
             sys.exit(
                 cmd_context(
@@ -299,17 +320,19 @@ def main() -> None:
             promote_target = pre if bump == "promote" else None
             if bump == "promote":
                 pre = None
-            sys.exit(cmd_release(
-                bump=bump,
-                pre=pre,
-                promote_target=promote_target,
-                message=getattr(args, "message", None),
-                push=not getattr(args, "no_push", False),
-                dry_run=getattr(args, "dry_run", False),
-                yes=getattr(args, "yes", False),
-                skip_validation=getattr(args, "skip_validation", False),
-                strict=getattr(args, "strict", False),
-            ))
+            sys.exit(
+                cmd_release(
+                    bump=bump,
+                    pre=pre,
+                    promote_target=promote_target,
+                    message=getattr(args, "message", None),
+                    push=not getattr(args, "no_push", False),
+                    dry_run=getattr(args, "dry_run", False),
+                    yes=getattr(args, "yes", False),
+                    skip_validation=getattr(args, "skip_validation", False),
+                    strict=getattr(args, "strict", False),
+                )
+            )
         if args.command == "server":
             from amof.commands.server_cmd import cmd_serve
 
@@ -324,7 +347,11 @@ def main() -> None:
             if workspace_cmd == "list":
                 if getattr(args, "worktrees", False):
                     sys.exit(cmd_workspace_list())
-                sys.exit(cmd_workspace_registry_list(json_output=bool(getattr(args, "json", False))))
+                sys.exit(
+                    cmd_workspace_registry_list(
+                        json_output=bool(getattr(args, "json", False))
+                    )
+                )
             if workspace_cmd == "show":
                 sys.exit(cmd_workspace_show(args))
             if workspace_cmd == "register":
@@ -336,15 +363,17 @@ def main() -> None:
         if args.command == "eval":
             from amof.commands.eval_cmd import cmd_eval
 
-            sys.exit(cmd_eval(
-                {"repos": []},
-                tiers=getattr(args, "tiers", None),
-                tasks_file=getattr(args, "tasks", None),
-                task_filter=getattr(args, "task_filter", None),
-                provider=getattr(args, "provider", None),
-                verbose=getattr(args, "verbose", False),
-                output_dir=getattr(args, "output_dir", None),
-            ))
+            sys.exit(
+                cmd_eval(
+                    {"repos": []},
+                    tiers=getattr(args, "tiers", None),
+                    tasks_file=getattr(args, "tasks", None),
+                    task_filter=getattr(args, "task_filter", None),
+                    provider=getattr(args, "provider", None),
+                    verbose=getattr(args, "verbose", False),
+                    output_dir=getattr(args, "output_dir", None),
+                )
+            )
         if args.command == "director":
             sys.exit(cmd_director(args))
 
@@ -405,7 +434,9 @@ def main() -> None:
                 sys.stderr.write("Usage: amof ticket env upsert [options]\n")
                 sys.exit(1)
             else:
-                sys.stderr.write("Usage: amof ticket <preflight|start|list|status|checkpoint|switch|end|env>\n")
+                sys.stderr.write(
+                    "Usage: amof ticket <preflight|start|list|status|checkpoint|switch|end|env>\n"
+                )
                 sys.exit(1)
 
     if not ecosystem:
@@ -444,61 +475,84 @@ def main() -> None:
         sys.exit(cmd_status(manifest, only=only))
 
     if args.command == "context":
-        sys.exit(cmd_context(manifest, args.service, args.context_types, args.output_format, args.incremental))
+        sys.exit(
+            cmd_context(
+                manifest,
+                args.service,
+                args.context_types,
+                args.output_format,
+                args.incremental,
+            )
+        )
 
     if args.command == "profile":
-        sys.exit(cmd_profile(manifest, getattr(args, "repo", None), getattr(args, "all_repos", False)))
+        sys.exit(
+            cmd_profile(
+                manifest, getattr(args, "repo", None), getattr(args, "all_repos", False)
+            )
+        )
 
     if args.command == "eval":
         from amof.commands.eval_cmd import cmd_eval
 
-        sys.exit(cmd_eval(
-            manifest,
-            tiers=getattr(args, "tiers", None),
-            tasks_file=getattr(args, "tasks", None),
-            task_filter=getattr(args, "task_filter", None),
-            provider=getattr(args, "provider", None),
-            verbose=getattr(args, "verbose", False),
-            output_dir=getattr(args, "output_dir", None),
-        ))
+        sys.exit(
+            cmd_eval(
+                manifest,
+                tiers=getattr(args, "tiers", None),
+                tasks_file=getattr(args, "tasks", None),
+                task_filter=getattr(args, "task_filter", None),
+                provider=getattr(args, "provider", None),
+                verbose=getattr(args, "verbose", False),
+                output_dir=getattr(args, "output_dir", None),
+            )
+        )
 
     if args.command == "agent" and getattr(args, "goal", None) == "install":
         from amof.commands.agent_cmd import cmd_agent_install
 
         sys.exit(cmd_agent_install())
 
+    if args.command == "agent" and getattr(args, "json", False):
+        import json as _json
+
+        from amof.commands.agent_cmd import cmd_agent_json
+
+        sys.exit(cmd_agent_json(manifest, _json.load(sys.stdin)))
+
     if args.command == "agent":
-        sys.exit(cmd_agent(
-            manifest,
-            goal=getattr(args, "goal", None),
-            plan_mode=getattr(args, "plan", None),
-            model=getattr(args, "model", None),
-            verbose=getattr(args, "verbose", None),
-            max_cost=getattr(args, "max_cost", None),
-            budget=getattr(args, "budget", None),
-            cost_limit=getattr(args, "cost_limit", None),
-            subtask_budget=getattr(args, "subtask_budget", None),
-            add_budget=getattr(args, "add_budget", None),
-            require_budget_approval=getattr(args, "require_budget_approval", None),
-            budget_strict=getattr(args, "budget_strict", None),
-            budget_status=getattr(args, "budget_status", None),
-            model_ladder=getattr(args, "model_ladder", None),
-            fast_model=getattr(args, "fast_model", None),
-            strong_model=getattr(args, "strong_model", None),
-            plan_execute=getattr(args, "plan_execute", None),
-            planner_model=getattr(args, "planner_model", None),
-            provider=getattr(args, "provider", None),
-            resume_session=getattr(args, "resume", None),
-            follow_up=getattr(args, "follow_up", None),
-            follow_up_file=getattr(args, "follow_up_file", None),
-            plan_file=getattr(args, "plan_file", None),
-            no_follow_up=getattr(args, "no_follow_up", None),
-            continue_budget=getattr(args, "continue_budget", None),
-            approve_plan=getattr(args, "approve_plan", None),
-            approve_capabilities=getattr(args, "approve_capabilities", None),
-            approve_tool_packs=getattr(args, "approve_tool_packs", None),
-            approve_writable_roots=getattr(args, "approve_writable_roots", None),
-        ))
+        sys.exit(
+            cmd_agent(
+                manifest,
+                goal=getattr(args, "goal", None),
+                plan_mode=getattr(args, "plan", None),
+                model=getattr(args, "model", None),
+                verbose=getattr(args, "verbose", None),
+                max_cost=getattr(args, "max_cost", None),
+                budget=getattr(args, "budget", None),
+                cost_limit=getattr(args, "cost_limit", None),
+                subtask_budget=getattr(args, "subtask_budget", None),
+                add_budget=getattr(args, "add_budget", None),
+                require_budget_approval=getattr(args, "require_budget_approval", None),
+                budget_strict=getattr(args, "budget_strict", None),
+                budget_status=getattr(args, "budget_status", None),
+                model_ladder=getattr(args, "model_ladder", None),
+                fast_model=getattr(args, "fast_model", None),
+                strong_model=getattr(args, "strong_model", None),
+                plan_execute=getattr(args, "plan_execute", None),
+                planner_model=getattr(args, "planner_model", None),
+                provider=getattr(args, "provider", None),
+                resume_session=getattr(args, "resume", None),
+                follow_up=getattr(args, "follow_up", None),
+                follow_up_file=getattr(args, "follow_up_file", None),
+                plan_file=getattr(args, "plan_file", None),
+                no_follow_up=getattr(args, "no_follow_up", None),
+                continue_budget=getattr(args, "continue_budget", None),
+                approve_plan=getattr(args, "approve_plan", None),
+                approve_capabilities=getattr(args, "approve_capabilities", None),
+                approve_tool_packs=getattr(args, "approve_tool_packs", None),
+                approve_writable_roots=getattr(args, "approve_writable_roots", None),
+            )
+        )
 
     if args.command == "director-action":
         sys.exit(cmd_director_action(manifest, args, ecosystem))
@@ -517,14 +571,20 @@ def main() -> None:
             sys.exit(1)
 
     if args.command == "install":
-        sys.exit(cmd_install(manifest, args.push, getattr(args, "dry_run", False), ecosystem))
+        sys.exit(
+            cmd_install(manifest, args.push, getattr(args, "dry_run", False), ecosystem)
+        )
 
     if args.command == "workspace":
         workspace_cmd = getattr(args, "workspace_cmd", None)
         if workspace_cmd == "list":
             if getattr(args, "worktrees", False):
                 sys.exit(cmd_workspace_list())
-            sys.exit(cmd_workspace_registry_list(json_output=bool(getattr(args, "json", False))))
+            sys.exit(
+                cmd_workspace_registry_list(
+                    json_output=bool(getattr(args, "json", False))
+                )
+            )
         if workspace_cmd == "show":
             sys.exit(cmd_workspace_show(args))
         if workspace_cmd == "register":
@@ -536,10 +596,24 @@ def main() -> None:
         sys.exit(cmd_push(manifest, getattr(args, "message", None), ecosystem))
 
     if args.command == "discard":
-        sys.exit(cmd_discard(manifest, args.force, getattr(args, "dry_run", False), ecosystem))
+        sys.exit(
+            cmd_discard(
+                manifest, args.force, getattr(args, "dry_run", False), ecosystem
+            )
+        )
 
     if args.command == "archive":
-        sys.exit(cmd_archive(manifest, getattr(args, "message", None), args.force, getattr(args, "dry_run", False), ecosystem, getattr(args, "delete_workspace", False), getattr(args, "cleanup_features", False)))
+        sys.exit(
+            cmd_archive(
+                manifest,
+                getattr(args, "message", None),
+                args.force,
+                getattr(args, "dry_run", False),
+                ecosystem,
+                getattr(args, "delete_workspace", False),
+                getattr(args, "cleanup_features", False),
+            )
+        )
 
     if args.command == "archive-list":
         sys.exit(cmd_archive_list(manifest))
@@ -548,7 +622,13 @@ def main() -> None:
         sys.exit(cmd_actor(args, manifest, ecosystem))
 
     if args.command == "pr":
-        sys.exit(cmd_pr(manifest, getattr(args, "reviewers", None), getattr(args, "dry_run", False)))
+        sys.exit(
+            cmd_pr(
+                manifest,
+                getattr(args, "reviewers", None),
+                getattr(args, "dry_run", False),
+            )
+        )
 
     if args.command == "jira":
         sys.exit(cmd_jira(args, manifest))

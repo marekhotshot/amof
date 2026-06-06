@@ -5,9 +5,12 @@ from __future__ import annotations
 import argparse
 
 from . import __version__
-from .app_paths import director_prepare_runs_dir, director_run_local_dir, materialized_runs_dir
+from .app_paths import (
+    director_prepare_runs_dir,
+    director_run_local_dir,
+    materialized_runs_dir,
+)
 from .manifest import list_available_ecosystems
-
 
 PUBLIC_HELP_COMMANDS = (
     "check",
@@ -51,21 +54,22 @@ def parse_args() -> argparse.Namespace:
         prog="amof",
         description="AMOF - Agentic Operations Fabric",
         epilog="Examples:\n"
-               "  amof check                         Verify local prerequisites\n"
-               "  amof doctor                        Report bootstrap readiness\n"
-               "  amof setup provider --list         Show public provider templates\n"
-               "  amof init --adopt .                Adopt the current Git repo\n"
-               "  amof chat plan \"Inspect this repo\"  Route read-only planning through remote IAL\n"
-               "  amof agent --plan \"Inspect this repo\"  Run a read-only plan\n"
-               "  amof bootstrap bundle --json       Emit bootstrap evidence\n"
-               "\n"
-               "Advanced, workspace, and maintainer commands remain callable when known.\n"
-               "Use 'amof help' for categorized guidance.\n",
+        "  amof check                         Verify local prerequisites\n"
+        "  amof doctor                        Report bootstrap readiness\n"
+        "  amof setup provider --list         Show public provider templates\n"
+        "  amof init --adopt .                Adopt the current Git repo\n"
+        '  amof chat plan "Inspect this repo"  Route read-only planning through remote IAL\n'
+        '  amof agent --plan "Inspect this repo"  Run a read-only plan\n'
+        "  amof bootstrap bundle --json       Emit bootstrap evidence\n"
+        "\n"
+        "Advanced, workspace, and maintainer commands remain callable when known.\n"
+        "Use 'amof help' for categorized guidance.\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"AMOF v{__version__}")
     parser.add_argument(
-        "-e", "--ecosystem",
+        "-e",
+        "--ecosystem",
         help="Ecosystem to use (required for most commands)",
         metavar="NAME",
     )
@@ -175,13 +179,13 @@ def parse_args() -> argparse.Namespace:
         help="Manage repositories in workspace",
     )
     repo_sub = repo_parser.add_subparsers(dest="repo_cmd")
-    
+
     repo_promote = repo_sub.add_parser(
         "promote",
         help="Promote readonly repo to writable (create feature branch)",
     )
     repo_promote.add_argument("name", help="Repository name to promote")
-    
+
     repo_sub.add_parser(
         "cleanup",
         help="Delete feature branches with no commits",
@@ -307,8 +311,12 @@ def parse_args() -> argparse.Namespace:
         "check-url",
         help="Fetch one preview URL with the local-http backend and emit a preview evidence receipt",
     )
-    preview_check_url.add_argument("--url", required=True, help="Explicit preview URL to validate")
-    preview_check_url.add_argument("--run-id", required=True, help="Opaque run identifier for the preview check")
+    preview_check_url.add_argument(
+        "--url", required=True, help="Explicit preview URL to validate"
+    )
+    preview_check_url.add_argument(
+        "--run-id", required=True, help="Opaque run identifier for the preview check"
+    )
     preview_check_url.add_argument(
         "--require-text",
         action="append",
@@ -330,8 +338,13 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Href or href substring that must appear in a link; can be repeated",
     )
-    preview_check_url.add_argument("--output", help="Optional path for preview-check-result.json")
-    preview_check_url.add_argument("--context", help="Optional AMOF context name to read instead of the active context")
+    preview_check_url.add_argument(
+        "--output", help="Optional path for preview-check-result.json"
+    )
+    preview_check_url.add_argument(
+        "--context",
+        help="Optional AMOF context name to read instead of the active context",
+    )
     preview_check_url.add_argument(
         "--browser-backend",
         choices=["local-http"],
@@ -350,7 +363,7 @@ def parse_args() -> argparse.Namespace:
         "manifest", help="Validate and inspect ecosystem.yaml manifest"
     )
     manifest_sub = manifest_parser.add_subparsers(dest="manifest_command")
-    
+
     manifest_validate = manifest_sub.add_parser(
         "validate",
         help="Validate manifest schema and show detailed errors",
@@ -360,7 +373,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Treat warnings as errors (fail on warnings)",
     )
-    
+
     manifest_sub.add_parser(
         "show",
         help="Display manifest contents in readable format",
@@ -371,7 +384,9 @@ def parse_args() -> argparse.Namespace:
         "doctor",
         help="Report AMOF bootstrap guardrails for topology, app-data, contracts, and toolchain",
     )
-    doctor_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    doctor_parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     bootstrap_parser = subparsers.add_parser(
         "bootstrap",
@@ -382,20 +397,33 @@ def parse_args() -> argparse.Namespace:
         "contract",
         help="Write one governed workstation bootstrap contract artifact",
     )
-    bootstrap_contract.add_argument("--json", action="store_true", help="Print the emitted JSON contract to stdout")
-    bootstrap_contract.add_argument("--output", help="Optional path for the emitted bootstrap contract artifact")
+    bootstrap_contract.add_argument(
+        "--json", action="store_true", help="Print the emitted JSON contract to stdout"
+    )
+    bootstrap_contract.add_argument(
+        "--output", help="Optional path for the emitted bootstrap contract artifact"
+    )
     bootstrap_bundle = bootstrap_sub.add_parser(
         "bundle",
         help="Write the governed workstation bootstrap evidence bundle",
     )
-    bootstrap_bundle.add_argument("--json", action="store_true", help="Print the emitted UP10 summary JSON to stdout")
-    bootstrap_bundle.add_argument("--output-dir", help="Optional directory for the emitted bootstrap evidence bundle")
+    bootstrap_bundle.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the emitted UP10 summary JSON to stdout",
+    )
+    bootstrap_bundle.add_argument(
+        "--output-dir",
+        help="Optional directory for the emitted bootstrap evidence bundle",
+    )
 
     paths_parser = subparsers.add_parser(
         "paths",
         help="Show resolved AMOF app-data paths",
     )
-    paths_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    paths_parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     setup_parser = subparsers.add_parser(
         "setup",
@@ -409,36 +437,90 @@ def parse_args() -> argparse.Namespace:
     setup_provider.add_argument(
         "provider_template",
         nargs="?",
-        choices=["openrouter", "local-qwen", "openai", "anthropic", "bedrock", "remote-ial", "xai", "runpod"],
+        choices=[
+            "openrouter",
+            "local-qwen",
+            "openai",
+            "anthropic",
+            "bedrock",
+            "remote-ial",
+            "xai",
+            "runpod",
+        ],
         help="Provider template to use",
     )
-    setup_provider.add_argument("--list", dest="list_templates", action="store_true", help="List provider templates")
-    setup_provider.add_argument("--name", dest="profile_name", help="Provider profile name to write")
+    setup_provider.add_argument(
+        "--list",
+        dest="list_templates",
+        action="store_true",
+        help="List provider templates",
+    )
+    setup_provider.add_argument(
+        "--name", dest="profile_name", help="Provider profile name to write"
+    )
     setup_provider.add_argument("--lane", help="Override profile lane")
     setup_provider.add_argument("--model", help="Concrete model id to record")
-    setup_provider.add_argument("--model-env", help="Environment variable name containing the model id")
-    setup_provider.add_argument("--api-key-env", help="Environment variable name containing the API key")
-    setup_provider.add_argument("--base-url", help="Concrete OpenAI-compatible base URL to record")
-    setup_provider.add_argument("--base-url-env", help="Environment variable name containing the base URL")
-    setup_provider.add_argument("--timeout-seconds", type=float, help="Local provider request timeout in seconds")
-    setup_provider.add_argument("--activate", action="store_true", help="Add this profile name to the current context")
-    setup_provider.add_argument("--dry-run", action="store_true", help="Print target path and YAML without writing")
-    setup_provider.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
-    setup_provider.add_argument("--print-template", action="store_true", help="Print the resolved YAML template without writing")
+    setup_provider.add_argument(
+        "--model-env", help="Environment variable name containing the model id"
+    )
+    setup_provider.add_argument(
+        "--api-key-env", help="Environment variable name containing the API key"
+    )
+    setup_provider.add_argument(
+        "--base-url", help="Concrete OpenAI-compatible base URL to record"
+    )
+    setup_provider.add_argument(
+        "--base-url-env", help="Environment variable name containing the base URL"
+    )
+    setup_provider.add_argument(
+        "--timeout-seconds",
+        type=float,
+        help="Local provider request timeout in seconds",
+    )
+    setup_provider.add_argument(
+        "--activate",
+        action="store_true",
+        help="Add this profile name to the current context",
+    )
+    setup_provider.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print target path and YAML without writing",
+    )
+    setup_provider.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation prompt"
+    )
+    setup_provider.add_argument(
+        "--print-template",
+        action="store_true",
+        help="Print the resolved YAML template without writing",
+    )
 
     update_parser = subparsers.add_parser(
         "update",
         help="Update AMOF from the public release tags",
     )
-    update_parser.add_argument("--check", action="store_true", help="Check the latest available stable tag only")
+    update_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check the latest available stable tag only",
+    )
     update_parser.add_argument(
         "--version",
         dest="target_version",
         help="Explicit release tag to install, for example v2.1.0",
     )
-    update_parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
-    update_parser.add_argument("--dry-run", action="store_true", help="Print the update command without running it")
-    update_parser.add_argument("--verbose", action="store_true", help="Print successful installer output")
+    update_parser.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation prompt"
+    )
+    update_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the update command without running it",
+    )
+    update_parser.add_argument(
+        "--verbose", action="store_true", help="Print successful installer output"
+    )
     update_parser.add_argument(
         "--source-url",
         default="https://github.com/marekhotshot/amof.git",
@@ -449,14 +531,18 @@ def parse_args() -> argparse.Namespace:
         "uninstall",
         help="Uninstall the locally installed AMOF CLI and remove local install artifacts",
     )
-    uninstall_parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    uninstall_parser.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation prompt"
+    )
 
     # Generated-build command (read/proof lane; never deploys)
     generated_build_parser = subparsers.add_parser(
         "generated-build",
         help="Generated-build lane: detect, render, and build-proof codebases without existing build contracts",
     )
-    generated_build_sub = generated_build_parser.add_subparsers(dest="generated_build_cmd", required=True)
+    generated_build_sub = generated_build_parser.add_subparsers(
+        dest="generated_build_cmd", required=True
+    )
 
     gb_detect = generated_build_sub.add_parser(
         "detect",
@@ -471,26 +557,43 @@ def parse_args() -> argparse.Namespace:
     )
     gb_render.add_argument("repo_path", help="Repository root to inspect")
     gb_render.add_argument("--output", help="Optional path to write artifact JSON")
-    gb_render.add_argument("--service", help="Optional service name for the deterministic output path")
+    gb_render.add_argument(
+        "--service", help="Optional service name for the deterministic output path"
+    )
 
     gb_build_proof = generated_build_sub.add_parser(
         "build-proof",
         help="Render and run docker build proof; does not attempt runtime proof",
     )
     gb_build_proof.add_argument("repo_path", help="Repository root to inspect")
-    gb_build_proof.add_argument("--image", required=True, help="Image reference to tag with docker build")
+    gb_build_proof.add_argument(
+        "--image", required=True, help="Image reference to tag with docker build"
+    )
     gb_build_proof.add_argument("--output", help="Optional path to write artifact JSON")
-    gb_build_proof.add_argument("--service", help="Optional service name for the deterministic output path")
+    gb_build_proof.add_argument(
+        "--service", help="Optional service name for the deterministic output path"
+    )
 
     gb_runtime_proof = generated_build_sub.add_parser(
         "runtime-proof",
         help="Render, build-proof, then run local Docker liveness proof; does not deploy",
     )
     gb_runtime_proof.add_argument("repo_path", help="Repository root to inspect")
-    gb_runtime_proof.add_argument("--image", required=True, help="Image reference that was already build-proven")
-    gb_runtime_proof.add_argument("--output", help="Optional path to write artifact JSON")
-    gb_runtime_proof.add_argument("--service", help="Optional service name for the deterministic output path")
-    gb_runtime_proof.add_argument("--timeout", type=int, default=20, help="Seconds to wait for liveness (default: 20)")
+    gb_runtime_proof.add_argument(
+        "--image", required=True, help="Image reference that was already build-proven"
+    )
+    gb_runtime_proof.add_argument(
+        "--output", help="Optional path to write artifact JSON"
+    )
+    gb_runtime_proof.add_argument(
+        "--service", help="Optional service name for the deterministic output path"
+    )
+    gb_runtime_proof.add_argument(
+        "--timeout",
+        type=int,
+        default=20,
+        help="Seconds to wait for liveness (default: 20)",
+    )
 
     gb_list = generated_build_sub.add_parser(
         "list",
@@ -502,7 +605,9 @@ def parse_args() -> argparse.Namespace:
         "show",
         help="Show one locally persisted generated-build artifact",
     )
-    gb_show.add_argument("repo_path", help="Repository root path used when the artifact was persisted")
+    gb_show.add_argument(
+        "repo_path", help="Repository root path used when the artifact was persisted"
+    )
     gb_show.add_argument("--service", help="Optional service name (defaults to root)")
     gb_show.add_argument("--output", help="Optional path to write artifact JSON")
 
@@ -510,9 +615,15 @@ def parse_args() -> argparse.Namespace:
         "admission-preview",
         help="Return the public generated-build admission contract",
     )
-    gb_admission.add_argument("repo_path", help="Repository root path used when the artifact was persisted")
-    gb_admission.add_argument("--service", help="Optional service name (defaults to root)")
-    gb_admission.add_argument("--output", help="Optional path to write contract result JSON")
+    gb_admission.add_argument(
+        "repo_path", help="Repository root path used when the artifact was persisted"
+    )
+    gb_admission.add_argument(
+        "--service", help="Optional service name (defaults to root)"
+    )
+    gb_admission.add_argument(
+        "--output", help="Optional path to write contract result JSON"
+    )
 
     # Profile command
     profile_parser = subparsers.add_parser(
@@ -642,7 +753,9 @@ def parse_args() -> argparse.Namespace:
         "approve",
         help="Write one explicit approval artifact for a finalized proposal-only PlanPacket",
     )
-    chat_approve.add_argument("session_id", help="Existing finalized bounded intake session id")
+    chat_approve.add_argument(
+        "session_id", help="Existing finalized bounded intake session id"
+    )
     chat_approve.add_argument(
         "--approved-by",
         help="Optional operator identifier to record in the approval artifact",
@@ -677,14 +790,18 @@ def parse_args() -> argparse.Namespace:
         "list",
         help="List discovered run sessions from app-data",
     )
-    runs_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    runs_list.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     runs_show = runs_sub.add_parser(
         "show",
         help="Show one run summary by run_id",
     )
     runs_show.add_argument("run_id", help="Run id or session id to inspect")
-    runs_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    runs_show.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     runs_logs = runs_sub.add_parser(
         "logs",
@@ -697,7 +814,9 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Optional limit of most recent events to print (default: all)",
     )
-    runs_logs.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    runs_logs.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     runs_tail = runs_sub.add_parser(
         "tail",
@@ -727,7 +846,9 @@ def parse_args() -> argparse.Namespace:
         default=20,
         help="Maximum follow polls before exit (default: 20)",
     )
-    runs_tail.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    runs_tail.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     intake_parser = subparsers.add_parser(
         "intake",
@@ -739,7 +860,9 @@ def parse_args() -> argparse.Namespace:
         help="Validate one intake YAML/JSON packet against bounded MVP rules",
     )
     intake_validate.add_argument("file", help="Path to intake YAML/JSON")
-    intake_validate.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    intake_validate.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
     intake_validate.add_argument(
         "--authority-json",
         action="store_true",
@@ -751,7 +874,9 @@ def parse_args() -> argparse.Namespace:
         help="Validate then submit one planning-only intake packet locally",
     )
     intake_submit.add_argument("file", help="Path to intake YAML/JSON")
-    intake_submit.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    intake_submit.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
     intake_submit.add_argument(
         "--authority-artifact",
         help="Optional path to persist the authority decision artifact",
@@ -761,14 +886,18 @@ def parse_args() -> argparse.Namespace:
         "list",
         help="List local intake submissions from AMOF_HOME",
     )
-    intake_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    intake_list.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     intake_show = intake_sub.add_parser(
         "show",
         help="Show one local intake submission by intake_id",
     )
     intake_show.add_argument("intake_id", help="Intake identifier")
-    intake_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    intake_show.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     intake_template = intake_sub.add_parser(
         "template",
@@ -780,7 +909,9 @@ def parse_args() -> argparse.Namespace:
         choices=["bounded_intake_task"],
         help="Template kind to print (default: bounded_intake_task)",
     )
-    intake_template.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    intake_template.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     intake_draft = intake_sub.add_parser(
         "draft",
@@ -791,7 +922,9 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Raw operator capture text to compile",
     )
-    intake_draft.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    intake_draft.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     runner_parser = subparsers.add_parser(
         "runner",
@@ -815,26 +948,34 @@ def parse_args() -> argparse.Namespace:
         help="Register one runner metadata YAML/JSON file locally",
     )
     runner_register.add_argument("file", help="Path to runner metadata YAML/JSON")
-    runner_register.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    runner_register.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     runner_list = runner_sub.add_parser(
         "list",
         help="List locally registered runner metadata",
     )
-    runner_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    runner_list.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     runner_show = runner_sub.add_parser(
         "show",
         help="Show one runner metadata record by runner_id",
     )
     runner_show.add_argument("runner_id", help="Runner identifier")
-    runner_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    runner_show.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     runner_doctor = runner_sub.add_parser(
         "doctor",
         help="Validate local runner registry readiness without dispatch",
     )
-    runner_doctor.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    runner_doctor.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     runner_match = runner_sub.add_parser(
         "match",
@@ -845,14 +986,20 @@ def parse_args() -> argparse.Namespace:
         "--authority-artifact",
         help="Optional authority decision artifact to gate runner eligibility",
     )
-    runner_match.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    runner_match.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     runner_local_forensic = runner_sub.add_parser(
         "run-local-forensic",
         help="Run the bounded local read-only forensic command pack for one intake",
     )
-    runner_local_forensic.add_argument("intake_ref", help="Intake file path or known intake id")
-    runner_local_forensic.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    runner_local_forensic.add_argument(
+        "intake_ref", help="Intake file path or known intake id"
+    )
+    runner_local_forensic.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     execution_parser = subparsers.add_parser(
         "execution",
@@ -864,15 +1011,21 @@ def parse_args() -> argparse.Namespace:
         "scan",
         help="Scan intake plus runner metadata and write a no-execution readiness report",
     )
-    execution_scan.add_argument("intake_ref", help="Intake file path or known intake id")
-    execution_scan.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    execution_scan.add_argument(
+        "intake_ref", help="Intake file path or known intake id"
+    )
+    execution_scan.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     execution_report = execution_sub.add_parser(
         "report",
         help="Show one previously written execution scan report by scan_id",
     )
     execution_report.add_argument("scan_id", help="Execution scan identifier")
-    execution_report.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    execution_report.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     loop_parser = subparsers.add_parser(
         "loop",
@@ -891,14 +1044,18 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Maximum loop iterations before forced stop",
     )
-    loop_run.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    loop_run.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     loop_show = loop_sub.add_parser(
         "show",
         help="Show one bounded loop report by loop_run_id",
     )
     loop_show.add_argument("loop_run_id", help="Loop run identifier")
-    loop_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    loop_show.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     loop_logs = loop_sub.add_parser(
         "logs",
@@ -911,7 +1068,9 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Optional limit of most recent events to print (default: all)",
     )
-    loop_logs.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    loop_logs.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     # Agent command
     agent_parser = subparsers.add_parser(
@@ -920,12 +1079,12 @@ def parse_args() -> argparse.Namespace:
         epilog=(
             "Resume examples:\n"
             "  amof agent --resume 20260521-115444\n"
-            "  amof agent --resume 20260521-115444 --follow-up \"Retry only S003.\"\n"
+            '  amof agent --resume 20260521-115444 --follow-up "Retry only S003."\n'
             "  amof agent --resume 20260521-115444 --follow-up-file /tmp/amof-followup.md\n"
             "  amof agent --resume 20260521-115444 --add-budget 1.00 "
-            "--approve-capabilities secret --follow-up \"Do not rerun completed subtasks.\"\n"
-            "  amof agent --plan-execute \"goal\" --budget 2.00 --budget-strict\n"
-            "  amof agent --plan-execute \"goal\" --budget 10.00 --budget-strict "
+            '--approve-capabilities secret --follow-up "Do not rerun completed subtasks."\n'
+            '  amof agent --plan-execute "goal" --budget 2.00 --budget-strict\n'
+            '  amof agent --plan-execute "goal" --budget 10.00 --budget-strict '
             "--approve-capabilities secret --approve-tool-pack ops-jenkins\n"
             "  amof agent --resume 20260521-115444 --budget-status\n"
         ),
@@ -954,7 +1113,8 @@ def parse_args() -> argparse.Namespace:
         help="LLM model to use (default: from env or claude-sonnet-4)",
     )
     agent_parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         default=None,
         help="Show detailed tool call output (default: from config)",
@@ -1122,6 +1282,12 @@ def parse_args() -> argparse.Namespace:
             "(repeatable; e.g. --approve-writable-root /tmp/delivery-3663-matrix-reports)."
         ),
     )
+    agent_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Read one machine JSON request from stdin and emit one result envelope JSON.",
+    )
 
     # Director first-class contract actions
     director_parser = subparsers.add_parser(
@@ -1193,7 +1359,7 @@ def parse_args() -> argparse.Namespace:
     )
     director_prepare_run.add_argument(
         "--execute-command",
-        help="Execute one allowlisted bounded command expressed as argv JSON, for example '[\"git\", \"rev-parse\", \"HEAD\"]'",
+        help='Execute one allowlisted bounded command expressed as argv JSON, for example \'["git", "rev-parse", "HEAD"]\'',
     )
     director_prepare_run.add_argument(
         "--allow-raw-execute-command",
@@ -1287,7 +1453,9 @@ def parse_args() -> argparse.Namespace:
         "director-action",
         help="Run bounded Director contract actions",
     )
-    director_action_sub = director_action_parser.add_subparsers(dest="director_action_cmd")
+    director_action_sub = director_action_parser.add_subparsers(
+        dest="director_action_cmd"
+    )
     gmd_dev_proof = director_action_sub.add_parser(
         "gmd-dev-local-proof",
         help="Run director.gmd_dev_local_proof.v1 against local gmd-dev",
@@ -1344,7 +1512,8 @@ def parse_args() -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
     eval_parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help=argparse.SUPPRESS,
     )
@@ -1390,19 +1559,25 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="List active git worktrees instead of the AMOF app-data registry",
     )
-    workspace_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    workspace_list.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
     workspace_show = workspace_sub.add_parser(
         "show",
         help="Show one registered workspace entry",
     )
     workspace_show.add_argument("name", help="Registered workspace name")
-    workspace_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    workspace_show.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
     workspace_register = workspace_sub.add_parser(
         "register",
         help="Register one workspace alias in AMOF app config",
     )
     workspace_register.add_argument("name", nargs="?", help="Workspace alias")
-    workspace_register.add_argument("path", nargs="?", help="Local path for the workspace")
+    workspace_register.add_argument(
+        "path", nargs="?", help="Local path for the workspace"
+    )
     workspace_register.add_argument(
         "--name",
         dest="workspace_name",
@@ -1418,7 +1593,9 @@ def parse_args() -> argparse.Namespace:
         default="main",
         help="Default branch or ref to associate with the workspace (default: main)",
     )
-    workspace_register.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    workspace_register.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
     workspace_materialize = workspace_sub.add_parser(
         "materialize-run",
         help="Materialize an isolated per-run workspace at an exact SHA",
@@ -1488,39 +1665,76 @@ def parse_args() -> argparse.Namespace:
         help="Start ticket work - create feature branches in repos",
     )
     ticket_start.add_argument("ticket_id", help="Ticket ID (e.g., PROJ-123)")
-    ticket_start.add_argument("--repos", help="Comma-separated repo names (default: all writable)")
-    ticket_start.add_argument("--stage", help="Persist the linked lifecycle stage id for this ticket")
-    ticket_start.add_argument("--environment", help="Persist the linked lifecycle environment id for this ticket")
-    ticket_start.add_argument("--repo-selections", help="JSON array describing the per-repo intake contract")
-    ticket_start.add_argument("--plan-items-json", help="JSON list/object describing the TicketPlan PlanItems")
-    ticket_start.add_argument("--plan-items-file", help="Path to a JSON file describing the TicketPlan PlanItems")
-    ticket_start.add_argument("--planner-profile", help="Optional planner provider profile name for observational provenance")
-    ticket_start.add_argument("--planner-model", help="Optional planner model id for observational provenance")
+    ticket_start.add_argument(
+        "--repos", help="Comma-separated repo names (default: all writable)"
+    )
+    ticket_start.add_argument(
+        "--stage", help="Persist the linked lifecycle stage id for this ticket"
+    )
+    ticket_start.add_argument(
+        "--environment",
+        help="Persist the linked lifecycle environment id for this ticket",
+    )
+    ticket_start.add_argument(
+        "--repo-selections", help="JSON array describing the per-repo intake contract"
+    )
+    ticket_start.add_argument(
+        "--plan-items-json", help="JSON list/object describing the TicketPlan PlanItems"
+    )
+    ticket_start.add_argument(
+        "--plan-items-file",
+        help="Path to a JSON file describing the TicketPlan PlanItems",
+    )
+    ticket_start.add_argument(
+        "--planner-profile",
+        help="Optional planner provider profile name for observational provenance",
+    )
+    ticket_start.add_argument(
+        "--planner-model", help="Optional planner model id for observational provenance"
+    )
 
     ticket_preflight = ticket_sub.add_parser(
         "preflight",
         help="Verify canonical repo truth and clean start conditions for a ticket",
     )
     ticket_preflight.add_argument("ticket_id", help="Ticket ID (e.g., AMOF-280)")
-    ticket_preflight.add_argument("--repos", help="Comma-separated repo names (default: all writable)")
-    ticket_preflight.add_argument("--repo-selections", help="JSON array describing the per-repo intake contract")
-    ticket_preflight.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    ticket_preflight.add_argument(
+        "--repos", help="Comma-separated repo names (default: all writable)"
+    )
+    ticket_preflight.add_argument(
+        "--repo-selections", help="JSON array describing the per-repo intake contract"
+    )
+    ticket_preflight.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     ticket_sub.add_parser("list", help="List active tickets and their repo branches")
 
     ticket_switch = ticket_sub.add_parser("switch", help="Switch active ticket")
     ticket_switch.add_argument("ticket_id", help="Ticket to switch to")
 
-    ticket_status = ticket_sub.add_parser("status", help="Show TicketPlan status and promote readiness")
-    ticket_status.add_argument("ticket_id", nargs="?", help="Ticket to inspect (defaults to the active ticket)")
-    ticket_status.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    ticket_status = ticket_sub.add_parser(
+        "status", help="Show TicketPlan status and promote readiness"
+    )
+    ticket_status.add_argument(
+        "ticket_id", nargs="?", help="Ticket to inspect (defaults to the active ticket)"
+    )
+    ticket_status.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     ticket_checkpoint = ticket_sub.add_parser(
         "checkpoint",
         help="Create one PlanItem-bound checkpoint commit after validation passes",
     )
-    ticket_checkpoint.add_argument("ticket_id", nargs="?", help="Ticket to checkpoint (defaults to the active ticket)")
-    ticket_checkpoint.add_argument("--repo", required=True, help="Repo name inside the ticket worktree set")
+    ticket_checkpoint.add_argument(
+        "ticket_id",
+        nargs="?",
+        help="Ticket to checkpoint (defaults to the active ticket)",
+    )
+    ticket_checkpoint.add_argument(
+        "--repo", required=True, help="Repo name inside the ticket worktree set"
+    )
     ticket_checkpoint.add_argument(
         "--plan-item",
         action="append",
@@ -1535,12 +1749,22 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Explicit file path to stage; can be repeated",
     )
-    ticket_checkpoint.add_argument("--message", required=True, help="Checkpoint summary appended to the ticket commit prefix")
+    ticket_checkpoint.add_argument(
+        "--message",
+        required=True,
+        help="Checkpoint summary appended to the ticket commit prefix",
+    )
 
     ticket_end = ticket_sub.add_parser("end", help="End ticket work")
     ticket_end.add_argument("ticket_id", help="Ticket to end")
-    ticket_end.add_argument("--cleanup", action="store_true", help="Delete feature branches (local + remote)")
-    ticket_end.add_argument("--cleanup-local", action="store_true", help="Delete local branches only")
+    ticket_end.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Delete feature branches (local + remote)",
+    )
+    ticket_end.add_argument(
+        "--cleanup-local", action="store_true", help="Delete local branches only"
+    )
 
     ticket_env = ticket_sub.add_parser(
         "env",
@@ -1552,14 +1776,30 @@ def parse_args() -> argparse.Namespace:
         "upsert",
         help="Create or update one TicketEnvironment file deterministically",
     )
-    ticket_env_upsert.add_argument("--ticket-id", required=True, help="Ticket identifier (e.g. AMOF-123)")
-    ticket_env_upsert.add_argument("--branch", required=True, help="Git branch for the ticket environment")
-    ticket_env_upsert.add_argument("--commit-sha", required=True, help="Commit SHA used for image tags")
-    ticket_env_upsert.add_argument("--host-mode", choices=["local", "cloud"], required=True, help="Hostname mode")
-    ticket_env_upsert.add_argument("--owner-id", help="Raw owner identity (default: operator@amof.dev)")
-    ticket_env_upsert.add_argument("--owner-slug", help="Label-safe owner slug (default: operator-amof-dev)")
-    ticket_env_upsert.add_argument("--owner-type", default="team", help="Owner type (default: team)")
-    ticket_env_upsert.add_argument("--base-domain", help="Override base domain for hostname generation")
+    ticket_env_upsert.add_argument(
+        "--ticket-id", required=True, help="Ticket identifier (e.g. AMOF-123)"
+    )
+    ticket_env_upsert.add_argument(
+        "--branch", required=True, help="Git branch for the ticket environment"
+    )
+    ticket_env_upsert.add_argument(
+        "--commit-sha", required=True, help="Commit SHA used for image tags"
+    )
+    ticket_env_upsert.add_argument(
+        "--host-mode", choices=["local", "cloud"], required=True, help="Hostname mode"
+    )
+    ticket_env_upsert.add_argument(
+        "--owner-id", help="Raw owner identity (default: operator@amof.dev)"
+    )
+    ticket_env_upsert.add_argument(
+        "--owner-slug", help="Label-safe owner slug (default: operator-amof-dev)"
+    )
+    ticket_env_upsert.add_argument(
+        "--owner-type", default="team", help="Owner type (default: team)"
+    )
+    ticket_env_upsert.add_argument(
+        "--base-domain", help="Override base domain for hostname generation"
+    )
     ticket_env_upsert.add_argument(
         "--registry-base",
         help="Image registry base for generated repositories (defaults by host mode)",
@@ -1587,7 +1827,8 @@ def parse_args() -> argparse.Namespace:
         help="Push all branches (workspace + feature branches) to origin",
     )
     push_parser.add_argument(
-        "--message", "-m",
+        "--message",
+        "-m",
         help="Commit message for uncommitted changes (default: auto-generated)",
     )
 
@@ -1595,14 +1836,20 @@ def parse_args() -> argparse.Namespace:
         "promote-main",
         help="Dry-run a coherent candidate-bundle promotion plan into main",
     )
-    promote_main_parser.add_argument("--repo", required=True, help="Repository name, e.g. amof")
-    promote_main_parser.add_argument("--ticket-id", required=True, help="Ticket identifier, e.g. AMOF-123")
+    promote_main_parser.add_argument(
+        "--repo", required=True, help="Repository name, e.g. amof"
+    )
+    promote_main_parser.add_argument(
+        "--ticket-id", required=True, help="Ticket identifier, e.g. AMOF-123"
+    )
     promote_main_parser.add_argument(
         "--candidate-branch",
         required=True,
         help="Candidate branch containing the validated source and env commits",
     )
-    promote_main_parser.add_argument("--source-sha", required=True, help="Validated source/code SHA to promote")
+    promote_main_parser.add_argument(
+        "--source-sha", required=True, help="Validated source/code SHA to promote"
+    )
     promote_main_parser.add_argument(
         "--gitops-commit-sha",
         help="Optional AMOF-origin env commit SHA linked to the source SHA; omit for code-only promotions",
@@ -1617,7 +1864,9 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Short operator reason for the promotion attempt",
     )
-    promote_main_evidence = promote_main_parser.add_mutually_exclusive_group(required=False)
+    promote_main_evidence = promote_main_parser.add_mutually_exclusive_group(
+        required=False
+    )
     promote_main_evidence.add_argument(
         "--require-run-summary",
         help="Optional auditable run-summary.json evidence path that must validate before promotion proceeds",
@@ -1642,7 +1891,9 @@ def parse_args() -> argparse.Namespace:
         "promote-main-revert",
         help="Revert one AMOF synthetic promotion commit on main with a fast-forward push",
     )
-    promote_main_revert_parser.add_argument("--repo", required=True, help="Repository name, e.g. amof")
+    promote_main_revert_parser.add_argument(
+        "--repo", required=True, help="Repository name, e.g. amof"
+    )
     promote_main_revert_parser.add_argument(
         "--synthetic-commit-sha",
         required=True,
@@ -1671,10 +1922,18 @@ def parse_args() -> argparse.Namespace:
         help="Finish workspace: push, save state (keeps workspace branch by default)",
     )
     archive_parser.add_argument("--message", "-m", help="Optional description")
-    archive_parser.add_argument("--force", action="store_true", help="Skip confirmation")
-    archive_parser.add_argument("--dry-run", action="store_true", help="Show what would be done")
-    archive_parser.add_argument("--delete-workspace", action="store_true", help="Delete workspace branch")
-    archive_parser.add_argument("--cleanup-features", action="store_true", help="Delete all feature branches")
+    archive_parser.add_argument(
+        "--force", action="store_true", help="Skip confirmation"
+    )
+    archive_parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be done"
+    )
+    archive_parser.add_argument(
+        "--delete-workspace", action="store_true", help="Delete workspace branch"
+    )
+    archive_parser.add_argument(
+        "--cleanup-features", action="store_true", help="Delete all feature branches"
+    )
 
     # Archive list subcommand
     subparsers.add_parser(
@@ -1688,11 +1947,15 @@ def parse_args() -> argparse.Namespace:
         help="Manage ecosystems (persistent branch templates)",
     )
     ecosystem_sub = ecosystem_parser.add_subparsers(dest="ecosystem_cmd")
-    
-    eco_create = ecosystem_sub.add_parser("create", help="Create a new ecosystem branch")
+
+    eco_create = ecosystem_sub.add_parser(
+        "create", help="Create a new ecosystem branch"
+    )
     eco_create.add_argument("name", help="Ecosystem name (e.g., demo-migration)")
-    eco_create.add_argument("--from", dest="from_branch", default="main", help="Base branch")
-    
+    eco_create.add_argument(
+        "--from", dest="from_branch", default="main", help="Base branch"
+    )
+
     ecosystem_sub.add_parser("list", help="List available ecosystems")
 
     # Actor commands
@@ -1701,18 +1964,24 @@ def parse_args() -> argparse.Namespace:
         help="Manage actors/customers in ecosystem manifest",
     )
     actor_sub = actor_parser.add_subparsers(dest="actor_cmd")
-    
+
     actor_add = actor_sub.add_parser("add", help="Add an actor to manifest")
     actor_add.add_argument("id", help="Actor ID (e.g., dev, ops)")
     actor_add.add_argument("--name", help="Display name")
-    actor_add.add_argument("--role", choices=["reference", "template", "customer"], default="customer")
-    actor_add.add_argument("--status", choices=["complete", "in_progress", "planned"], default="planned")
-    
+    actor_add.add_argument(
+        "--role", choices=["reference", "template", "customer"], default="customer"
+    )
+    actor_add.add_argument(
+        "--status", choices=["complete", "in_progress", "planned"], default="planned"
+    )
+
     actor_sub.add_parser("list", help="List actors in ecosystem")
-    
+
     actor_update = actor_sub.add_parser("update", help="Update actor status")
     actor_update.add_argument("id", help="Actor ID")
-    actor_update.add_argument("--status", choices=["complete", "in_progress", "planned"])
+    actor_update.add_argument(
+        "--status", choices=["complete", "in_progress", "planned"]
+    )
 
     # PR command
     pr_parser = subparsers.add_parser(
@@ -1720,7 +1989,8 @@ def parse_args() -> argparse.Namespace:
         help="Create pull requests for all changed repos",
     )
     pr_parser.add_argument(
-        "--reviewers", "-r",
+        "--reviewers",
+        "-r",
         action="append",
         help="Add reviewer (username); can be repeated",
     )
@@ -1736,11 +2006,13 @@ def parse_args() -> argparse.Namespace:
         help="Jira ticket operations",
     )
     jira_sub = jira_parser.add_subparsers(dest="jira_cmd")
-    
+
     jira_info = jira_sub.add_parser("info", help="Show ticket details")
     jira_info.add_argument("ticket", help="Ticket ID (e.g., Issue-123)")
-    
-    jira_context = jira_sub.add_parser("context", help="Generate AI context from ticket")
+
+    jira_context = jira_sub.add_parser(
+        "context", help="Generate AI context from ticket"
+    )
     jira_context.add_argument("ticket", help="Ticket ID")
     jira_context.add_argument("--output", "-o", help="Output file path")
 
@@ -1750,16 +2022,18 @@ def parse_args() -> argparse.Namespace:
         help="Knowledge base sync with Confluence",
     )
     kb_sub = kb_parser.add_subparsers(dest="kb_cmd")
-    
+
     kb_pull = kb_sub.add_parser("pull", help="Pull KB articles from Confluence")
     kb_pull.add_argument("--space", help="Confluence space key")
-    
+
     kb_push = kb_sub.add_parser("push", help="Push local KB to Confluence")
     kb_push.add_argument("--space", help="Confluence space key")
-    
-    kb_diff = kb_sub.add_parser("diff", help="Show differences between local and Confluence")
+
+    kb_diff = kb_sub.add_parser(
+        "diff", help="Show differences between local and Confluence"
+    )
     kb_diff.add_argument("--space", help="Confluence space key")
-    
+
     kb_sync = kb_sub.add_parser("sync", help="Bi-directional sync")
     kb_sync.add_argument("--space", help="Confluence space key")
 
@@ -1835,39 +2109,55 @@ def parse_args() -> argparse.Namespace:
     )
     release_pre = release_parser.add_mutually_exclusive_group()
     release_pre.add_argument(
-        "--alpha", action="store_const", const="alpha", dest="pre",
+        "--alpha",
+        action="store_const",
+        const="alpha",
+        dest="pre",
         help="Tag as alpha pre-release",
     )
     release_pre.add_argument(
-        "--beta", action="store_const", const="beta", dest="pre",
+        "--beta",
+        action="store_const",
+        const="beta",
+        dest="pre",
         help="Tag as beta pre-release (or promote target)",
     )
     release_pre.add_argument(
-        "--rc", action="store_const", const="rc", dest="pre",
+        "--rc",
+        action="store_const",
+        const="rc",
+        dest="pre",
         help="Tag as release candidate (or promote target)",
     )
     release_parser.add_argument(
-        "--message", "-m",
+        "--message",
+        "-m",
         help="Tag annotation message (default: version string)",
     )
     release_parser.add_argument(
-        "--no-push", action="store_true",
+        "--no-push",
+        action="store_true",
         help="Don't push after tagging (local only)",
     )
     release_parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Show what would happen without making changes",
     )
     release_parser.add_argument(
-        "-y", "--yes", action="store_true",
+        "-y",
+        "--yes",
+        action="store_true",
         help="Skip confirmation prompt",
     )
     release_parser.add_argument(
-        "--skip-validation", action="store_true",
+        "--skip-validation",
+        action="store_true",
         help="Bypass all pre-release validation checks",
     )
     release_parser.add_argument(
-        "--strict", action="store_true",
+        "--strict",
+        action="store_true",
         help="Treat validation warnings as errors",
     )
 
@@ -1882,17 +2172,21 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     mcp_parser.add_argument(
-        "mcp_action", nargs="?", choices=["start"], default="start",
+        "mcp_action",
+        nargs="?",
+        choices=["start"],
+        default="start",
         help="Action (default: start)",
     )
 
     # Server command (FastAPI API Layer)
-    server_parser = subparsers.add_parser(
-        "server", help="Start the AMOF API server"
-    )
+    server_parser = subparsers.add_parser("server", help="Start the AMOF API server")
     server_parser.add_argument(
-        "action", nargs="?", choices=["start", "stop", "status", "restart"], default="start",
-        help="Action to perform (default: start)"
+        "action",
+        nargs="?",
+        choices=["start", "stop", "status", "restart"],
+        default="start",
+        help="Action to perform (default: start)",
     )
     server_parser.add_argument(
         "--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)"
@@ -1905,4 +2199,3 @@ def parse_args() -> argparse.Namespace:
     )
 
     return parser.parse_args()
-

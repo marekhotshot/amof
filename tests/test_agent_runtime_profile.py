@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from io import StringIO
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import tomllib
 import unittest
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 import yaml
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_ROOT = ROOT / "scripts"
@@ -26,8 +25,13 @@ from amof.orchestrator.llm.base import ProviderError
 from amof.orchestrator.planner import TaskPlanner
 from amof.orchestrator.runners import PUBLIC_DEFAULT_RUNNERS_CONFIG, RunnerFactory
 from amof.orchestrator.telemetry import SessionTelemetry
+from amof.orchestrator.tools.base import (
+    GuardrailConfig,
+    Guardrails,
+    ToolCall,
+    create_default_registry,
+)
 from amof.orchestrator.trust_boundary import create_trust_state
-from amof.orchestrator.tools.base import GuardrailConfig, Guardrails, ToolCall, create_default_registry
 
 
 @contextmanager
@@ -55,9 +59,16 @@ def _commit_env() -> dict[str, str]:
 
 def _init_git_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-b", "main", str(path)], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "init", "-b", "main", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     (path / "README.md").write_text("test\n", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "add", "."], cwd=path, check=True, capture_output=True, text=True
+    )
     subprocess.run(
         ["git", "commit", "-m", "test: init"],
         cwd=path,
@@ -126,7 +137,9 @@ def _isolated_provider_env(amof_home: Path, extra_env: dict[str, str] | None = N
                 os.environ[key] = value  # type: ignore[assignment]
 
 
-def _write_active_provider_profile(amof_home: Path, name: str, payload: dict[str, object]) -> None:
+def _write_active_provider_profile(
+    amof_home: Path, name: str, payload: dict[str, object]
+) -> None:
     config_root = amof_home / "config"
     profile_dir = config_root / "provider-profiles"
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -310,7 +323,10 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         deps = set(payload["project"]["dependencies"])
         dep_names = {dep.split(">=", 1)[0] for dep in deps}
 
-        self.assertTrue({"PyYAML", "pydantic", "openai", "anthropic", "boto3", "botocore"} <= dep_names)
+        self.assertTrue(
+            {"PyYAML", "pydantic", "openai", "anthropic", "boto3", "botocore"}
+            <= dep_names
+        )
         memory_deps = payload["project"]["optional-dependencies"]["memory"]
         self.assertTrue(any(dep.startswith("chromadb") for dep in memory_deps))
         self.assertTrue(any(dep.startswith("pysqlite3-binary") for dep in memory_deps))
@@ -336,7 +352,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
             env = {
                 "AMOF_HOME": str(amof_home),
@@ -347,8 +365,15 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                     with patch("amof.orchestrator.agent.Agent", _FakeAgent):
                         import amof.orchestrator.memory as memory
 
-                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
-                            with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                        with patch.object(
+                            memory,
+                            "VectorStore",
+                            side_effect=ImportError("chromadb missing"),
+                        ):
+                            with (
+                                redirect_stdout(StringIO()),
+                                redirect_stderr(StringIO()) as stderr,
+                            ):
                                 result = agent_cmd.cmd_agent(
                                     manifest,
                                     goal="Inspect this repo",
@@ -365,7 +390,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            journal_files = list((amof_home / "share" / "journals" / "demo-repo").glob("*.md"))
+            journal_files = list(
+                (amof_home / "share" / "journals" / "demo-repo").glob("*.md")
+            )
 
         self.assertEqual(result, 0)
         self.assertEqual(git_status.stdout.strip(), "")
@@ -385,7 +412,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
             env = {
                 "AMOF_HOME": str(amof_home),
@@ -396,8 +425,15 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                     with patch("amof.orchestrator.agent.Agent", _FakeAgent):
                         import amof.orchestrator.memory as memory
 
-                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
-                            with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                        with patch.object(
+                            memory,
+                            "VectorStore",
+                            side_effect=ImportError("chromadb missing"),
+                        ):
+                            with (
+                                redirect_stdout(StringIO()),
+                                redirect_stderr(StringIO()) as stderr,
+                            ):
                                 result = agent_cmd.cmd_agent(
                                     manifest,
                                     goal="Inspect this repo",
@@ -412,7 +448,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertIn("pipx inject amof chromadb pysqlite3-binary", err)
         self.assertNotIn("requirements.txt", err)
 
-    def test_installed_agent_install_does_not_use_target_requirements_guidance(self) -> None:
+    def test_installed_agent_install_does_not_use_target_requirements_guidance(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-install-") as td:
             repo = Path(td) / "target-repo"
             _init_git_repo(repo)
@@ -421,7 +459,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                     result = agent_cmd.cmd_agent_install()
 
         self.assertIn(result, {0, 1})
-        self.assertNotIn("requirements.txt not found in workspace root", stderr.getvalue())
+        self.assertNotIn(
+            "requirements.txt not found in workspace root", stderr.getvalue()
+        )
         self.assertNotIn("pip install -r", stderr.getvalue())
 
     def test_missing_guardrails_load_packaged_public_defaults(self) -> None:
@@ -432,8 +472,14 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertIn(".env", cfg.protected_basenames)
         self.assertIn("git push", cfg.blocked_commands)
         guardrails = Guardrails(mode="plan", config=cfg)
-        self.assertEqual(guardrails.check_write("README.md"), "Write operations are blocked in PLAN mode")
-        self.assertEqual(guardrails.check_shell("git status"), "Shell operations are blocked in PLAN mode")
+        self.assertEqual(
+            guardrails.check_write("README.md"),
+            "Write operations are blocked in PLAN mode",
+        )
+        self.assertEqual(
+            guardrails.check_shell("git status"),
+            "Shell operations are blocked in PLAN mode",
+        )
 
     def test_openrouter_default_planner_model_is_provider_compatible(self) -> None:
         planner_model = agent_cmd._default_planner_model("openrouter", None)
@@ -449,7 +495,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
 
     def test_explicit_planner_model_wins(self) -> None:
         self.assertEqual(
-            agent_cmd._default_planner_model("openrouter", "anthropic/claude-sonnet-4.5"),
+            agent_cmd._default_planner_model(
+                "openrouter", "anthropic/claude-sonnet-4.5"
+            ),
             "anthropic/claude-sonnet-4.5",
         )
 
@@ -474,7 +522,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
             created_clients: list[_FakeLocalLLM] = []
 
@@ -484,17 +534,26 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 return client
 
             _FakeAgent.instances.clear()
-            with _isolated_provider_env(amof_home, {"AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS": "12.5"}):
+            with _isolated_provider_env(
+                amof_home, {"AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS": "12.5"}
+            ):
                 with _cwd(repo):
                     with patch("amof.orchestrator.agent.Agent", _FakeAgent):
                         import amof.orchestrator.memory as memory
 
-                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
+                        with patch.object(
+                            memory,
+                            "VectorStore",
+                            side_effect=ImportError("chromadb missing"),
+                        ):
                             with patch(
                                 "amof.orchestrator.llm.local_openai_compatible.LocalOpenAICompatibleClient",
                                 side_effect=_fake_local_client,
                             ):
-                                with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                                with (
+                                    redirect_stdout(StringIO()) as stdout,
+                                    redirect_stderr(StringIO()) as stderr,
+                                ):
                                     result = agent_cmd.cmd_agent(
                                         manifest,
                                         goal="Inspect this repo",
@@ -518,8 +577,12 @@ class AgentRuntimeProfileTests(unittest.TestCase):
 
         self.assertEqual(result, 0, stderr.getvalue())
         self.assertTrue(created_clients)
-        self.assertEqual(created_clients[0].kwargs["base_url"], "http://127.0.0.1:11434/v1")
-        self.assertEqual(created_clients[0].kwargs["model"], "qwen2.5-coder:7b-instruct")
+        self.assertEqual(
+            created_clients[0].kwargs["base_url"], "http://127.0.0.1:11434/v1"
+        )
+        self.assertEqual(
+            created_clients[0].kwargs["model"], "qwen2.5-coder:7b-instruct"
+        )
         self.assertIsNone(created_clients[0].kwargs["api_key"])
         self.assertEqual(created_clients[0].kwargs["timeout"], 45.0)
         self.assertTrue(_FakeAgent.instances)
@@ -534,7 +597,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertNotIn("OPENROUTER_API_KEY", stderr.getvalue())
         self.assertNotIn("api_key", appdata_text)
 
-    def test_active_local_profile_honors_env_timeout_when_profile_omits_timeout(self) -> None:
+    def test_active_local_profile_honors_env_timeout_when_profile_omits_timeout(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-local-timeout-env-") as td:
             temp = Path(td)
             repo = temp / "demo-repo"
@@ -554,7 +619,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
             created_clients: list[_FakeLocalLLM] = []
 
@@ -563,17 +630,26 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 created_clients.append(client)
                 return client
 
-            with _isolated_provider_env(amof_home, {"AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS": "12.5"}):
+            with _isolated_provider_env(
+                amof_home, {"AMOF_LOCAL_PROVIDER_TIMEOUT_SECONDS": "12.5"}
+            ):
                 with _cwd(repo):
                     with patch("amof.orchestrator.agent.Agent", _FakeAgent):
                         import amof.orchestrator.memory as memory
 
-                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
+                        with patch.object(
+                            memory,
+                            "VectorStore",
+                            side_effect=ImportError("chromadb missing"),
+                        ):
                             with patch(
                                 "amof.orchestrator.llm.local_openai_compatible.LocalOpenAICompatibleClient",
                                 side_effect=_fake_local_client,
                             ):
-                                with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                                with (
+                                    redirect_stdout(StringIO()),
+                                    redirect_stderr(StringIO()) as stderr,
+                                ):
                                     result = agent_cmd.cmd_agent(
                                         manifest,
                                         goal="Inspect this repo",
@@ -607,12 +683,17 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
 
             with _isolated_provider_env(amof_home):
                 with _cwd(repo):
-                    with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                    with (
+                        redirect_stdout(StringIO()),
+                        redirect_stderr(StringIO()) as stderr,
+                    ):
                         result = agent_cmd.cmd_agent(
                             manifest,
                             goal="Inspect this repo",
@@ -629,7 +710,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertIn("sdk_max_retries=0", err)
 
     def test_local_openai_compatible_client_disables_sdk_retries(self) -> None:
-        from amof.orchestrator.llm.local_openai_compatible import LocalOpenAICompatibleClient
+        from amof.orchestrator.llm.local_openai_compatible import (
+            LocalOpenAICompatibleClient,
+        )
 
         captured: dict[str, object] = {}
 
@@ -680,10 +763,15 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         )
 
         self.assertEqual(client._base_url, "https://pod-8000.proxy.runpod.net/v1")
-        self.assertIn("runpod/pod-8000.proxy.runpod.net/deepseek-ai/DeepSeek-V4-Flash", client.model_name())
+        self.assertIn(
+            "runpod/pod-8000.proxy.runpod.net/deepseek-ai/DeepSeek-V4-Flash",
+            client.model_name(),
+        )
 
     def test_runpod_openai_compatible_client_adds_proxy_safe_headers(self) -> None:
-        from amof.orchestrator.llm.local_openai_compatible import LocalOpenAICompatibleClient
+        from amof.orchestrator.llm.local_openai_compatible import (
+            LocalOpenAICompatibleClient,
+        )
 
         captured: dict[str, object] = {}
 
@@ -707,7 +795,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertIn("Mozilla/5.0", headers["User-Agent"])
         self.assertIn("application/json", headers["Accept"])
 
-    def test_active_runpod_profile_uses_openai_compatible_client_with_diagnostics(self) -> None:
+    def test_active_runpod_profile_uses_openai_compatible_client_with_diagnostics(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-runpod-profile-") as td:
             temp = Path(td)
             repo = temp / "demo-repo"
@@ -730,7 +820,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
             created_clients: list[_FakeLocalLLM] = []
 
@@ -752,12 +844,19 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                     with patch("amof.orchestrator.agent.Agent", _FakeAgent):
                         import amof.orchestrator.memory as memory
 
-                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
+                        with patch.object(
+                            memory,
+                            "VectorStore",
+                            side_effect=ImportError("chromadb missing"),
+                        ):
                             with patch(
                                 "amof.orchestrator.llm.local_openai_compatible.LocalOpenAICompatibleClient",
                                 side_effect=_fake_local_client,
                             ):
-                                with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                                with (
+                                    redirect_stdout(StringIO()) as stdout,
+                                    redirect_stderr(StringIO()) as stderr,
+                                ):
                                     result = agent_cmd.cmd_agent(
                                         manifest,
                                         goal="Inspect this repo",
@@ -768,8 +867,13 @@ class AgentRuntimeProfileTests(unittest.TestCase):
 
         self.assertEqual(result, 0, stderr.getvalue())
         self.assertTrue(created_clients)
-        self.assertEqual(created_clients[0].kwargs["base_url"], "https://pod-8000.proxy.runpod.net/v1")
-        self.assertEqual(created_clients[0].kwargs["model"], "deepseek-ai/DeepSeek-V4-Flash")
+        self.assertEqual(
+            created_clients[0].kwargs["base_url"],
+            "https://pod-8000.proxy.runpod.net/v1",
+        )
+        self.assertEqual(
+            created_clients[0].kwargs["model"], "deepseek-ai/DeepSeek-V4-Flash"
+        )
         self.assertEqual(created_clients[0].kwargs["api_key"], "unit-test-runpod-key")
         self.assertEqual(created_clients[0].kwargs["provider_id"], "runpod")
         self.assertEqual(created_clients[0].kwargs["timeout"], 90.0)
@@ -794,12 +898,17 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
 
             with _isolated_provider_env(amof_home):
                 with _cwd(repo):
-                    with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                    with (
+                        redirect_stdout(StringIO()),
+                        redirect_stderr(StringIO()) as stderr,
+                    ):
                         result = agent_cmd.cmd_agent(
                             manifest,
                             goal="Inspect this repo",
@@ -830,12 +939,17 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
 
             with _isolated_provider_env(amof_home):
                 with _cwd(repo):
-                    with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                    with (
+                        redirect_stdout(StringIO()),
+                        redirect_stderr(StringIO()) as stderr,
+                    ):
                         result = agent_cmd.cmd_agent(
                             manifest,
                             goal="Inspect this repo",
@@ -867,7 +981,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
             created_openai_clients: list[object] = []
 
@@ -877,21 +993,32 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 return client
 
             _FakeAgent.instances.clear()
-            with _isolated_provider_env(amof_home, {"OPENROUTER_API_KEY": "unit-test-provider-value"}):
+            with _isolated_provider_env(
+                amof_home, {"OPENROUTER_API_KEY": "unit-test-provider-value"}
+            ):
                 with _cwd(repo):
                     with patch("amof.orchestrator.agent.Agent", _FakeAgent):
                         import amof.orchestrator.memory as memory
 
-                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
+                        with patch.object(
+                            memory,
+                            "VectorStore",
+                            side_effect=ImportError("chromadb missing"),
+                        ):
                             with patch(
                                 "amof.orchestrator.llm.local_openai_compatible.LocalOpenAICompatibleClient",
-                                side_effect=AssertionError("local profile should not be used"),
+                                side_effect=AssertionError(
+                                    "local profile should not be used"
+                                ),
                             ):
                                 with patch(
                                     "amof.orchestrator.llm.openai_client.OpenAIClient",
                                     side_effect=_fake_openai_client,
                                 ):
-                                    with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                                    with (
+                                        redirect_stdout(StringIO()),
+                                        redirect_stderr(StringIO()) as stderr,
+                                    ):
                                         result = agent_cmd.cmd_agent(
                                             manifest,
                                             goal="Inspect this repo",
@@ -903,11 +1030,17 @@ class AgentRuntimeProfileTests(unittest.TestCase):
 
         self.assertEqual(result, 0, stderr.getvalue())
         self.assertTrue(created_openai_clients)
-        self.assertEqual(created_openai_clients[0].kwargs["api_key"], "unit-test-provider-value")
-        self.assertTrue(str(created_openai_clients[0].kwargs["model"]).startswith("openrouter/"))
+        self.assertEqual(
+            created_openai_clients[0].kwargs["api_key"], "unit-test-provider-value"
+        )
+        self.assertTrue(
+            str(created_openai_clients[0].kwargs["model"]).startswith("openrouter/")
+        )
         self.assertNotIn("timeout", created_openai_clients[0].kwargs)
 
-    def test_plan_execute_no_follow_up_is_noninteractive_for_clarifications(self) -> None:
+    def test_plan_execute_no_follow_up_is_noninteractive_for_clarifications(
+        self,
+    ) -> None:
         with patch("sys.stdin.isatty", return_value=True):
             self.assertTrue(agent_cmd._plan_execute_noninteractive(True, False))
             self.assertTrue(agent_cmd._plan_execute_noninteractive(False, True))
@@ -928,7 +1061,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         code_runner = PUBLIC_DEFAULT_RUNNERS_CONFIG["runners"]["code"]
         tools = set(code_runner["tools"])
 
-        self.assertTrue({"Read", "Write", "StrReplace", "Glob", "LS", "ReadLints"} <= tools)
+        self.assertTrue(
+            {"Read", "Write", "StrReplace", "Glob", "LS", "ReadLints"} <= tools
+        )
         self.assertNotIn("Shell", tools)
         self.assertNotIn("Delete", tools)
         self.assertNotIn("GitCheckpoint", tools)
@@ -940,12 +1075,16 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertFalse(trust_state.full_rewrite_authorized)
 
     def test_explicit_full_rewrite_intent_is_tracked(self) -> None:
-        trust_state = create_trust_state("Rewrite the entire file README.md from scratch")
+        trust_state = create_trust_state(
+            "Rewrite the entire file README.md from scratch"
+        )
 
         self.assertIn("write", trust_state.trusted_intent_caps)
         self.assertTrue(trust_state.full_rewrite_authorized)
 
-    def test_write_new_file_allowed_but_existing_file_blocked_for_add_intent(self) -> None:
+    def test_write_new_file_allowed_but_existing_file_blocked_for_add_intent(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-write-existing-") as td:
             repo = Path(td) / "repo"
             repo.mkdir()
@@ -980,7 +1119,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
 
         self.assertTrue(new_result.success, new_result.error)
         self.assertFalse(existing_result.success)
-        self.assertIn("Write cannot overwrite an existing file", existing_result.error or "")
+        self.assertIn(
+            "Write cannot overwrite an existing file", existing_result.error or ""
+        )
 
     def test_write_existing_file_allowed_for_explicit_full_rewrite_intent(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-write-full-rewrite-") as td:
@@ -1039,7 +1180,11 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                     ToolCall(
                         id="1",
                         name="StrReplace",
-                        arguments={"path": "README.md", "old_string": "old\n", "new_string": "old\nnew\n"},
+                        arguments={
+                            "path": "README.md",
+                            "old_string": "old\n",
+                            "new_string": "old\nnew\n",
+                        },
                     )
                 )
             contents = (repo / "README.md").read_text(encoding="utf-8")
@@ -1055,7 +1200,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             target = repo / "README.md"
             target.write_text("old\n", encoding="utf-8")
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Add a section to README.md"),
@@ -1066,7 +1213,11 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                     ToolCall(
                         id="1",
                         name="StrReplace",
-                        arguments={"path": "README.md", "old_string": "old\n", "new_string": "old\nnew\n"},
+                        arguments={
+                            "path": "README.md",
+                            "old_string": "old\n",
+                            "new_string": "old\nnew\n",
+                        },
                     )
                 )
             contents = target.read_text(encoding="utf-8")
@@ -1082,7 +1233,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             target = repo / "README.md"
             target.write_text("old\n", encoding="utf-8")
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Add a section to README.md"),
@@ -1115,9 +1268,13 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             repo = Path(td) / "repo"
             repo.mkdir()
             target = repo / "app.py"
-            target.write_text("def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            target.write_text(
+                "def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8"
+            )
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Add farewell to app.py"),
@@ -1150,9 +1307,13 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             repo = Path(td) / "repo"
             repo.mkdir()
             target = repo / "app.py"
-            target.write_text("def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            target.write_text(
+                "def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8"
+            )
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Add farewell to app.py"),
@@ -1187,13 +1348,17 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             tests_dir.mkdir(parents=True)
             app = repo / "app.py"
             test_app = tests_dir / "test_app.py"
-            app.write_text("def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8")
+            app.write_text(
+                "def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8"
+            )
             test_app.write_text(
                 "from app import greet\n\n\ndef test_greet():\n    assert greet('Ada') == 'Hello, Ada!'\n",
                 encoding="utf-8",
             )
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Add farewell to app.py"),
@@ -1234,13 +1399,32 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="amof-inspect-files-clean-") as td:
             repo = Path(td) / "repo"
             _init_git_repo(repo)
-            (repo / "app.py").write_text("def greet():\n    return 'hello'\n", encoding="utf-8")
+            (repo / "app.py").write_text(
+                "def greet():\n    return 'hello'\n", encoding="utf-8"
+            )
             (repo / "tests").mkdir()
-            (repo / "tests" / "test_app.py").write_text("def test_greet():\n    assert True\n", encoding="utf-8")
-            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            (repo / "tests" / "test_app.py").write_text(
+                "def test_greet():\n    assert True\n", encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test: add app"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Inspect app and tests"),
@@ -1254,7 +1438,13 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                         arguments={"paths": ["app.py", "tests/test_app.py"]},
                     )
                 )
-            status = subprocess.run(["git", "status", "--short"], cwd=repo, check=True, capture_output=True, text=True)
+            status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
 
         self.assertTrue(result.success, result.error)
         self.assertEqual(status.stdout, "")
@@ -1262,7 +1452,10 @@ class AgentRuntimeProfileTests(unittest.TestCase):
 
     def test_inspect_files_records_tool_count_and_inspected_files(self) -> None:
         telemetry = SessionTelemetry()
-        metadata = {"inspected_files": ["app.py", "tests/test_app.py"], "inspected_file_count": 2}
+        metadata = {
+            "inspected_files": ["app.py", "tests/test_app.py"],
+            "inspected_file_count": 2,
+        }
         telemetry.record_tool_call("InspectFiles", True, 12, metadata=metadata)
 
         with tempfile.TemporaryDirectory(prefix="amof-inspect-files-events-") as td:
@@ -1278,8 +1471,12 @@ class AgentRuntimeProfileTests(unittest.TestCase):
 
         summary = telemetry.to_dict()
         self.assertEqual(summary["tools"]["InspectFiles"]["calls"], 1)
-        self.assertEqual(summary["inspected_files"]["files"], ["app.py", "tests/test_app.py"])
-        self.assertEqual(event["metadata"]["inspected_files"], ["app.py", "tests/test_app.py"])
+        self.assertEqual(
+            summary["inspected_files"]["files"], ["app.py", "tests/test_app.py"]
+        )
+        self.assertEqual(
+            event["metadata"]["inspected_files"], ["app.py", "tests/test_app.py"]
+        )
 
     def test_runner_telemetry_rollup_preserves_inspected_files(self) -> None:
         parent = SessionTelemetry()
@@ -1295,7 +1492,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         summary = parent.to_dict()
 
         self.assertEqual(summary["tools"]["runner:code:InspectFiles"]["calls"], 1)
-        self.assertEqual(summary["inspected_files"]["files"], ["app.py", "tests/test_app.py"])
+        self.assertEqual(
+            summary["inspected_files"]["files"], ["app.py", "tests/test_app.py"]
+        )
 
     def test_tool_proposal_read_only_executes_from_appdata_with_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-tool-proposal-safe-") as td:
@@ -1304,11 +1503,26 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             _init_git_repo(repo)
             target = repo / "app.py"
             target.write_text("def greet():\n    return 'hello'\n", encoding="utf-8")
-            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            subprocess.run(
+                ["git", "add", "app.py"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test: add app"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
             amof_home = root / "amof-home"
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Inspect files using a safe proposal"),
@@ -1333,7 +1547,13 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                             },
                         )
                     )
-                status = subprocess.run(["git", "status", "--short"], cwd=repo, check=True, capture_output=True, text=True)
+                status = subprocess.run(
+                    ["git", "status", "--short"],
+                    cwd=repo,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
                 script_path = Path(result.metadata["script_path"])
                 script_exists = script_path.is_file()
                 script_in_appdata = str(script_path).startswith(str(amof_home))
@@ -1353,7 +1573,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             repo.mkdir()
             amof_home = Path(td) / "amof-home"
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Inspect files using a safe proposal"),
@@ -1395,7 +1617,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             target = repo / "README.md"
             target.write_text("abc\n", encoding="utf-8")
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Add a section to README.md"),
@@ -1409,7 +1633,11 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                     ToolCall(
                         id="1",
                         name="StrReplace",
-                        arguments={"path": "README.md", "old_string": "", "new_string": "X"},
+                        arguments={
+                            "path": "README.md",
+                            "old_string": "",
+                            "new_string": "X",
+                        },
                     )
                 )
             contents = target.read_text(encoding="utf-8")
@@ -1425,7 +1653,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             target = repo / "README.md"
             target.write_text("abc\n", encoding="utf-8")
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Add a section to README.md"),
@@ -1436,7 +1666,11 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                     ToolCall(
                         id="1",
                         name="StrReplace",
-                        arguments={"path": "README.md", "old_string": " \n\t", "new_string": "X"},
+                        arguments={
+                            "path": "README.md",
+                            "old_string": " \n\t",
+                            "new_string": "X",
+                        },
                     )
                 )
             contents = target.read_text(encoding="utf-8")
@@ -1452,7 +1686,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             target = repo / "README.md"
             target.write_text("abc\n", encoding="utf-8")
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Add a section to README.md"),
@@ -1466,7 +1702,11 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                     ToolCall(
                         id="1",
                         name="StrReplace",
-                        arguments={"path": "README.md", "old_string": "missing", "new_string": "X"},
+                        arguments={
+                            "path": "README.md",
+                            "old_string": "missing",
+                            "new_string": "X",
+                        },
                     )
                 )
             contents = target.read_text(encoding="utf-8")
@@ -1483,7 +1723,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             target = repo / "README.md"
             target.write_text("same\nsame\n", encoding="utf-8")
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Add a section to README.md"),
@@ -1497,7 +1739,11 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                     ToolCall(
                         id="1",
                         name="StrReplace",
-                        arguments={"path": "README.md", "old_string": "same", "new_string": "other"},
+                        arguments={
+                            "path": "README.md",
+                            "old_string": "same",
+                            "new_string": "other",
+                        },
                     )
                 )
             contents = target.read_text(encoding="utf-8")
@@ -1514,7 +1760,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             target = repo / "README.md"
             target.write_text("x\n" * 25, encoding="utf-8")
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Update README.md"),
@@ -1550,7 +1798,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             target = repo / "README.md"
             target.write_text("needle\n", encoding="utf-8")
             registry = create_default_registry(
-                guardrails=Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo]),
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
                 role="worker",
                 workspace_root=repo,
                 trust_state=create_trust_state("Add a section to README.md"),
@@ -1613,9 +1863,24 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             _init_git_repo(repo)
             doc = repo / "docs" / "runbooks" / "happy-path-agent-workflow.md"
             doc.parent.mkdir(parents=True)
-            doc.write_text("\n".join(f"line {i}" for i in range(1, 101)) + "\n", encoding="utf-8")
-            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "commit", "-m", "test: add docs"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            doc.write_text(
+                "\n".join(f"line {i}" for i in range(1, 101)) + "\n", encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test: add docs"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
             doc.write_text("short replacement\n", encoding="utf-8")
 
             guard = agent_cmd._evaluate_diff_guard(
@@ -1626,7 +1891,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
 
         self.assertEqual(guard["status"], "fail")
         self.assertTrue(guard["destructive_rewrite_detected"])
-        self.assertIn("docs/runbooks/happy-path-agent-workflow.md", guard["changed_files"])
+        self.assertIn(
+            "docs/runbooks/happy-path-agent-workflow.md", guard["changed_files"]
+        )
 
     def test_diff_guard_allows_bounded_docs_insertion(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-diff-insert-") as td:
@@ -1634,10 +1901,28 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             _init_git_repo(repo)
             doc = repo / "docs" / "runbooks" / "happy-path-agent-workflow.md"
             doc.parent.mkdir(parents=True)
-            doc.write_text("before\n## Bounded Worker Execution\nold\n", encoding="utf-8")
-            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "commit", "-m", "test: add docs"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
-            doc.write_text("before\n## Bounded Worker Execution\nold\n\n### Manual review\n\nReview diff.\n", encoding="utf-8")
+            doc.write_text(
+                "before\n## Bounded Worker Execution\nold\n", encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test: add docs"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
+            doc.write_text(
+                "before\n## Bounded Worker Execution\nold\n\n### Manual review\n\nReview diff.\n",
+                encoding="utf-8",
+            )
 
             guard = agent_cmd._evaluate_diff_guard(
                 "In docs/runbooks/happy-path-agent-workflow.md, add a docs-only section under 12 lines. Do not modify code.",
@@ -1655,9 +1940,24 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             _init_git_repo(repo)
             doc = repo / "docs" / "runbooks" / "happy-path-agent-workflow.md"
             doc.parent.mkdir(parents=True)
-            doc.write_text("before\n## Bounded Worker Execution\nold\n", encoding="utf-8")
-            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "commit", "-m", "test: add docs"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            doc.write_text(
+                "before\n## Bounded Worker Execution\nold\n", encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test: add docs"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
             doc.write_text(
                 "before\n## Bounded Worker Execution\nold\n\n"
                 "### Manual Review Before Merge\n\nReview the generated diff.\n",
@@ -1674,7 +1974,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             )
 
         self.assertEqual(guard["status"], "fail")
-        self.assertTrue(any(reason.startswith("exact_text_missing") for reason in guard["reasons"]))
+        self.assertTrue(
+            any(reason.startswith("exact_text_missing") for reason in guard["reasons"])
+        )
 
     def test_diff_guard_allows_exact_requested_section(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-diff-exact-pass-") as td:
@@ -1682,9 +1984,24 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             _init_git_repo(repo)
             doc = repo / "docs" / "runbooks" / "happy-path-agent-workflow.md"
             doc.parent.mkdir(parents=True)
-            doc.write_text("before\n## Bounded Worker Execution\nold\n", encoding="utf-8")
-            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "commit", "-m", "test: add docs"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            doc.write_text(
+                "before\n## Bounded Worker Execution\nold\n", encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test: add docs"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
             doc.write_text(
                 "before\n## Bounded Worker Execution\nold\n\n"
                 "### Manual review before commit\n\n"
@@ -1708,8 +2025,21 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             repo = Path(td) / "repo"
             _init_git_repo(repo)
             (repo / "app.py").write_text("print('old')\n", encoding="utf-8")
-            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            subprocess.run(
+                ["git", "add", "app.py"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test: add app"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
             (repo / "app.py").write_text("print('changed')\n", encoding="utf-8")
 
             guard = agent_cmd._evaluate_diff_guard(
@@ -1720,7 +2050,12 @@ class AgentRuntimeProfileTests(unittest.TestCase):
 
         self.assertEqual(guard["status"], "fail")
         self.assertFalse(guard["requested_paths_observed"])
-        self.assertTrue(any(reason.startswith("requested_paths_mismatch") for reason in guard["reasons"]))
+        self.assertTrue(
+            any(
+                reason.startswith("requested_paths_mismatch")
+                for reason in guard["reasons"]
+            )
+        )
 
     def test_diff_guard_rejects_missing_requested_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-diff-missing-requested-") as td:
@@ -1728,7 +2063,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             _init_git_repo(repo)
             (repo / "app.py").write_text("print('old')\n", encoding="utf-8")
             (repo / "tests").mkdir()
-            (repo / "tests" / "test_app.py").write_text("print('old test')\n", encoding="utf-8")
+            (repo / "tests" / "test_app.py").write_text(
+                "print('old test')\n", encoding="utf-8"
+            )
             subprocess.run(
                 ["git", "add", "app.py", "tests/test_app.py"],
                 cwd=repo,
@@ -1755,7 +2092,10 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertEqual(guard["status"], "fail")
         self.assertFalse(guard["requested_paths_observed"])
         self.assertTrue(
-            any(reason.startswith("requested_paths_missing:tests/test_app.py") for reason in guard["reasons"])
+            any(
+                reason.startswith("requested_paths_missing:tests/test_app.py")
+                for reason in guard["reasons"]
+            )
         )
 
     def test_diff_guard_rejects_explosive_existing_file_growth(self) -> None:
@@ -1763,8 +2103,16 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             repo = Path(td) / "repo"
             _init_git_repo(repo)
             app = repo / "app.py"
-            app.write_text("def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8")
-            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
+            app.write_text(
+                "def greet(name):\n    return f'Hello, {name}!'\n", encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "add", "app.py"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             subprocess.run(
                 ["git", "commit", "-m", "test: add app"],
                 cwd=repo,
@@ -1776,7 +2124,8 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             app.write_text(
                 "def greet(name):\n    return f'Hello, {name}!'\n"
                 + "\n".join(
-                    "def farewell(name):\n    return f'Goodbye, {name}!'" for _ in range(300)
+                    "def farewell(name):\n    return f'Goodbye, {name}!'"
+                    for _ in range(300)
                 )
                 + "\n",
                 encoding="utf-8",
@@ -1790,8 +2139,15 @@ class AgentRuntimeProfileTests(unittest.TestCase):
 
         self.assertEqual(guard["status"], "fail")
         self.assertTrue(guard["destructive_rewrite_detected"])
-        self.assertTrue(any(reason.startswith("file_growth:app.py") for reason in guard["reasons"]))
-        self.assertTrue(any(reason.startswith("large_addition:app.py") for reason in guard["reasons"]))
+        self.assertTrue(
+            any(reason.startswith("file_growth:app.py") for reason in guard["reasons"])
+        )
+        self.assertTrue(
+            any(
+                reason.startswith("large_addition:app.py")
+                for reason in guard["reasons"]
+            )
+        )
 
     def test_pycache_untracked_noise_does_not_count_as_target_diff(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-diff-pycache-") as td:
@@ -1816,8 +2172,12 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="amof-runner-failed-write-") as td:
             repo = Path(td) / "repo"
             _init_git_repo(repo)
-            guardrails = Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo])
-            parent_tools = create_default_registry(guardrails=guardrails, role="worker", workspace_root=repo)
+            guardrails = Guardrails(
+                config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+            )
+            parent_tools = create_default_registry(
+                guardrails=guardrails, role="worker", workspace_root=repo
+            )
             factory = RunnerFactory.from_config(
                 config_path=Path(td) / "missing-runners.yaml",
                 model_clients={"standard": object()},
@@ -1835,14 +2195,20 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertEqual(result.failed_tool_calls, 1)
         self.assertEqual(result.failed_write_tool_calls, 1)
 
-    def test_runner_failed_strreplace_records_failed_tool_call_without_mutation(self) -> None:
+    def test_runner_failed_strreplace_records_failed_tool_call_without_mutation(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-runner-failed-strreplace-") as td:
             repo = Path(td) / "repo"
             _init_git_repo(repo)
             readme = repo / "README.md"
             before = readme.read_text(encoding="utf-8")
-            guardrails = Guardrails(config=GuardrailConfig.public_defaults(), writable_roots=[repo])
-            parent_tools = create_default_registry(guardrails=guardrails, role="worker", workspace_root=repo)
+            guardrails = Guardrails(
+                config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+            )
+            parent_tools = create_default_registry(
+                guardrails=guardrails, role="worker", workspace_root=repo
+            )
             factory = RunnerFactory.from_config(
                 config_path=Path(td) / "missing-runners.yaml",
                 model_clients={"standard": object()},
@@ -1852,7 +2218,9 @@ class AgentRuntimeProfileTests(unittest.TestCase):
                 default_config=PUBLIC_DEFAULT_RUNNERS_CONFIG,
             )
             with _cwd(repo):
-                with patch("amof.orchestrator.runners.Agent", _FakeUnsafeStrReplaceAgent):
+                with patch(
+                    "amof.orchestrator.runners.Agent", _FakeUnsafeStrReplaceAgent
+                ):
                     result = factory.run_runner("code", "Attempt unsafe StrReplace")
             after = readme.read_text(encoding="utf-8")
 
@@ -1891,7 +2259,9 @@ Use the public default code runner.
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
             env = {
                 "AMOF_HOME": str(amof_home),
@@ -1901,7 +2271,10 @@ Use the public default code runner.
             with patch.dict(os.environ, env, clear=False):
                 with _cwd(repo):
                     with patch("amof.orchestrator.runners.Agent", _FakeAgent):
-                        with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                        with (
+                            redirect_stdout(StringIO()),
+                            redirect_stderr(StringIO()) as stderr,
+                        ):
                             result = agent_cmd.cmd_agent(
                                 manifest,
                                 goal="Inspect this repo",
@@ -1926,7 +2299,9 @@ Use the public default code runner.
             )
             journals_text = "\n".join(
                 path.read_text(encoding="utf-8")
-                for path in (amof_home / "share" / "journals" / "demo-repo").glob("*.md")
+                for path in (amof_home / "share" / "journals" / "demo-repo").glob(
+                    "*.md"
+                )
             )
 
         self.assertEqual(result, 0, stderr.getvalue())
@@ -1971,13 +2346,21 @@ Add a function.
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
-            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
             with patch.dict(os.environ, env, clear=False):
                 with _cwd(repo):
                     with patch("amof.orchestrator.runners.Agent", _FakeNoDiffAgent):
-                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                        with (
+                            redirect_stdout(StringIO()) as stdout,
+                            redirect_stderr(StringIO()) as stderr,
+                        ):
                             result = agent_cmd.cmd_agent(
                                 manifest,
                                 goal="Add a farewell function",
@@ -2002,7 +2385,9 @@ Add a function.
         self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
         self.assertIn("target_has_diff=false", stdout.getvalue())
 
-    def test_mutation_intent_inspect_only_worker_fails_write_action_contract(self) -> None:
+    def test_mutation_intent_inspect_only_worker_fails_write_action_contract(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-prose-only-") as td:
             temp = Path(td)
             repo = temp / "demo-repo"
@@ -2030,13 +2415,23 @@ Add a function.
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
-            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
             with patch.dict(os.environ, env, clear=False):
                 with _cwd(repo):
-                    with patch("amof.orchestrator.runners.Agent", _FakeInspectOnlyMutationAgent):
-                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                    with patch(
+                        "amof.orchestrator.runners.Agent", _FakeInspectOnlyMutationAgent
+                    ):
+                        with (
+                            redirect_stdout(StringIO()) as stdout,
+                            redirect_stderr(StringIO()) as stderr,
+                        ):
                             result = agent_cmd.cmd_agent(
                                 manifest,
                                 goal="Add a farewell function",
@@ -2060,7 +2455,9 @@ Add a function.
         self.assertEqual(git_status.stdout.strip(), "")
         self.assertIn("0/1 completed, 1 failed", stdout.getvalue())
         self.assertIn("write_action_observed=false", stdout.getvalue())
-        self.assertIn("mutation-intent plan did not call a write-class tool", stdout.getvalue())
+        self.assertIn(
+            "mutation-intent plan did not call a write-class tool", stdout.getvalue()
+        )
 
     def test_plan_execute_provider_network_failure_returns_nonzero(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-provider-network-") as td:
@@ -2090,13 +2487,23 @@ Inspect the repo.
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
-            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
             with patch.dict(os.environ, env, clear=False):
                 with _cwd(repo):
-                    with patch("amof.orchestrator.runners.Agent", _FakeProviderNetworkAgent):
-                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                    with patch(
+                        "amof.orchestrator.runners.Agent", _FakeProviderNetworkAgent
+                    ):
+                        with (
+                            redirect_stdout(StringIO()) as stdout,
+                            redirect_stderr(StringIO()) as stderr,
+                        ):
                             result = agent_cmd.cmd_agent(
                                 manifest,
                                 goal="Inspect this repo",
@@ -2112,7 +2519,9 @@ Inspect the repo.
         self.assertIn("Fatal stop: provider_network", stdout.getvalue())
         self.assertIn("Checkpoint saved:", stdout.getvalue())
 
-    def test_plan_execute_unsafe_strreplace_returns_nonzero_without_mutation(self) -> None:
+    def test_plan_execute_unsafe_strreplace_returns_nonzero_without_mutation(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-unsafe-strreplace-") as td:
             temp = Path(td)
             repo = temp / "demo-repo"
@@ -2141,13 +2550,23 @@ Attempt one unsafe replacement.
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
-            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
             with patch.dict(os.environ, env, clear=False):
                 with _cwd(repo):
-                    with patch("amof.orchestrator.runners.Agent", _FakeUnsafeStrReplaceAgent):
-                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                    with patch(
+                        "amof.orchestrator.runners.Agent", _FakeUnsafeStrReplaceAgent
+                    ):
+                        with (
+                            redirect_stdout(StringIO()) as stdout,
+                            redirect_stderr(StringIO()) as stderr,
+                        ):
                             result = agent_cmd.cmd_agent(
                                 manifest,
                                 goal="Add a section to README.md",
@@ -2201,13 +2620,23 @@ Run one worker subtask.
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
-            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
             with patch.dict(os.environ, env, clear=False):
                 with _cwd(repo):
-                    with patch("amof.orchestrator.runners.Agent", _FakeFailedSubtaskAgent):
-                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                    with patch(
+                        "amof.orchestrator.runners.Agent", _FakeFailedSubtaskAgent
+                    ):
+                        with (
+                            redirect_stdout(StringIO()) as stdout,
+                            redirect_stderr(StringIO()) as stderr,
+                        ):
                             result = agent_cmd.cmd_agent(
                                 manifest,
                                 goal="Run one worker subtask",
@@ -2229,11 +2658,28 @@ Run one worker subtask.
             repo = temp / "demo-repo"
             amof_home = temp / "amof-home"
             _init_git_repo(repo)
-            (repo / "app.py").write_text("def greet(name):\n    return f'Hello, {name}'\n", encoding="utf-8")
+            (repo / "app.py").write_text(
+                "def greet(name):\n    return f'Hello, {name}'\n", encoding="utf-8"
+            )
             (repo / "tests").mkdir()
-            (repo / "tests" / "test_app.py").write_text("def test_greet():\n    assert True\n", encoding="utf-8")
-            subprocess.run(["git", "add", "app.py", "tests/test_app.py"], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "commit", "-m", "test: add app files"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            (repo / "tests" / "test_app.py").write_text(
+                "def test_greet():\n    assert True\n", encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "add", "app.py", "tests/test_app.py"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test: add app files"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
             plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
             plan_file.parent.mkdir(parents=True, exist_ok=True)
             plan_file.write_text(
@@ -2256,13 +2702,21 @@ Add code and test.
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
-            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
             with patch.dict(os.environ, env, clear=False):
                 with _cwd(repo):
                     with patch("amof.orchestrator.runners.Agent", _FakeMutatingAgent):
-                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                        with (
+                            redirect_stdout(StringIO()) as stdout,
+                            redirect_stderr(StringIO()) as stderr,
+                        ):
                             result = agent_cmd.cmd_agent(
                                 manifest,
                                 goal="Add farewell(name) to app.py and a matching unittest in tests/test_app.py.",
@@ -2280,15 +2734,33 @@ Add code and test.
         self.assertIn("requested_paths_missing:tests/test_app.py", stdout.getvalue())
         self.assertNotIn("Execution readiness failed", stdout.getvalue())
 
-    def test_plan_execute_invalid_python_edit_returns_nonzero_with_compile_evidence(self) -> None:
+    def test_plan_execute_invalid_python_edit_returns_nonzero_with_compile_evidence(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-agent-invalid-python-") as td:
             temp = Path(td)
             repo = temp / "demo-repo"
             amof_home = temp / "amof-home"
             _init_git_repo(repo)
-            (repo / "app.py").write_text("def greet(name: str) -> str:\n    return f'Hello, {name}!'\n", encoding="utf-8")
-            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            (repo / "app.py").write_text(
+                "def greet(name: str) -> str:\n    return f'Hello, {name}!'\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "add", "app.py"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test: add app"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
             plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
             plan_file.parent.mkdir(parents=True, exist_ok=True)
             plan_file.write_text(
@@ -2311,13 +2783,23 @@ Add a function.
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
-            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
             with patch.dict(os.environ, env, clear=False):
                 with _cwd(repo):
-                    with patch("amof.orchestrator.runners.Agent", _FakeInvalidPythonEditAgent):
-                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                    with patch(
+                        "amof.orchestrator.runners.Agent", _FakeInvalidPythonEditAgent
+                    ):
+                        with (
+                            redirect_stdout(StringIO()) as stdout,
+                            redirect_stderr(StringIO()) as stderr,
+                        ):
                             result = agent_cmd.cmd_agent(
                                 manifest,
                                 goal="Add a farewell function to app.py",
@@ -2344,7 +2826,9 @@ Add a function.
         self.assertIn("py_compile:app.py", stdout.getvalue())
 
     def test_single_shot_provider_network_failure_returns_nonzero(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="amof-agent-single-provider-network-") as td:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-agent-single-provider-network-"
+        ) as td:
             temp = Path(td)
             repo = temp / "demo-repo"
             amof_home = temp / "amof-home"
@@ -2352,16 +2836,30 @@ Add a function.
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
-            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
             with patch.dict(os.environ, env, clear=False):
                 with _cwd(repo):
-                    with patch("amof.orchestrator.agent.Agent", _FakeProviderNetworkAgent):
+                    with patch(
+                        "amof.orchestrator.agent.Agent", _FakeProviderNetworkAgent
+                    ):
                         import amof.orchestrator.memory as memory
 
-                        with patch.object(memory, "VectorStore", side_effect=ImportError("chromadb missing")):
-                            with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                        with patch.object(
+                            memory,
+                            "VectorStore",
+                            side_effect=ImportError("chromadb missing"),
+                        ):
+                            with (
+                                redirect_stdout(StringIO()) as stdout,
+                                redirect_stderr(StringIO()) as stderr,
+                            ):
                                 result = agent_cmd.cmd_agent(
                                     manifest,
                                     goal="Inspect this repo",
@@ -2380,9 +2878,25 @@ Add a function.
             repo = temp / "demo-repo"
             amof_home = temp / "amof-home"
             _init_git_repo(repo)
-            (repo / "app.py").write_text("def greet(name: str) -> str:\n    return f'Hello, {name}!'\n", encoding="utf-8")
-            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
-            subprocess.run(["git", "commit", "-m", "test: add app"], cwd=repo, check=True, capture_output=True, text=True, env=_commit_env())
+            (repo / "app.py").write_text(
+                "def greet(name: str) -> str:\n    return f'Hello, {name}!'\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "add", "app.py"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test: add app"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
             plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
             plan_file.parent.mkdir(parents=True, exist_ok=True)
             plan_file.write_text(
@@ -2405,13 +2919,21 @@ Add a function.
             manifest = {
                 "ecosystem": "demo-repo",
                 "manifest_source": "appdata",
-                "repos": [{"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}],
+                "repos": [
+                    {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+                ],
             }
-            env = {"AMOF_HOME": str(amof_home), "OPENROUTER_API_KEY": "unit-test-provider-value"}
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
             with patch.dict(os.environ, env, clear=False):
                 with _cwd(repo):
                     with patch("amof.orchestrator.runners.Agent", _FakeMutatingAgent):
-                        with redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr:
+                        with (
+                            redirect_stdout(StringIO()) as stdout,
+                            redirect_stderr(StringIO()) as stderr,
+                        ):
                             result = agent_cmd.cmd_agent(
                                 manifest,
                                 goal="Add a farewell function",
@@ -2437,7 +2959,9 @@ Add a function.
                 capture_output=True,
                 text=True,
             ).stdout
-            journal_files = list((amof_home / "share" / "journals" / "demo-repo").glob("*.md"))
+            journal_files = list(
+                (amof_home / "share" / "journals" / "demo-repo").glob("*.md")
+            )
             event_files = list((amof_home / "share" / "runs").glob("*/events.jsonl"))
 
         self.assertEqual(result, 0, stderr.getvalue())
@@ -2451,7 +2975,9 @@ Add a function.
         self.assertTrue(journal_files)
         self.assertTrue(event_files)
 
-    def test_plan_execute_missing_runner_factory_fails_clearly_before_execution(self) -> None:
+    def test_plan_execute_missing_runner_factory_fails_clearly_before_execution(
+        self,
+    ) -> None:
         from amof.orchestrator.planner import ExecutionPlan, Subtask
 
         plan = ExecutionPlan(
@@ -2472,7 +2998,11 @@ Add a function.
         factory = _RecordingRunnerFactory()
         plan = ExecutionPlan(
             analysis="insert exact text",
-            subtasks=[Subtask(id="1", title="Edit docs", description="Edit docs", runner="code")],
+            subtasks=[
+                Subtask(
+                    id="1", title="Edit docs", description="Edit docs", runner="code"
+                )
+            ],
             execution_order=["1"],
         )
 
@@ -2498,7 +3028,9 @@ Add a function.
             )
 
             self.assertIsNone(guardrails.check_write(str(repo / "app.py")))
-            self.assertIn("outside writable roots", guardrails.check_write(str(outside)))
+            self.assertIn(
+                "outside writable roots", guardrails.check_write(str(outside))
+            )
 
     def test_interactive_exit_alias_exits_without_llm_task(self) -> None:
         from amof.orchestrator.events import EventLog
@@ -2523,7 +3055,9 @@ Add a function.
                             session=Session(mode="build"),
                             telemetry=SessionTelemetry(),
                             events=EventLog(),
-                            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+                            guardrails=Guardrails(
+                                config=GuardrailConfig.public_defaults()
+                            ),
                             workspace_root=repo,
                             manifest=manifest,
                             codebase_context="",
@@ -2578,7 +3112,9 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
         from amof.orchestrator.executor import SubtaskExecutor
 
         plan = self._five_subtask_plan()
-        factory = _SequentialRunnerFactory([(False, "cost_exceeded")] + [(True, "completed")] * 4)
+        factory = _SequentialRunnerFactory(
+            [(False, "cost_exceeded")] + [(True, "completed")] * 4
+        )
         SubtaskExecutor(runner_factory=factory).execute_plan(plan)
 
         self.assertEqual(factory.calls, 1)
@@ -2599,7 +3135,8 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as td:
             path = __import__(
-                "amof.orchestrator.plan_execute_control", fromlist=["save_plan_checkpoint"]
+                "amof.orchestrator.plan_execute_control",
+                fromlist=["save_plan_checkpoint"],
             ).save_plan_checkpoint(checkpoint, Path(td))
             self.assertTrue(path.exists())
 
@@ -2612,7 +3149,9 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
             "Requested capabilities ['secret'] are outside the trusted top-level task ceiling "
             "['network', 'read', 'write']."
         )
-        factory = _SequentialRunnerFactory([(False, denial)] + [(True, "completed")] * 4)
+        factory = _SequentialRunnerFactory(
+            [(False, denial)] + [(True, "completed")] * 4
+        )
         SubtaskExecutor(runner_factory=factory).execute_plan(plan)
 
         self.assertEqual(factory.calls, 1)
@@ -2630,7 +3169,9 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
         goal = "Trigger Jenkins with API token from .env and kubectl using kubeconfig"
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Preflight", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Preflight", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         trust = create_trust_state("verify Jenkins endpoint and read repository")
@@ -2669,7 +3210,9 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
         )
         self.assertFalse(result.ok)
         self.assertEqual(result.failure_type, "missing_required_tool")
-        self.assertTrue(any(i.kind in {"missing_tool", "missing_runner"} for i in result.issues))
+        self.assertTrue(
+            any(i.kind in {"missing_tool", "missing_runner"} for i in result.issues)
+        )
 
     def test_writable_root_denied_is_preflight_failure(self) -> None:
         from amof.orchestrator.plan_execute_control import assess_execution_readiness
@@ -2682,7 +3225,9 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
             goal = "Write report to /tmp/delivery-3663-matrix-reports/00-preflight.md"
             plan = ExecutionPlan(
                 analysis=goal,
-                subtasks=[Subtask(id="1", title="Report", description=goal, runner="code")],
+                subtasks=[
+                    Subtask(id="1", title="Report", description=goal, runner="code")
+                ],
                 execution_order=["1"],
             )
             trust = create_trust_state(goal)
@@ -2708,13 +3253,21 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
         plan = ExecutionPlan(
             analysis="optional preflight",
             subtasks=[
-                Subtask(id="1", title="Optional", description="x", runner="code", optional=True),
+                Subtask(
+                    id="1",
+                    title="Optional",
+                    description="x",
+                    runner="code",
+                    optional=True,
+                ),
                 Subtask(id="2", title="Main", description="y", runner="code"),
             ],
             execution_order=["1", "2"],
             continue_on_failure=True,
         )
-        factory = _SequentialRunnerFactory([(False, "tool_failed"), (True, "completed")])
+        factory = _SequentialRunnerFactory(
+            [(False, "tool_failed"), (True, "completed")]
+        )
         SubtaskExecutor(runner_factory=factory).execute_plan(plan)
 
         self.assertEqual(factory.calls, 2)
@@ -2727,7 +3280,9 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
 
         plan = self._five_subtask_plan()
         plan.continue_on_failure = True
-        factory = _SequentialRunnerFactory([(False, "cost_exceeded")] + [(True, "completed")] * 4)
+        factory = _SequentialRunnerFactory(
+            [(False, "cost_exceeded")] + [(True, "completed")] * 4
+        )
         SubtaskExecutor(runner_factory=factory).execute_plan(plan)
 
         self.assertEqual(factory.calls, 1)
@@ -2801,6 +3356,282 @@ class _StubRunnerFactory:
         return set(self._runners_tools.get(name, []))
 
 
+class AgentPlanExecuteEnvelopeTests(unittest.TestCase):
+    def _manifest(self, repo: Path) -> dict[str, object]:
+        return {
+            "ecosystem": "demo-repo",
+            "manifest_source": "appdata",
+            "repos": [
+                {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+            ],
+        }
+
+    def _write_plan(self, plan_file: Path, analysis: str, task_title: str) -> None:
+        plan_file.parent.mkdir(parents=True, exist_ok=True)
+        plan_file.write_text(
+            (
+                "# Execution Plan\n\n"
+                "**Status**: pending\n\n"
+                "## Analysis\n\n"
+                f"{analysis}\n\n"
+                "---\n\n"
+                "## Tasks\n\n"
+                f"- [ ] 1. **{task_title}** (code)\n"
+            ),
+            encoding="utf-8",
+        )
+
+    def _run_envelope(
+        self,
+        repo: Path,
+        amof_home: Path,
+        payload: dict[str, object],
+        *,
+        runner_agent: type[_FakeAgent],
+    ) -> agent_cmd.AgentPlanExecuteEnvelope:
+        from amof.orchestrator.planner import ExecutionPlan
+
+        manifest = self._manifest(repo)
+        env = {
+            "AMOF_HOME": str(amof_home),
+            "OPENROUTER_API_KEY": "unit-test-provider-value",
+        }
+        plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+        runner_agent.instances.clear()
+        with patch.dict(os.environ, env, clear=False):
+            with _cwd(repo):
+                with patch("amof.orchestrator.runners.Agent", runner_agent):
+                    with patch(
+                        "amof.orchestrator.planner.TaskPlanner.plan",
+                        return_value=ExecutionPlan.load_from_markdown(plan_file),
+                    ):
+                        return agent_cmd.run_agent_plan_execute_envelope(
+                            manifest, payload
+                        )
+
+    def test_successful_non_mutating_plan_execute_returns_valid_envelope(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-envelope-success-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            self._write_plan(
+                plan_file,
+                "Inspect the repository without mutating it.",
+                "Inspect the repo",
+            )
+
+            envelope = self._run_envelope(
+                repo,
+                amof_home,
+                {
+                    "goal": "Inspect this repo",
+                    "provider": "openrouter",
+                    "no_follow_up": True,
+                },
+                runner_agent=_FakeAgent,
+            )
+            event_exists = Path(envelope.event_log_path).is_file()
+            journal_exists = Path(envelope.journal_path).is_file()
+            generated_plan_exists = Path(envelope.plan_path).is_file()
+
+        self.assertEqual(envelope.status, "completed")
+        self.assertEqual(envelope.exit_code, 0)
+        self.assertEqual(envelope.session_id, Path(envelope.event_log_path).parent.name)
+        self.assertTrue(str(envelope.plan_path).endswith("inspect-this-repo.md"))
+        self.assertIsNone(envelope.checkpoint_path)
+        self.assertTrue(generated_plan_exists)
+        self.assertTrue(event_exists)
+        self.assertTrue(journal_exists)
+        self.assertEqual(envelope.stop_reason, "completed")
+
+    def test_readiness_capability_block_returns_structured_blocked_envelope(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-agent-envelope-capability-"
+        ) as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            self._write_plan(
+                plan_file,
+                "Read API token from .env and summarize the current configuration.",
+                "Inspect secret-backed config",
+            )
+
+            envelope = self._run_envelope(
+                repo,
+                amof_home,
+                {
+                    "goal": "Read API token from .env and summarize the current configuration",
+                    "provider": "openrouter",
+                    "no_follow_up": True,
+                },
+                runner_agent=_FakeAgent,
+            )
+            checkpoint_exists = Path(envelope.checkpoint_path).is_file()
+            event_exists = Path(envelope.event_log_path).is_file()
+
+        self.assertEqual(envelope.status, "blocked")
+        self.assertEqual(envelope.exit_code, 1)
+        self.assertIn(
+            envelope.stop_reason,
+            {
+                "missing_required_secret_access",
+                "capability_not_authorized_by_trusted_intent",
+            },
+        )
+        self.assertIn(
+            envelope.final_text,
+            {
+                "Capability elevation required but not approved.",
+                "Execution readiness failed",
+            },
+        )
+        self.assertTrue(checkpoint_exists)
+        self.assertTrue(event_exists)
+        self.assertIsNone(envelope.journal_path)
+
+    def test_writable_root_denial_returns_structured_blocked_envelope(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-agent-envelope-writable-root-"
+        ) as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            self._write_plan(
+                plan_file,
+                "Write a markdown report to /tmp/delivery-3663-matrix-reports/report.md.",
+                "Write governed report",
+            )
+
+            envelope = self._run_envelope(
+                repo,
+                amof_home,
+                {
+                    "goal": "Write a markdown report to /tmp/delivery-3663-matrix-reports/report.md",
+                    "provider": "openrouter",
+                    "no_follow_up": True,
+                },
+                runner_agent=_FakeAgent,
+            )
+            checkpoint_exists = Path(envelope.checkpoint_path).is_file()
+
+        self.assertEqual(envelope.status, "blocked")
+        self.assertEqual(envelope.stop_reason, "writable_root_denied")
+        self.assertTrue(checkpoint_exists)
+        self.assertIn("/tmp/delivery-3663-matrix-reports", envelope.final_text)
+
+    def test_budget_strict_preflight_block_returns_envelope_without_provider_execution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-envelope-budget-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            self._write_plan(plan_file, "Inspect the repository.", "Inspect the repo")
+
+            envelope = self._run_envelope(
+                repo,
+                amof_home,
+                {
+                    "goal": "Inspect this repo",
+                    "provider": "openrouter",
+                    "budget": 0.01,
+                    "budget_strict": True,
+                    "no_follow_up": True,
+                },
+                runner_agent=_FakeAgent,
+            )
+
+        self.assertEqual(envelope.status, "blocked")
+        self.assertEqual(envelope.stop_reason, "budget_preflight_blocked")
+        self.assertEqual(envelope.exit_code, 1)
+        self.assertIsNone(envelope.checkpoint_path)
+        self.assertIsNone(envelope.journal_path)
+        self.assertFalse(_FakeAgent.instances)
+        self.assertIn("--budget-strict", envelope.final_text)
+
+    def test_failed_subtask_returns_nonzero_structured_result(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-agent-envelope-failed-subtask-"
+        ) as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            self._write_plan(plan_file, "Run one worker subtask.", "Run worker")
+
+            envelope = self._run_envelope(
+                repo,
+                amof_home,
+                {
+                    "goal": "Run one worker subtask",
+                    "provider": "openrouter",
+                    "no_follow_up": True,
+                },
+                runner_agent=_FakeFailedSubtaskAgent,
+            )
+            checkpoint_exists = Path(envelope.checkpoint_path).is_file()
+            event_exists = Path(envelope.event_log_path).is_file()
+            journal_exists = Path(envelope.journal_path).is_file()
+
+        self.assertEqual(envelope.status, "failed")
+        self.assertEqual(envelope.exit_code, 1)
+        self.assertEqual(envelope.stop_reason, "max_iterations")
+        self.assertTrue(checkpoint_exists)
+        self.assertTrue(event_exists)
+        self.assertTrue(journal_exists)
+
+    def test_resume_plus_follow_up_preserves_session_identity(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-agent-envelope-resume-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            self._write_plan(plan_file, "Run one worker subtask.", "Run worker")
+
+            failed_envelope = self._run_envelope(
+                repo,
+                amof_home,
+                {
+                    "goal": "Run one worker subtask",
+                    "provider": "openrouter",
+                    "no_follow_up": True,
+                },
+                runner_agent=_FakeFailedSubtaskAgent,
+            )
+            resumed_envelope = self._run_envelope(
+                repo,
+                amof_home,
+                {
+                    "goal": "Run one worker subtask",
+                    "provider": "openrouter",
+                    "resume": failed_envelope.session_id,
+                    "follow_up": "Retry only the remaining subtask.",
+                    "no_follow_up": True,
+                },
+                runner_agent=_FakeAgent,
+            )
+            resumed_event_exists = Path(resumed_envelope.event_log_path).is_file()
+            resumed_journal_exists = Path(resumed_envelope.journal_path).is_file()
+
+        self.assertEqual(failed_envelope.session_id, resumed_envelope.session_id)
+        self.assertEqual(resumed_envelope.status, "completed")
+        self.assertTrue(resumed_event_exists)
+        self.assertTrue(resumed_journal_exists)
+
+
 class BudgetAliasCliTests(unittest.TestCase):
     def _parse(self, **kwargs):
         defaults = {
@@ -2865,12 +3696,16 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         )
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Jenkins", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         req = derive_tool_pack_requirements(goal, plan)
         self.assertIn("ops-jenkins", req.packs)
-        self.assertIn("/work/amof/scripts/tools/jenkins/trigger.sh", req.executable_paths)
+        self.assertIn(
+            "/work/amof/scripts/tools/jenkins/trigger.sh", req.executable_paths
+        )
 
     def test_kubectl_helm_kubeconfig_derives_ops_k8s(self) -> None:
         from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
@@ -2954,7 +3789,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         )
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Helpers", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Helpers", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         req = derive_tool_pack_requirements(goal, plan)
@@ -2976,7 +3813,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         goal = "Modify app.py and update tests"
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Edit code", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Edit code", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         req = derive_tool_pack_requirements(goal, plan)
@@ -2993,7 +3832,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
             goal = "Write report to /tmp/delivery-3663-matrix-reports/00-preflight.md"
             plan = ExecutionPlan(
                 analysis=goal,
-                subtasks=[Subtask(id="1", title="Report", description=goal, runner="code")],
+                subtasks=[
+                    Subtask(id="1", title="Report", description=goal, runner="code")
+                ],
                 execution_order=["1"],
             )
             trust = create_trust_state(goal)
@@ -3022,7 +3863,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         goal = "Trigger Jenkins job using /work/amof/scripts/tools/jenkins/trigger.sh"
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Jenkins", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         trust = create_trust_state("inspect repository and use Jenkins network")
@@ -3035,7 +3878,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
             guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
         )
         self.assertFalse(result.ok)
-        self.assertTrue(any(i.detail.get("pack") == "ops-jenkins" for i in result.issues))
+        self.assertTrue(
+            any(i.detail.get("pack") == "ops-jenkins" for i in result.issues)
+        )
 
     def test_approving_ops_jenkins_without_secret_still_blocks(self) -> None:
         from amof.orchestrator.plan_execute_control import assess_execution_readiness
@@ -3048,7 +3893,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         )
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Jenkins", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         trust = create_trust_state("inspect repository and use Jenkins network")
@@ -3074,7 +3921,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         )
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Jenkins", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         trust = create_trust_state(goal)
@@ -3163,7 +4012,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         )
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Jenkins", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         trust = create_trust_state(goal)
@@ -3186,7 +4037,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         goal = "Trigger Jenkins job with token from .env"
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Jenkins", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         trust = create_trust_state(goal)
@@ -3201,7 +4054,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         )
         self.assertFalse(result.ok)
         self.assertEqual(result.failure_type, "missing_required_tool")
-        self.assertTrue(any(i.kind == "missing_controlled_execution" for i in result.issues))
+        self.assertTrue(
+            any(i.kind == "missing_controlled_execution" for i in result.issues)
+        )
 
     def test_approved_secret_effective_ceiling_not_missing(self) -> None:
         from amof.orchestrator.plan_execute_control import (
@@ -3232,9 +4087,13 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         self.assertIn("secret", summary.detail["approved_capabilities"])
         self.assertIn("secret", summary.detail["effective_ceiling"])
         self.assertEqual(summary.detail["status"], "approved")
-        self.assertNotIn("Required capability: secret", format_readiness_failure(result))
+        self.assertNotIn(
+            "Required capability: secret", format_readiness_failure(result)
+        )
 
-    def test_tool_pack_approval_without_constrained_command_fails_precisely(self) -> None:
+    def test_tool_pack_approval_without_constrained_command_fails_precisely(
+        self,
+    ) -> None:
         from amof.orchestrator.plan_execute_control import (
             assess_execution_readiness,
             format_readiness_failure,
@@ -3245,7 +4104,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         goal = "Trigger Jenkins job with token from .env using bash -c deploy"
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Jenkins", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         trust = create_trust_state(goal)
@@ -3261,8 +4122,12 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
             base_capability_ceiling=set(trust.trusted_intent_caps),
         )
         self.assertFalse(result.ok)
-        issue = next(i for i in result.issues if i.kind == "missing_controlled_execution")
-        self.assertIn("unbounded shell", issue.detail["synthesized_runner"]["policy_reason"])
+        issue = next(
+            i for i in result.issues if i.kind == "missing_controlled_execution"
+        )
+        self.assertIn(
+            "unbounded shell", issue.detail["synthesized_runner"]["policy_reason"]
+        )
         self.assertIn("Policy:", format_readiness_failure(result))
 
     def test_approved_tool_pack_with_controlled_shell_runner_passes(self) -> None:
@@ -3276,7 +4141,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         )
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Jenkins", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         trust = create_trust_state(goal)
@@ -3317,7 +4184,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
             base_capability_ceiling=set(trust.trusted_intent_caps),
         )
         self.assertFalse(result.ok)
-        self.assertTrue(any(i.kind == "missing_controlled_execution" for i in result.issues))
+        self.assertTrue(
+            any(i.kind == "missing_controlled_execution" for i in result.issues)
+        )
 
     def test_ops_jenkins_permits_only_trigger_helper_shape(self) -> None:
         from amof.orchestrator.plan_execute_control import assess_execution_readiness
@@ -3327,7 +4196,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         goal = "Trigger Jenkins with token from .env using /tmp/deploy.sh"
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Jenkins", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         trust = create_trust_state(goal)
@@ -3343,7 +4214,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
             base_capability_ceiling=set(trust.trusted_intent_caps),
         )
         self.assertFalse(result.ok)
-        issue = next(i for i in result.issues if i.kind == "missing_controlled_execution")
+        issue = next(
+            i for i in result.issues if i.kind == "missing_controlled_execution"
+        )
         self.assertIn("trigger.sh", issue.detail["synthesized_runner"]["policy_reason"])
 
     def test_ops_k8s_permits_namespace_scoped_inspection(self) -> None:
@@ -3379,7 +4252,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         goal = "Use kubeconfig to helm upgrade --install my-release chart/ -n mis"
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Helm deploy", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Helm deploy", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         trust = create_trust_state(goal)
@@ -3407,7 +4282,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         goal = "Trigger Jenkins using secret token (value is not included)"
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Jenkins", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         apply_tool_pack_approval(plan, {"ops-jenkins"})
@@ -3435,7 +4312,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
             goal = f"Write report to {report_root}/00-preflight.md"
             plan = ExecutionPlan(
                 analysis=goal,
-                subtasks=[Subtask(id="1", title="Report", description=goal, runner="code")],
+                subtasks=[
+                    Subtask(id="1", title="Report", description=goal, runner="code")
+                ],
                 execution_order=["1"],
             )
             trust = create_trust_state(goal)
@@ -3458,7 +4337,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
             goal2 = f"Write report to {other}/bad.md"
             plan2 = ExecutionPlan(
                 analysis=goal2,
-                subtasks=[Subtask(id="1", title="Report", description=goal2, runner="code")],
+                subtasks=[
+                    Subtask(id="1", title="Report", description=goal2, runner="code")
+                ],
                 execution_order=["1"],
             )
             denied = assess_execution_readiness(
@@ -3515,7 +4396,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         goal = "Read JENKINS_TOKEN from .env and run trigger.sh via shell"
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Preflight", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Preflight", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         trust = create_trust_state("inspect repository")
@@ -3554,7 +4437,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         goal = "Trigger Jenkins job with token from .env"
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Jenkins", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Jenkins", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         trust = create_trust_state(goal)
@@ -3577,7 +4462,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
             approved_tool_packs={"ops-jenkins"},
         )
         self.assertFalse(result.ok)
-        self.assertTrue(any(i.kind == "missing_controlled_execution" for i in result.issues))
+        self.assertTrue(
+            any(i.kind == "missing_controlled_execution" for i in result.issues)
+        )
 
     def test_delivery3663_tool_pack_inference(self) -> None:
         from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
@@ -3592,7 +4479,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         )
         plan = ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Delivery", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Delivery", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
         req = derive_tool_pack_requirements(goal, plan)
@@ -3631,7 +4520,9 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
             )
             plan = ExecutionPlan(
                 analysis=goal,
-                subtasks=[Subtask(id="1", title="Run", description=goal, runner="code")],
+                subtasks=[
+                    Subtask(id="1", title="Run", description=goal, runner="code")
+                ],
                 execution_order=["1"],
             )
             trust = create_trust_state(goal)
@@ -3660,7 +4551,9 @@ class PlanCapabilityElevationTests(unittest.TestCase):
 
         return ExecutionPlan(
             analysis=goal,
-            subtasks=[Subtask(id="1", title="Preflight", description=goal, runner="code")],
+            subtasks=[
+                Subtask(id="1", title="Preflight", description=goal, runner="code")
+            ],
             execution_order=["1"],
         )
 
@@ -3783,7 +4676,10 @@ class PlanCapabilityElevationTests(unittest.TestCase):
         self.assertNotIn("super-secret-value", json_mod.dumps(payload))
 
     def test_global_trust_ceiling_unchanged_for_new_session(self) -> None:
-        from amof.orchestrator.plan_execute_control import apply_capability_elevation, build_plan_capability_elevation
+        from amof.orchestrator.plan_execute_control import (
+            apply_capability_elevation,
+            build_plan_capability_elevation,
+        )
         from amof.orchestrator.trust_boundary import create_trust_state
 
         goal = "Read JENKINS_TOKEN from .env"
@@ -3842,9 +4738,14 @@ class ResumeFollowupAndBudgetTests(unittest.TestCase):
         return plan
 
     def test_resume_accepts_inline_followup(self) -> None:
-        from amof.orchestrator.resume_control import append_followup_to_context, load_resume_followup
+        from amof.orchestrator.resume_control import (
+            append_followup_to_context,
+            load_resume_followup,
+        )
 
-        followup, err = load_resume_followup(inline="Retry only failed preflight.", file_path=None)
+        followup, err = load_resume_followup(
+            inline="Retry only failed preflight.", file_path=None
+        )
         self.assertIsNone(err)
         ctx = append_followup_to_context("original goal unchanged", followup)
         self.assertIn("original goal unchanged", ctx)
@@ -3883,7 +4784,10 @@ class ResumeFollowupAndBudgetTests(unittest.TestCase):
         self.assertIn("not found", err or "")
 
     def test_resume_followup_does_not_reset_checkpoint(self) -> None:
-        from amof.orchestrator.resume_control import append_followup_to_context, prepare_plan_for_resume
+        from amof.orchestrator.resume_control import (
+            append_followup_to_context,
+            prepare_plan_for_resume,
+        )
 
         plan = self._plan_with_completed_first()
         checkpoint = {
@@ -3930,8 +4834,11 @@ class ResumeFollowupAndBudgetTests(unittest.TestCase):
                 parse_positive_budget(bad, flag="--budget")
 
     def test_budget_strict_blocks_over_budget_plan_before_provider_call(self) -> None:
-        from amof.orchestrator.resume_control import BudgetOptions, check_budget_before_execution
         from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.resume_control import (
+            BudgetOptions,
+            check_budget_before_execution,
+        )
         from amof.orchestrator.telemetry import SessionTelemetry
 
         plan = ExecutionPlan(
@@ -3942,9 +4849,7 @@ class ResumeFollowupAndBudgetTests(unittest.TestCase):
         telemetry = SessionTelemetry(max_cost=0.01)
         telemetry._restored_cost = 0.009
         opts = BudgetOptions(budget_strict=True)
-        msg = check_budget_before_execution(
-            telemetry, plan, opts, noninteractive=True
-        )
+        msg = check_budget_before_execution(telemetry, plan, opts, noninteractive=True)
         self.assertIsNotNone(msg)
         self.assertIn("budget", msg.lower())
 
@@ -3976,7 +4881,10 @@ class ResumeFollowupAndBudgetTests(unittest.TestCase):
             build_plan_capability_elevation,
             parse_capability_names,
         )
-        from amof.orchestrator.resume_control import append_followup_to_context, load_resume_followup
+        from amof.orchestrator.resume_control import (
+            append_followup_to_context,
+            load_resume_followup,
+        )
         from amof.orchestrator.trust_boundary import create_trust_state
 
         caps = parse_capability_names(["secret"])
