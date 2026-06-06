@@ -177,7 +177,7 @@ def parse_args() -> argparse.Namespace:
 
     handoff_parser = subparsers.add_parser(
         "handoff",
-        help="Prepare one bounded local outbox handoff packet",
+        help="Prepare and explicitly dispatch bounded local handoff packets",
     )
     handoff_sub = handoff_parser.add_subparsers(dest="handoff_cmd", required=True)
     handoff_prepare = handoff_sub.add_parser(
@@ -211,6 +211,87 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Explicitly confirm writing one prepared packet to the local AMOF outbox",
+    )
+    handoff_execute_agent = handoff_sub.add_parser(
+        "execute-agent",
+        help="Preview and explicitly dispatch one prepared AMOF-Agent-targeted packet through governed plan-execute",
+    )
+    handoff_execute_agent.add_argument(
+        "--handoff-id",
+        required=True,
+        help="Prepared handoff identifier to execute from the canonical AMOF outbox",
+    )
+    handoff_execute_agent.add_argument(
+        "--preview",
+        action="store_true",
+        default=False,
+        help="Show stderr preview before optional governed execution (preview is always shown before --confirm executes)",
+    )
+    handoff_execute_agent.add_argument(
+        "--confirm",
+        action="store_true",
+        default=False,
+        help="Explicitly confirm governed execution of the selected handoff packet",
+    )
+    handoff_execute_agent.add_argument(
+        "--provider",
+        choices=["anthropic", "openai", "openrouter", "bedrock", "remote-ial"],
+        default=None,
+        help="Optional canonical provider override for the governed external request surface",
+    )
+    handoff_execute_agent.add_argument(
+        "--model",
+        default=None,
+        help="Optional canonical model override for the governed external request surface",
+    )
+    handoff_execute_agent.add_argument(
+        "--planner-model",
+        default=None,
+        help="Optional canonical planner model override for the governed external request surface",
+    )
+    handoff_execute_agent.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="Optional canonical total budget for the governed external request surface",
+    )
+    handoff_execute_agent.add_argument(
+        "--budget-strict",
+        action="store_true",
+        default=False,
+        help="Use canonical strict budget preflight on the governed external request surface",
+    )
+    handoff_execute_agent.add_argument(
+        "--subtask-budget",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="Optional canonical subtask budget for the governed external request surface",
+    )
+    handoff_execute_agent.add_argument(
+        "--approve-capabilities",
+        dest="approve_capabilities",
+        action="append",
+        default=None,
+        metavar="CAP",
+        help="Optional canonical capability approvals for the governed external request surface",
+    )
+    handoff_execute_agent.add_argument(
+        "--approve-tool-pack",
+        dest="approve_tool_packs",
+        action="append",
+        default=None,
+        metavar="PACK",
+        help="Optional canonical tool-pack approvals for the governed external request surface",
+    )
+    handoff_execute_agent.add_argument(
+        "--approve-writable-root",
+        dest="approve_writable_roots",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="Optional canonical writable-root approvals for the governed external request surface",
     )
 
     # Repo management command
