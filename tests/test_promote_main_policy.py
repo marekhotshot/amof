@@ -4,15 +4,20 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from amof.commands.promote_main import (
+    PromoteMainInput,
     _forbidden_code_delta_files,
     _name_status_diff,
+    _load_private_promotion_target,
+    _private_promotion_policy_path,
     _stale_base_overlap_details,
+    plan_promote_main_dry_run,
 )
 
 
@@ -47,7 +52,134 @@ def _write(repo: Path, relative_path: str, content: str) -> None:
     target.write_text(content, encoding="utf-8")
 
 
+def _write_private_policy(workspace_root: Path, content: str) -> Path:
+    policy_path = workspace_root / ".amof-local" / "promotion-targets.yaml"
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text(content, encoding="utf-8")
+    return policy_path
+
+
 class PromoteMainPolicyTests(unittest.TestCase):
+    def test_private_policy_path_is_exact_workspace_location(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-promote-policy-path-") as td:
+            workspace_root = Path(td) / "workspace"
+            workspace_root.mkdir(parents=True, exist_ok=True)
+            expected = (workspace_root / ".amof-local" / "promotion-targets.yaml").resolve(strict=False)
+
+            self.assertEqual(_private_promotion_policy_path(workspace_root), expected)
+
+    def test_private_policy_does_not_use_ancestor_discovery(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-promote-policy-ancestor-") as td:
+            root = Path(td)
+            child_workspace = root / "receipts" / "promote-main" / "TICKET"
+            child_workspace.mkdir(parents=True, exist_ok=True)
+            parent_policy = root / ".amof-local" / "promotion-targets.yaml"
+            parent_policy.parent.mkdir(parents=True, exist_ok=True)
+            parent_policy.write_text(
+                "version: 1\n"
+                "targets:\n"
+                "  amof-private:\n"
+                "    path: repos/amof-private\n"
+                "    remote: https://example.test/amof-private.git\n"
+                "    branch: main\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, str(child_workspace / ".amof-local" / "promotion-targets.yaml")):
+                _load_private_promotion_target(child_workspace)
+
+    def test_private_policy_rejects_arbitrary_target_names_even_when_present(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-promote-policy-extra-targets-") as td:
+            workspace_root = Path(td)
+            _write_private_policy(
+                workspace_root,
+                "version: 1\n"
+                "targets:\n"
+                "  amof-private:\n"
+                "    path: repos/amof-private\n"
+                "    remote: https://example.test/amof-private.git\n"
+                "    branch: main\n"
+                "  arbitrary-repo:\n"
+                "    path: repos/arbitrary-repo\n"
+                "    remote: https://example.test/arbitrary-repo.git\n"
+                "    branch: main\n",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "unexpected targets: arbitrary-repo"):
+                _load_private_promotion_target(workspace_root)
+
+    def test_private_policy_rejects_lexical_path_escape(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-promote-policy-escape-") as td:
+            workspace_root = Path(td) / "workspace"
+            workspace_root.mkdir(parents=True, exist_ok=True)
+            _write_private_policy(
+                workspace_root,
+                "version: 1\n"
+                "targets:\n"
+                "  amof-private:\n"
+                "    path: ../outside/amof-private\n"
+                "    remote: https://example.test/amof-private.git\n"
+                "    branch: main\n",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "escapes the resolved workspace root"):
+                _load_private_promotion_target(workspace_root)
+
+    def test_private_policy_rejects_symlink_escape(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-promote-policy-symlink-") as td:
+            root = Path(td)
+            workspace_root = root / "workspace"
+            workspace_root.mkdir(parents=True, exist_ok=True)
+            outside_repo = root / "outside" / "amof-private"
+            outside_repo.mkdir(parents=True, exist_ok=True)
+            symlink_path = workspace_root / "linked-private"
+            symlink_path.symlink_to(outside_repo, target_is_directory=True)
+            _write_private_policy(
+                workspace_root,
+                "version: 1\n"
+                "targets:\n"
+                "  amof-private:\n"
+                "    path: linked-private\n"
+                "    remote: https://example.test/amof-private.git\n"
+                "    branch: main\n",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "escapes the resolved workspace root"):
+                _load_private_promotion_target(workspace_root)
+
+    def test_plan_promote_main_does_not_fetch_when_private_policy_validation_fails(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-promote-policy-no-fetch-") as td:
+            workspace_root = Path(td)
+            _write_private_policy(
+                workspace_root,
+                "version: 1\n"
+                "targets:\n"
+                "  amof-private:\n"
+                "    path: ../outside/amof-private\n"
+                "    remote: https://example.test/amof-private.git\n"
+                "    branch: main\n",
+            )
+            bundle = PromoteMainInput(
+                repo="amof-private",
+                ticket_id="AMOF-PROMOTE-MAIN-PRIVATE-REPO-001",
+                candidate_branch="ticket/AMOF-PROMOTE-MAIN-PRIVATE-REPO-001-promote-main-private-repo",
+                source_sha="1111111111111111111111111111111111111111",
+                gitops_commit_sha=None,
+                expected_main_sha="2222222222222222222222222222222222222222",
+                promotion_reason="policy validation should fail before fetch",
+                dry_run=True,
+            )
+
+            with mock.patch("amof.commands.promote_main._fetch_origin_main") as fetch_origin_main:
+                with self.assertRaisesRegex(RuntimeError, "escapes the resolved workspace root"):
+                    plan_promote_main_dry_run(
+                        {"repos": []},
+                        bundle,
+                        ecosystem=None,
+                        workspace_root=workspace_root,
+                    )
+                fetch_origin_main.assert_not_called()
+
     def test_deleting_forbidden_tgz_path_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-promote-policy-delete-") as td:
             repo = Path(td)

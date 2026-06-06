@@ -37,6 +37,7 @@ PROMOTION_ID_BYTES = 8
 MAIN_PUSH_BYPASS_ENV = "AMOF_ALLOW_MAIN_PUSH"
 PROMOTION_SUBJECT_PREFIX = "chore(promote-main): promote "
 NO_GITOPS_SHA = "<none>"
+PRIVATE_PROMOTION_POLICY_RELATIVE_PATH = Path(".amof-local") / "promotion-targets.yaml"
 GITHUB_AUTH_SCOPE_HINT = (
     "Set GITHUB_TOKEN (classic: repo; fine-grained: Contents read/write) "
     "or configure a non-interactive git credential.helper."
@@ -92,6 +93,7 @@ class PromoteMainPlan:
     failure_reason: str | None = None
     failure_classification: str | None = None
     legacy_numeric_fallback_used: bool = False
+    promotion_target_policy_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -116,6 +118,14 @@ class PromoteMainRevertResult:
     lock_status: str
     lock_final_status: str
     failure_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class PromotionTarget:
+    repo_name: str
+    repo_path: Path
+    expected_remote: str | None = None
+    policy_path: Path | None = None
 
 
 class PromotionLockError(RuntimeError):
@@ -323,6 +333,105 @@ def _display_path(path: Path, *, workspace_root: Path) -> str:
     if _is_within_path(resolved, base):
         return str(resolved.relative_to(base))
     return str(resolved)
+
+
+def _private_promotion_policy_path(workspace_root: Path) -> Path:
+    return (workspace_root / PRIVATE_PROMOTION_POLICY_RELATIVE_PATH).resolve(strict=False)
+
+
+def _load_private_promotion_target(workspace_root: Path) -> PromotionTarget:
+    policy_path = _private_promotion_policy_path(workspace_root)
+    if not policy_path.exists():
+        raise RuntimeError(f"required private promotion policy missing: {policy_path}")
+    if not policy_path.is_file():
+        raise RuntimeError(f"private promotion policy is not a file: {policy_path}")
+
+    try:
+        payload = simple_parse_yaml(policy_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"failed to read private promotion policy {policy_path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"private promotion policy must be an object: {policy_path}")
+
+    version = payload.get("version")
+    if version != 1:
+        raise RuntimeError(f"private promotion policy {policy_path} must declare version: 1")
+
+    targets = _require_mapping(payload.get("targets"), field_name="promotion_target_policy.targets")
+    unexpected_targets = sorted(str(name).strip() for name in targets if str(name).strip() != "amof-private")
+    if unexpected_targets:
+        raise RuntimeError(
+            "private promotion policy may authorize only amof-private; "
+            f"unexpected targets: {', '.join(unexpected_targets)}"
+        )
+
+    entry = _require_mapping(
+        targets.get("amof-private"),
+        field_name="promotion_target_policy.targets.amof-private",
+    )
+    path_text = _require_non_empty_string(
+        entry.get("path"),
+        field_name="promotion_target_policy.targets.amof-private.path",
+    )
+    relative_path = Path(path_text)
+    if relative_path.is_absolute():
+        raise RuntimeError("private promotion target path must be workspace-relative")
+
+    resolved_workspace_root = workspace_root.resolve(strict=False)
+    resolved_repo_path = (resolved_workspace_root / relative_path).resolve(strict=False)
+    if not _is_within_path(resolved_repo_path, resolved_workspace_root):
+        raise RuntimeError(
+            "private promotion target path escapes the resolved workspace root: "
+            f"{resolved_repo_path}"
+        )
+
+    expected_remote = _require_non_empty_string(
+        entry.get("remote"),
+        field_name="promotion_target_policy.targets.amof-private.remote",
+    )
+    target_branch = _require_non_empty_string(
+        entry.get("branch"),
+        field_name="promotion_target_policy.targets.amof-private.branch",
+    )
+    if target_branch != "main":
+        raise RuntimeError("private promotion target branch must be exactly 'main'")
+
+    return PromotionTarget(
+        repo_name="amof-private",
+        repo_path=resolved_repo_path,
+        expected_remote=expected_remote,
+        policy_path=policy_path,
+    )
+
+
+def _resolve_promote_main_target(
+    manifest: dict[str, Any],
+    workspace_root: Path,
+    repo_name: str,
+) -> PromotionTarget:
+    normalized_repo_name = str(repo_name or "").strip()
+    if normalized_repo_name == "amof":
+        return PromotionTarget(
+            repo_name="amof",
+            repo_path=_resolve_repo_path(manifest, workspace_root, normalized_repo_name),
+        )
+    if normalized_repo_name == "amof-private":
+        return _load_private_promotion_target(workspace_root)
+    raise RuntimeError(f"repo {normalized_repo_name} is not an allowed promote-main target")
+
+
+def _validate_target_remote(target: PromotionTarget, *, workspace_root: Path) -> None:
+    if not target.expected_remote:
+        return
+    env = _git_env_with_credentials(workspace_root)
+    actual_remote = _origin_remote_url(target.repo_path, env)
+    if not actual_remote:
+        raise RuntimeError(f"{target.repo_name} must define an origin remote")
+    if actual_remote != target.expected_remote:
+        raise RuntimeError(
+            f"{target.repo_name} origin remote mismatch: expected {target.expected_remote}; "
+            f"got {actual_remote}"
+        )
 
 
 def _ensure_evidence_path_allowed(path: Path, *, repo_path: Path, workspace_root: Path) -> None:
@@ -1147,7 +1256,8 @@ def plan_promote_main_dry_run(
     workspace_root: Path | None = None,
 ) -> PromoteMainPlan:
     workspace_root = (workspace_root or resolve_workspace_root()).resolve()
-    repo_path = _resolve_repo_path(manifest, workspace_root, bundle.repo)
+    target = _resolve_promote_main_target(manifest, workspace_root, bundle.repo)
+    repo_path = target.repo_path
     if not repo_path.exists():
         raise RuntimeError(f"repo path does not exist: {repo_path}")
 
@@ -1200,6 +1310,9 @@ def plan_promote_main_dry_run(
     code_delta_files: list[str] = []
     env_delta_files: list[str] = []
     synthetic_tree_sha: str | None = None
+    promotion_target_policy_path = (
+        str(target.policy_path.resolve(strict=False)) if target.policy_path is not None else None
+    )
     synthetic_commit_message = _synthetic_commit_message(
         PromoteMainInput(
             repo=bundle.repo,
@@ -1233,6 +1346,12 @@ def plan_promote_main_dry_run(
 
     try:
         with PromotionLock(lock_path, lock_payload):
+            if rejection_reason is None:
+                try:
+                    _validate_target_remote(target, workspace_root=workspace_root)
+                except RuntimeError as exc:
+                    rejection_reason = str(exc)
+
             if not _branch_exists(repo_path, bundle.candidate_branch):
                 rejection_reason = f"candidate branch {bundle.candidate_branch} does not exist"
             else:
@@ -1400,6 +1519,7 @@ def plan_promote_main_dry_run(
                 rejection_reason=rejection_reason,
                 failure_classification=failure_classification,
                 legacy_numeric_fallback_used=legacy_numeric_fallback_used,
+                promotion_target_policy_path=promotion_target_policy_path,
             )
     except PromotionLockError as exc:
         plan = PromoteMainPlan(
@@ -1428,6 +1548,7 @@ def plan_promote_main_dry_run(
             rejection_reason=str(exc),
             failure_classification=None,
             legacy_numeric_fallback_used=legacy_numeric_fallback_used,
+            promotion_target_policy_path=promotion_target_policy_path,
         )
 
     lock_final_status = "released" if plan.lock_status == "acquired" else plan.lock_final_status
@@ -1456,6 +1577,8 @@ def _print_plan(plan: PromoteMainPlan) -> None:
     print(f"  Bundle ID: {plan.bundle_id[:16]}")
     print(f"  Lock: {plan.lock_path} ({plan.lock_status} -> {plan.lock_final_status})")
     print(f"  Audit record: {plan.audit_record_path}")
+    if plan.promotion_target_policy_path:
+        print(f"  Promotion target policy: {plan.promotion_target_policy_path}")
     if plan.already_promoted_commit_sha:
         print(f"  Already promoted commit: {plan.already_promoted_commit_sha}")
     if plan.rejection_reason:
@@ -1901,6 +2024,9 @@ def cmd_promote_main(manifest: dict[str, Any], args: Any, ecosystem: str | None 
 
 def cmd_promote_main_revert(manifest: dict[str, Any], args: Any, ecosystem: str | None = None) -> int:
     """Revert one AMOF synthetic promotion commit on main."""
+    if str(getattr(args, "repo", "") or "").strip() == "amof-private":
+        sys.stderr.write("[promote-main-revert] amof-private is not supported by this revert path.\n")
+        return 1
     if not ecosystem:
         sys.stderr.write("[promote-main-revert] Ecosystem could not be resolved.\n")
         return 1

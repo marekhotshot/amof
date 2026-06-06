@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -44,6 +45,21 @@ def _git(repo: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
+def _write_private_policy(workspace_root: Path, *, remote_url: str) -> Path:
+    policy_path = workspace_root / ".amof-local" / "promotion-targets.yaml"
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text(
+        "version: 1\n"
+        "targets:\n"
+        "  amof-private:\n"
+        "    path: repos/amof-private\n"
+        f"    remote: {remote_url}\n"
+        "    branch: main\n",
+        encoding="utf-8",
+    )
+    return policy_path
+
+
 class PromoteMainLinkageTests(unittest.TestCase):
     def _prepare_workspace(self) -> tuple[Path, Path, str, str]:
         temp_root = Path(tempfile.mkdtemp(prefix="amof-promote-linkage-"))
@@ -72,6 +88,35 @@ class PromoteMainLinkageTests(unittest.TestCase):
         source_sha = _git(repo, "rev-parse", "HEAD")
 
         return temp_root, repo, source_sha, expected_main_sha
+
+    def _prepare_private_workspace(self) -> tuple[Path, Path, str, str, str, Path]:
+        temp_root = Path(tempfile.mkdtemp(prefix="amof-promote-private-linkage-"))
+        remote = temp_root / "remote-private.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+
+        seed = temp_root / "seed-private"
+        subprocess.run(["git", "init", "-b", "main", str(seed)], check=True, capture_output=True, text=True)
+        (seed / "README.md").write_text("# private base\n", encoding="utf-8")
+        _git(seed, "add", "README.md")
+        _git(seed, "commit", "-m", "private base")
+        _git(seed, "remote", "add", "origin", str(remote))
+        _git(seed, "push", "-u", "origin", "main")
+
+        repo = temp_root / "repos" / "amof-private"
+        repo.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "clone", str(remote), str(repo)], check=True, capture_output=True, text=True)
+        _git(repo, "fetch", "origin", "main")
+        expected_main_sha = _git(repo, "rev-parse", "origin/main")
+
+        branch = "ticket/AMOF-PRIVATE-IAL-INTAKE-CONTRACT-RECOVERY-001-private-ial-intake-contract-recovery"
+        _git(repo, "checkout", "-b", branch)
+        (repo / "README.md").write_text("# private changed\n", encoding="utf-8")
+        _git(repo, "add", "README.md")
+        _git(repo, "commit", "-m", "private change for promote-main")
+        source_sha = _git(repo, "rev-parse", "HEAD")
+        policy_path = _write_private_policy(temp_root, remote_url=str(remote))
+
+        return temp_root, repo, branch, source_sha, expected_main_sha, policy_path
 
     def _prepare_stale_base_workspace(self, *, overlapping: bool) -> tuple[Path, str, str, str]:
         temp_root = Path(tempfile.mkdtemp(prefix="amof-promote-linkage-stale-"))
@@ -190,6 +235,34 @@ class PromoteMainLinkageTests(unittest.TestCase):
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
 
+    def test_plan_promote_main_private_dry_run_succeeds_and_audit_records_policy_path(self) -> None:
+        temp_root, _repo, branch, source_sha, expected_main_sha, policy_path = self._prepare_private_workspace()
+        try:
+            bundle = PromoteMainInput(
+                repo="amof-private",
+                ticket_id="AMOF-PRIVATE-IAL-INTAKE-CONTRACT-RECOVERY-001",
+                candidate_branch=branch,
+                source_sha=source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=expected_main_sha,
+                promotion_reason="test private dry-run with deterministic policy",
+                dry_run=True,
+            )
+            plan = plan_promote_main_dry_run(
+                {"repos": []},
+                bundle,
+                ecosystem=None,
+                workspace_root=temp_root,
+            )
+            self.assertTrue(plan.ok, plan.rejection_reason)
+            self.assertEqual(plan.promotion_target_policy_path, str(policy_path.resolve(strict=False)))
+            audit_path = temp_root / plan.audit_record_path
+            audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertEqual(audit_payload["repo"], "amof-private")
+            self.assertEqual(audit_payload["promotion_target_policy_path"], str(policy_path.resolve(strict=False)))
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
     def test_plan_promote_main_rejects_ticket_mismatch_with_clear_details(self) -> None:
         temp_root, _repo, source_sha, expected_main_sha = self._prepare_workspace()
         try:
@@ -220,6 +293,109 @@ class PromoteMainLinkageTests(unittest.TestCase):
             self.assertFalse(plan.validation_checks["ticket_linkage_consistent"])
             self.assertIn("branch_ticket_id=", plan.rejection_reason or "")
             self.assertIn("input_ticket_id=AMOF-INTAKE-CONTRACT-001", plan.rejection_reason or "")
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def test_plan_promote_main_private_rejects_invalid_expected_main_sha(self) -> None:
+        temp_root, repo, branch, source_sha, _expected_main_sha, _policy_path = self._prepare_private_workspace()
+        try:
+            _git(repo, "checkout", "main")
+            _git(repo, "checkout", "-b", "wrong-expected-main")
+            (repo / "WRONG.md").write_text("wrong expected main\n", encoding="utf-8")
+            _git(repo, "add", "WRONG.md")
+            _git(repo, "commit", "-m", "wrong expected main")
+            wrong_expected_main_sha = _git(repo, "rev-parse", "HEAD")
+            _git(repo, "checkout", branch)
+
+            bundle = PromoteMainInput(
+                repo="amof-private",
+                ticket_id="AMOF-PRIVATE-IAL-INTAKE-CONTRACT-RECOVERY-001",
+                candidate_branch=branch,
+                source_sha=source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=wrong_expected_main_sha,
+                promotion_reason="test private invalid expected-main",
+                dry_run=True,
+            )
+            plan = plan_promote_main_dry_run(
+                {"repos": []},
+                bundle,
+                ecosystem=None,
+                workspace_root=temp_root,
+            )
+            self.assertFalse(plan.ok)
+            self.assertIn("origin/main drifted", plan.rejection_reason or "")
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def test_plan_promote_main_private_rejects_unreachable_source_sha(self) -> None:
+        temp_root, repo, branch, _source_sha, expected_main_sha, _policy_path = self._prepare_private_workspace()
+        try:
+            _git(repo, "checkout", "main")
+            _git(repo, "checkout", "-b", "other-private-work")
+            (repo / "OTHER.md").write_text("other\n", encoding="utf-8")
+            _git(repo, "add", "OTHER.md")
+            _git(repo, "commit", "-m", "other private work")
+            unreachable_source_sha = _git(repo, "rev-parse", "HEAD")
+            _git(repo, "checkout", branch)
+
+            bundle = PromoteMainInput(
+                repo="amof-private",
+                ticket_id="AMOF-PRIVATE-IAL-INTAKE-CONTRACT-RECOVERY-001",
+                candidate_branch=branch,
+                source_sha=unreachable_source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=expected_main_sha,
+                promotion_reason="test private unreachable source",
+                dry_run=True,
+            )
+            plan = plan_promote_main_dry_run(
+                {"repos": []},
+                bundle,
+                ecosystem=None,
+                workspace_root=temp_root,
+            )
+            self.assertFalse(plan.ok)
+            self.assertIn("source_sha is not reachable from candidate_branch", plan.rejection_reason or "")
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def test_plan_promote_main_private_rejects_invalid_evidence(self) -> None:
+        temp_root, _repo, branch, source_sha, expected_main_sha, _policy_path = self._prepare_private_workspace()
+        try:
+            evidence_path = temp_root / ".amof-local" / "evidence" / "run-summary.json"
+            evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            evidence_path.write_text(
+                json.dumps(
+                    {
+                        "final_status": "failed",
+                        "lifecycle_state": "not_ready",
+                        "expected_sha": source_sha,
+                        "actual_sha": source_sha,
+                        "failure_message": "boom",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bundle = PromoteMainInput(
+                repo="amof-private",
+                ticket_id="AMOF-PRIVATE-IAL-INTAKE-CONTRACT-RECOVERY-001",
+                candidate_branch=branch,
+                source_sha=source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=expected_main_sha,
+                promotion_reason="test private invalid evidence",
+                dry_run=True,
+                require_run_summary=str(evidence_path),
+            )
+            plan = plan_promote_main_dry_run(
+                {"repos": []},
+                bundle,
+                ecosystem=None,
+                workspace_root=temp_root,
+            )
+            self.assertFalse(plan.ok)
+            self.assertIn("run_summary.final_status must be 'executed'", plan.rejection_reason or "")
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
 
