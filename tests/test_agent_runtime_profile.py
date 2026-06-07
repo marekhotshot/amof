@@ -3446,6 +3446,47 @@ class AgentPlanExecuteEnvelopeTests(unittest.TestCase):
         self.assertTrue(journal_exists)
         self.assertEqual(envelope.stop_reason, "completed")
 
+    def test_planning_failure_returns_structured_failed_envelope(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-agent-envelope-planning-fail-"
+        ) as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            manifest = self._manifest(repo)
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
+            planning_error = RuntimeError(
+                "Planner failed to produce a valid structured response after 3 attempts. "
+                "Last error: ImportError: openai package not installed. Run: pip install openai"
+            )
+
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch(
+                        "amof.orchestrator.planner.TaskPlanner.plan",
+                        side_effect=planning_error,
+                    ):
+                        envelope = agent_cmd.run_agent_plan_execute_envelope(
+                            manifest,
+                            {
+                                "goal": "Inspect this repo",
+                                "provider": "openrouter",
+                                "no_follow_up": True,
+                            },
+                        )
+
+        self.assertEqual(envelope.status, "failed")
+        self.assertEqual(envelope.exit_code, 1)
+        self.assertEqual(envelope.stop_reason, "planning_failed")
+        self.assertIn(
+            "Planner failed to produce a valid structured response", envelope.final_text
+        )
+        self.assertNotEqual(envelope.stop_reason, "invalid_json_mode_result")
+
     def test_readiness_capability_block_returns_structured_blocked_envelope(
         self,
     ) -> None:

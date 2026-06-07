@@ -3514,6 +3514,7 @@ def cmd_agent(
 
                 # Retry loop for transient parse / API errors
                 plan = None
+                planning_failure_text = None
                 for attempt in range(1, max_plan_retries + 1):
                     try:
                         plan = planner.plan(
@@ -3523,9 +3524,18 @@ def cmd_agent(
                         )
                         break  # success
                     except ProviderError as e:
-                        sys.stderr.write(
-                            f"[plan-execute] Planning provider error: {e}\n"
-                        )
+                        planning_failure_text = f"Planning provider error: {e}"
+                        sys.stderr.write(f"[plan-execute] {planning_failure_text}\n")
+                        if _json_envelope:
+                            return _build_plan_execute_envelope(
+                                status="failed",
+                                session_id=session.id,
+                                exit_code=1,
+                                stop_reason="planning_provider_error",
+                                final_text=planning_failure_text,
+                                telemetry=telemetry,
+                                event_log_path=events.log_path,
+                            )
                         return 1
                     except Exception as e:
                         if attempt < max_plan_retries:
@@ -3534,12 +3544,23 @@ def cmd_agent(
                                 f"failed: {e}\n  Retrying...\n"
                             )
                         else:
+                            planning_failure_text = f"Planning failed after {max_plan_retries} attempts: {e}"
                             sys.stderr.write(
-                                f"[plan-execute] Planning failed after {max_plan_retries} "
-                                f"attempts: {e}\n"
+                                f"[plan-execute] {planning_failure_text}\n"
                             )
 
                 if plan is None:
+                    if _json_envelope:
+                        return _build_plan_execute_envelope(
+                            status="failed",
+                            session_id=session.id,
+                            exit_code=1,
+                            stop_reason="planning_failed",
+                            final_text=planning_failure_text
+                            or "Planning failed before a plan could be produced.",
+                            telemetry=telemetry,
+                            event_log_path=events.log_path,
+                        )
                     return 1
 
                 # Display extended thinking (if produced by thinking model)
