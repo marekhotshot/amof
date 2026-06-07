@@ -3446,6 +3446,82 @@ class AgentPlanExecuteEnvelopeTests(unittest.TestCase):
         self.assertTrue(journal_exists)
         self.assertEqual(envelope.stop_reason, "completed")
 
+    def test_provider_configuration_failure_returns_structured_failed_envelope(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-agent-envelope-provider-config-"
+        ) as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            manifest = self._manifest(repo)
+            env = {"AMOF_HOME": str(amof_home)}
+
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch(
+                        "amof.commands.agent_cmd._active_provider_profile",
+                        return_value={
+                            "name": "cloud-dev",
+                            "provider": "remote-ial",
+                            "model": "remote-ial/default",
+                        },
+                    ):
+                        envelope = agent_cmd.cmd_agent(
+                            manifest,
+                            goal="Inspect this repo",
+                            plan_execute=True,
+                            budget=0.02,
+                            budget_strict=True,
+                            no_follow_up=True,
+                            approve_plan=True,
+                            _json_envelope=True,
+                        )
+
+        self.assertIsInstance(envelope, agent_cmd.AgentPlanExecuteEnvelope)
+        self.assertEqual(envelope.status, "failed")
+        self.assertEqual(envelope.exit_code, 1)
+        self.assertEqual(envelope.stop_reason, "provider_configuration_failed")
+        self.assertIn("base_url or default_base_url", envelope.final_text)
+        self.assertNotEqual(envelope.stop_reason, "invalid_json_mode_result")
+        self.assertEqual(envelope.session_id, "")
+        self.assertIsNone(envelope.event_log_path)
+
+    def test_runtime_configuration_invalid_returns_structured_failed_envelope(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-agent-envelope-runtime-config-"
+        ) as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            manifest = self._manifest(repo)
+            env = {"AMOF_HOME": str(amof_home)}
+
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    envelope = agent_cmd.cmd_agent(
+                        manifest,
+                        goal="Inspect this repo",
+                        plan_execute=True,
+                        provider="openrouter",
+                        add_budget=1.0,
+                        no_follow_up=True,
+                        approve_plan=True,
+                        _json_envelope=True,
+                    )
+
+        self.assertIsInstance(envelope, agent_cmd.AgentPlanExecuteEnvelope)
+        self.assertEqual(envelope.status, "failed")
+        self.assertEqual(envelope.exit_code, 1)
+        self.assertEqual(envelope.stop_reason, "runtime_configuration_invalid")
+        self.assertIn("--add-budget requires --resume", envelope.final_text)
+        self.assertNotEqual(envelope.stop_reason, "invalid_json_mode_result")
+
     def test_planning_failure_returns_structured_failed_envelope(self) -> None:
         with tempfile.TemporaryDirectory(
             prefix="amof-agent-envelope-planning-fail-"

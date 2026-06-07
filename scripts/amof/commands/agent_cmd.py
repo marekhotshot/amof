@@ -440,6 +440,50 @@ def _failed_json_envelope(
     )
 
 
+def _json_plan_execute_early_exit(
+    *,
+    json_envelope: bool,
+    stop_reason: str,
+    final_text: str,
+    status: str = "failed",
+    exit_code: int = 1,
+    session_id: str = "",
+    telemetry: Any = None,
+    plan_path: Any = None,
+    checkpoint_path: Any = None,
+    event_log_path: Any = None,
+    journal_path: Any = None,
+) -> int | AgentPlanExecuteEnvelope:
+    if not json_envelope:
+        return exit_code
+    if telemetry is not None:
+        return _build_plan_execute_envelope(
+            status=status,
+            session_id=session_id,
+            exit_code=exit_code,
+            stop_reason=stop_reason,
+            final_text=final_text,
+            telemetry=telemetry,
+            plan_path=plan_path,
+            checkpoint_path=checkpoint_path,
+            event_log_path=event_log_path,
+            journal_path=journal_path,
+        )
+    return AgentPlanExecuteEnvelope(
+        schema_version=1,
+        status=status,
+        session_id=session_id,
+        exit_code=exit_code,
+        stop_reason=stop_reason,
+        final_text=final_text,
+        plan_path=_artifact_path_text(plan_path),
+        checkpoint_path=_artifact_path_text(checkpoint_path),
+        event_log_path=_artifact_path_text(event_log_path),
+        journal_path=_artifact_path_text(journal_path),
+        budget_summary={"limit": None, "spent": 0.0, "remaining": None},
+    )
+
+
 def _run_agent_plan_execute_request(
     manifest: Dict[str, Any], request: AgentPlanExecuteJsonRequest
 ) -> AgentPlanExecuteEnvelope:
@@ -2544,7 +2588,11 @@ def cmd_agent(
             provider_profile = _active_provider_profile()
         except (FileNotFoundError, ValueError) as exc:
             sys.stderr.write(f"[agent] {exc}\n")
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="provider_configuration_failed",
+                final_text=str(exc),
+            )
         if provider_profile:
             provider = str(provider_profile.get("provider") or "").strip()
         else:
@@ -2572,16 +2620,28 @@ def cmd_agent(
     )
     if budget_err:
         sys.stderr.write(f"[agent] {budget_err}\n")
-        return 1
+        return _json_plan_execute_early_exit(
+            json_envelope=_json_envelope,
+            stop_reason="runtime_configuration_invalid",
+            final_text=budget_err,
+        )
     max_cost, max_cost_err = _resolve_effective_max_cost(max_cost, budget_options)
     if max_cost_err:
         sys.stderr.write(f"[agent] {max_cost_err}\n")
-        return 1
+        return _json_plan_execute_early_exit(
+            json_envelope=_json_envelope,
+            stop_reason="runtime_configuration_invalid",
+            final_text=max_cost_err,
+        )
     if max_cost is None:
         max_cost = config_default_max_cost
     if add_budget is not None and not resume_session:
         sys.stderr.write("[agent] --add-budget requires --resume.\n")
-        return 1
+        return _json_plan_execute_early_exit(
+            json_envelope=_json_envelope,
+            stop_reason="runtime_configuration_invalid",
+            final_text="--add-budget requires --resume.",
+        )
 
     followup_obj, followup_err = _load_resume_followup_for_session(
         resume_session=resume_session,
@@ -2592,7 +2652,11 @@ def cmd_agent(
     )
     if followup_err:
         sys.stderr.write(f"[agent] {followup_err}\n")
-        return 1
+        return _json_plan_execute_early_exit(
+            json_envelope=_json_envelope,
+            stop_reason="runtime_configuration_invalid",
+            final_text=followup_err,
+        )
 
     # Export thinking budget from config (picked up by AnthropicClient)
     thinking_budget = cfg.get("thinking_budget")
@@ -2617,7 +2681,11 @@ def cmd_agent(
                 f"{local_base_url_error}; "
                 f"{_provider_endpoint_diagnostics(provider=provider, profile=provider_profile, base_url=provider_base_url, model=profile_default_model or model, endpoint_family='chat.completions')}\n"
             )
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="provider_configuration_failed",
+                final_text=local_base_url_error,
+            )
         local_model_error = _validate_local_model(profile_default_model or model)
         if local_model_error:
             sys.stderr.write(
@@ -2625,7 +2693,11 @@ def cmd_agent(
                 f"{local_model_error}; "
                 f"{_provider_endpoint_diagnostics(provider=provider, profile=provider_profile, base_url=provider_base_url, model=profile_default_model or model, endpoint_family='chat.completions')}\n"
             )
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="provider_configuration_failed",
+                final_text=local_model_error,
+            )
         local_timeout_seconds, local_timeout_error = _resolve_local_timeout_seconds(
             provider_profile
         )
@@ -2636,7 +2708,11 @@ def cmd_agent(
                 f"{_provider_endpoint_diagnostics(provider=provider, profile=provider_profile, base_url=provider_base_url, model=profile_default_model or model, endpoint_family='chat.completions')} "
                 f"sdk_max_retries=0\n"
             )
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="provider_configuration_failed",
+                final_text=local_timeout_error,
+            )
     elif provider == "remote-ial":
         remote_ial_base_url_error = _validate_remote_ial_base_url(provider_base_url)
         if remote_ial_base_url_error:
@@ -2645,7 +2721,11 @@ def cmd_agent(
                 f"{remote_ial_base_url_error}; "
                 f"{_provider_endpoint_diagnostics(provider=provider, profile=provider_profile, base_url=provider_base_url, model=profile_default_model or model, endpoint_family='remote-ial.chat')}\n"
             )
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="provider_configuration_failed",
+                final_text=remote_ial_base_url_error,
+            )
         remote_ial_timeout_seconds, remote_ial_timeout_error = (
             _resolve_remote_ial_timeout_seconds(provider_profile)
         )
@@ -2655,7 +2735,11 @@ def cmd_agent(
                 f"{remote_ial_timeout_error}; "
                 f"{_provider_endpoint_diagnostics(provider=provider, profile=provider_profile, base_url=provider_base_url, model=profile_default_model or model, endpoint_family='remote-ial.chat')}\n"
             )
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="provider_configuration_failed",
+                final_text=remote_ial_timeout_error,
+            )
 
     # Resolve API key based on provider
     if provider == "openai":
@@ -2671,7 +2755,11 @@ def cmd_agent(
                 f"[agent] {api_key_env} not set.\n"
                 f"  Export {api_key_env}=<provider-api-key> before running live agent calls.\n"
             )
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="provider_configuration_failed",
+                final_text=f"{api_key_env} not set.",
+            )
     elif provider == "openrouter":
         api_key_env = (
             _profile_credential_env(provider_profile, "api_key_env")
@@ -2685,7 +2773,11 @@ def cmd_agent(
                 f"[agent] {api_key_env} not set.\n"
                 f"  Export {api_key_env}=<provider-api-key> before running live agent calls.\n"
             )
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="provider_configuration_failed",
+                final_text=f"{api_key_env} not set.",
+            )
     elif provider == "bedrock":
         api_key = ""
         region = (
@@ -2698,7 +2790,11 @@ def cmd_agent(
                 "[agent] AWS_REGION not set for Bedrock.\n"
                 "  Export AWS_REGION (or AMOF_BEDROCK_REGION) and optionally AWS_PROFILE.\n"
             )
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="provider_configuration_failed",
+                final_text="AWS_REGION not set for Bedrock.",
+            )
     elif provider == "local":
         api_key = ""
     elif provider == "remote-ial":
@@ -2714,7 +2810,11 @@ def cmd_agent(
                 f"[agent] {api_key_env} not set.\n"
                 f"  Export {api_key_env}=<remote-ial-bearer-token> before running remote IAL calls.\n"
             )
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="provider_configuration_failed",
+                final_text=f"{api_key_env} not set.",
+            )
     elif provider == "runpod":
         api_key_env = (
             _profile_credential_env(provider_profile, "api_key_env")
@@ -2728,7 +2828,11 @@ def cmd_agent(
                 f"[agent] {api_key_env} not set.\n"
                 f"  Export {api_key_env}=<provider-api-key> before running live agent calls.\n"
             )
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="provider_configuration_failed",
+                final_text=f"{api_key_env} not set.",
+            )
     else:
         api_key_env = (
             _profile_credential_env(provider_profile, "api_key_env")
@@ -2742,7 +2846,11 @@ def cmd_agent(
                 f"[agent] {api_key_env} not set.\n"
                 f"  Export {api_key_env}=<provider-api-key> before running live agent calls.\n"
             )
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="provider_configuration_failed",
+                final_text=f"{api_key_env} not set.",
+            )
 
     # Early check: if .venv exists but we're not running from it, auto-relaunch
     venv_dir = Path.cwd() / ".venv"
@@ -2787,7 +2895,11 @@ def cmd_agent(
                     missing_module, missing_module
                 )
                 sys.stderr.write(_runtime_dependency_guidance(package_name))
-            return 1
+                return _json_plan_execute_early_exit(
+                    json_envelope=_json_envelope,
+                    stop_reason="runtime_initialization_failed",
+                    final_text=f"Missing dependency: {missing_module}",
+                )
 
         # Check if running from a venv
         venv_dir = Path.cwd() / ".venv"
@@ -2800,14 +2912,22 @@ def cmd_agent(
                     "    source .venv/bin/activate\n"
                     "    amof agent\n"
                 )
-                return 1
+                return _json_plan_execute_early_exit(
+                    json_envelope=_json_envelope,
+                    stop_reason="runtime_initialization_failed",
+                    final_text="A virtual environment exists but is not activated.",
+                )
 
         sys.stderr.write(
             "\n[agent] Dependency import failed before the agent could start.\n"
             "  If this is an AMOF runtime dependency, run: amof update\n"
             "  If this belongs to the target project, install that project dependency in the target environment.\n"
         )
-        return 1
+        return _json_plan_execute_early_exit(
+            json_envelope=_json_envelope,
+            stop_reason="runtime_initialization_failed",
+            final_text="Dependency import failed before the agent could start.",
+        )
 
     # Provider-specific client factory
     def _make_client(mdl: str) -> Any:
@@ -3398,7 +3518,14 @@ def cmd_agent(
                 )
             else:
                 sys.stderr.write(f"[plan-execute] Plan file not found: {plan_file}\n")
-                return 1
+                return _json_plan_execute_early_exit(
+                    json_envelope=_json_envelope,
+                    stop_reason="plan_file_not_found",
+                    final_text=f"Plan file not found: {plan_file}",
+                    session_id=session.id,
+                    telemetry=telemetry,
+                    event_log_path=events.log_path,
+                )
 
         if plan is None and plan_execute_resume and resume_checkpoint:
             from ..orchestrator.resume_control import (
@@ -3411,11 +3538,25 @@ def cmd_agent(
             cp_plan = plan_file or resume_checkpoint.get("plan_path")
             if not cp_plan:
                 sys.stderr.write("[plan-execute] Resume checkpoint has no plan_path.\n")
-                return 1
+                return _json_plan_execute_early_exit(
+                    json_envelope=_json_envelope,
+                    stop_reason="resume_checkpoint_invalid",
+                    final_text="Resume checkpoint has no plan_path.",
+                    session_id=session.id,
+                    telemetry=telemetry,
+                    event_log_path=events.log_path,
+                )
             cp_path = Path(cp_plan)
             if not cp_path.is_file():
                 sys.stderr.write(f"[plan-execute] Plan file not found: {cp_path}\n")
-                return 1
+                return _json_plan_execute_early_exit(
+                    json_envelope=_json_envelope,
+                    stop_reason="plan_file_not_found",
+                    final_text=f"Plan file not found: {cp_path}",
+                    session_id=session.id,
+                    telemetry=telemetry,
+                    event_log_path=events.log_path,
+                )
             plan = ExecutionPlan.load_from_markdown(cp_path)
             resume_next_subtask = prepare_plan_for_resume(plan, resume_checkpoint)
             plan_execute_task_context = append_followup_to_context(goal, followup_obj)
@@ -3466,10 +3607,28 @@ def cmd_agent(
                         .lower()
                     )
                 except (EOFError, KeyboardInterrupt):
-                    return 1
+                    return _json_plan_execute_early_exit(
+                        json_envelope=_json_envelope,
+                        status="blocked",
+                        stop_reason="budget_approval_interrupted",
+                        final_text="Budget approval interrupted.",
+                        session_id=session.id,
+                        telemetry=telemetry,
+                        plan_path=getattr(plan, "file_path", None),
+                        event_log_path=events.log_path,
+                    )
                 if choice not in ("y", "yes"):
                     sys.stderr.write("[plan-execute] Execution not approved.\n")
-                    return 1
+                    return _json_plan_execute_early_exit(
+                        json_envelope=_json_envelope,
+                        status="blocked",
+                        stop_reason="budget_approval_rejected",
+                        final_text="Execution not approved.",
+                        session_id=session.id,
+                        telemetry=telemetry,
+                        plan_path=getattr(plan, "file_path", None),
+                        event_log_path=events.log_path,
+                    )
             elif budget_block:
                 sys.stderr.write(f"[plan-execute] {budget_block}\n")
                 if _json_envelope:
@@ -3507,6 +3666,7 @@ def cmd_agent(
                 workspace_root=workspace_root,
             )
 
+            plan_path: Path | None = None
             task_with_answers = goal
             max_plan_retries = 3
             while True:
@@ -3589,7 +3749,14 @@ def cmd_agent(
                                 "Your answers (or 'skip' to plan without answering): "
                             ).strip()
                         except (EOFError, KeyboardInterrupt):
-                            return 1
+                            return _json_plan_execute_early_exit(
+                                json_envelope=_json_envelope,
+                                stop_reason="planning_interrupted",
+                                final_text="Planning clarification interrupted.",
+                                session_id=session.id,
+                                telemetry=telemetry,
+                                event_log_path=events.log_path,
+                            )
                         if user_answers.lower() != "skip":
                             task_with_answers = f"{goal}\n\nUser answers to planner questions:\n{user_answers}"
                             continue
@@ -3616,7 +3783,15 @@ def cmd_agent(
                 runner_error = _validate_runner_factory_for_plan(runner_factory, plan)
                 if runner_error:
                     sys.stderr.write(f"[plan-execute] {runner_error}\n")
-                    return 1
+                    return _json_plan_execute_early_exit(
+                        json_envelope=_json_envelope,
+                        stop_reason="runner_configuration_failed",
+                        final_text=runner_error,
+                        session_id=session.id,
+                        telemetry=telemetry,
+                        plan_path=plan_path,
+                        event_log_path=events.log_path,
+                    )
 
                 # Interactive approval. --no-follow-up only skips the post-run
                 # menu; it does not approve execution. Use --approve-plan for CI.
@@ -3629,7 +3804,15 @@ def cmd_agent(
                             input("[a]pprove  [e]dit  [r]eject  > ").strip().lower()
                         )
                     except (EOFError, KeyboardInterrupt):
-                        return 1
+                        return _json_plan_execute_early_exit(
+                            json_envelope=_json_envelope,
+                            stop_reason="planning_interrupted",
+                            final_text="Plan approval interrupted.",
+                            session_id=session.id,
+                            telemetry=telemetry,
+                            plan_path=plan_path,
+                            event_log_path=events.log_path,
+                        )
 
                 if choice in ("a", "approve", ""):
                     # Re-read plan file in case user edited it
@@ -3637,14 +3820,31 @@ def cmd_agent(
                     break
                 elif choice in ("r", "reject"):
                     print("[plan-execute] Plan rejected.")
-                    return 0
+                    return _json_plan_execute_early_exit(
+                        json_envelope=_json_envelope,
+                        status="blocked",
+                        stop_reason="plan_rejected",
+                        final_text="Plan rejected.",
+                        session_id=session.id,
+                        telemetry=telemetry,
+                        plan_path=plan_path,
+                        event_log_path=events.log_path,
+                    )
                 elif choice in ("e", "edit"):
                     try:
                         feedback = input(
                             "Feedback (or edit the .md file directly, then press Enter): "
                         ).strip()
                     except (EOFError, KeyboardInterrupt):
-                        return 1
+                        return _json_plan_execute_early_exit(
+                            json_envelope=_json_envelope,
+                            stop_reason="planning_interrupted",
+                            final_text="Plan edit feedback interrupted.",
+                            session_id=session.id,
+                            telemetry=telemetry,
+                            plan_path=plan_path,
+                            event_log_path=events.log_path,
+                        )
                     if feedback:
                         task_with_answers = (
                             f"{goal}\n\nUser feedback on previous plan:\n{feedback}"
@@ -3661,7 +3861,15 @@ def cmd_agent(
         runner_error = _validate_runner_factory_for_plan(runner_factory, plan)
         if runner_error:
             sys.stderr.write(f"[plan-execute] {runner_error}\n")
-            return 1
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="runner_configuration_failed",
+                final_text=runner_error,
+                session_id=session.id,
+                telemetry=telemetry,
+                plan_path=getattr(plan, "file_path", None),
+                event_log_path=events.log_path,
+            )
 
         if plan is not None and followup_obj and not plan_execute_resume:
             from ..orchestrator.resume_control import append_followup_to_context
@@ -3686,10 +3894,28 @@ def cmd_agent(
                         .lower()
                     )
                 except (EOFError, KeyboardInterrupt):
-                    return 1
+                    return _json_plan_execute_early_exit(
+                        json_envelope=_json_envelope,
+                        status="blocked",
+                        stop_reason="budget_approval_interrupted",
+                        final_text="Budget approval interrupted.",
+                        session_id=session.id,
+                        telemetry=telemetry,
+                        plan_path=getattr(plan, "file_path", None),
+                        event_log_path=events.log_path,
+                    )
                 if choice not in ("y", "yes"):
                     sys.stderr.write("[plan-execute] Execution not approved.\n")
-                    return 1
+                    return _json_plan_execute_early_exit(
+                        json_envelope=_json_envelope,
+                        status="blocked",
+                        stop_reason="budget_approval_rejected",
+                        final_text="Execution not approved.",
+                        session_id=session.id,
+                        telemetry=telemetry,
+                        plan_path=getattr(plan, "file_path", None),
+                        event_log_path=events.log_path,
+                    )
                 budget_block = None
             elif budget_block:
                 sys.stderr.write(f"[plan-execute] {budget_block}\n")

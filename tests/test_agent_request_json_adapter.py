@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -204,6 +206,48 @@ class ExternalAgentRequestAdapterTests(unittest.TestCase):
         self.assertEqual(payload["request_id"], "external-request-minimal-001")
         self.assertEqual(payload["result"]["schema_version"], 1)
         self.assertEqual(payload["result"]["status"], "completed")
+        self.assertEqual(stdout.strip(), json.dumps(payload))
+
+    def test_provider_configuration_failure_returns_wrapped_envelope_without_fallback(
+        self,
+    ) -> None:
+        packet = _load(MINIMAL_EXAMPLE_PATH)
+        packet["request_id"] = "external-request-provider-config-001"
+        packet.pop("provider", None)
+
+        with tempfile.TemporaryDirectory(
+            prefix="amof-request-json-provider-config-"
+        ) as td:
+            env = {"AMOF_HOME": str(Path(td) / "amof-home")}
+            repo = Path(td) / "demo-repo"
+            repo.mkdir(parents=True, exist_ok=True)
+            with patch.dict(os.environ, env, clear=False):
+                with patch("amof.commands.agent_cmd.Path.cwd", return_value=repo):
+                    with patch(
+                        "amof.commands.agent_cmd._active_provider_profile",
+                        return_value={
+                            "name": "cloud-dev",
+                            "provider": "remote-ial",
+                            "model": "remote-ial/default",
+                        },
+                    ):
+                        code, stdout, stderr = _run_request_json_cmd(
+                            _request_json_args(),
+                            json.dumps(packet),
+                        )
+
+        payload = json.loads(stdout)
+        self.assertEqual(code, 1)
+        self.assertEqual(stderr, "")
+        self.assertEqual(payload["request_id"], "external-request-provider-config-001")
+        self.assertEqual(payload["result"]["status"], "failed")
+        self.assertEqual(
+            payload["result"]["stop_reason"], "provider_configuration_failed"
+        )
+        self.assertIn("base_url or default_base_url", payload["result"]["final_text"])
+        self.assertNotEqual(
+            payload["result"]["stop_reason"], "invalid_json_mode_result"
+        )
         self.assertEqual(stdout.strip(), json.dumps(payload))
 
     def test_parseable_invalid_packet_preserves_request_id_in_failure_wrapper(
