@@ -340,6 +340,10 @@ class ExecutionPlan:
             self.file_path.write_text(updated, encoding="utf-8")
 
 
+class PlannerSemanticRetryExhausted(ValueError):
+    """Raised when bounded semantic repair retries still produce no usable plan."""
+
+
 class TaskPlanner:
     """Creates an ExecutionPlan from a high-level task using a strong model.
 
@@ -413,25 +417,11 @@ class TaskPlanner:
             user_message,
             start,
         )
-        plan_data = structured.model_dump()
+        semantic_error = self._semantic_plan_error(structured, response_stop_reason)
+        if semantic_error:
+            raise ValueError(semantic_error)
 
-        # Validate that we got a usable plan (not just a fragment from truncation repair).
-        # Allow empty subtasks if the planner has questions (it's asking for clarification).
-        has_subtasks = bool(plan_data.get("subtasks"))
-        has_questions = bool(plan_data.get("questions"))
-        if not has_subtasks and not has_questions:
-            analysis_preview = (plan_data.get("analysis") or "")[:500]
-            subtasks_raw = plan_data.get("subtasks")
-            logger.warning(
-                "Planner returned no subtasks. subtasks=%r, analysis=%s",
-                subtasks_raw, analysis_preview,
-            )
-            message_parts = ["Planner returned no subtasks and no questions."]
-            if response_stop_reason:
-                message_parts.append(f"stop_reason={response_stop_reason}.")
-            if analysis_preview:
-                message_parts.append(f"Analysis: {analysis_preview}")
-            raise ValueError(" ".join(message_parts))
+        plan_data = structured.model_dump()
 
         # Build ExecutionPlan
         subtasks = []
@@ -481,9 +471,44 @@ class TaskPlanner:
         """Request a planner output validated by Pydantic with self-correction retries."""
         messages = [{"role": "user", "content": user_message}]
         last_error = ""
+        semantic_feedback = ""
+        last_failure_was_semantic = False
+
+        def _handle_candidate_response(
+            parsed: PlannerOutputModel,
+            *,
+            usage: Any,
+            stop_reason: Optional[str],
+            response_text: str,
+            attempt: int,
+        ) -> tuple[PlannerOutputModel, Any, int, Optional[str]] | None:
+            nonlocal last_error, semantic_feedback, last_failure_was_semantic
+
+            semantic_error = self._semantic_plan_error(parsed, stop_reason)
+            if semantic_error:
+                last_error = semantic_error
+                semantic_feedback = self._semantic_repair_feedback(response_text, semantic_error)
+                last_failure_was_semantic = True
+                logger.warning(
+                    "Planner semantic validation failed (attempt %d): %s",
+                    attempt,
+                    semantic_error,
+                )
+                return None
+
+            semantic_feedback = ""
+            last_failure_was_semantic = False
+            latency_ms = int((time.monotonic() - started_at) * 1000)
+            return parsed, usage, latency_ms, stop_reason
 
         for attempt in range(1, MAX_STRUCTURED_RETRIES + 1):
-            if last_error:
+            if semantic_feedback:
+                messages.append({
+                    "role": "user",
+                    "content": semantic_feedback,
+                })
+                semantic_feedback = ""
+            elif last_error:
                 messages.append({
                     "role": "user",
                     "content": (
@@ -502,13 +527,15 @@ class TaskPlanner:
                     temperature=0.0,
                 )
                 self._last_thinking = None
-                latency_ms = int((time.monotonic() - started_at) * 1000)
-                return (
+                accepted = _handle_candidate_response(
                     structured.parsed,
-                    structured.usage,
-                    latency_ms,
-                    getattr(structured, "stop_reason", None),
+                    usage=structured.usage,
+                    stop_reason=getattr(structured, "stop_reason", None),
+                    response_text=(getattr(structured, "text", None) or structured.parsed.model_dump_json()),
+                    attempt=attempt,
                 )
+                if accepted is not None:
+                    return accepted
             except NotImplementedError:
                 # Fallback providers: strict JSON + Pydantic validation loop.
                 response = self._llm.chat(
@@ -523,19 +550,32 @@ class TaskPlanner:
                 raw_text = (response.text or "").strip()
                 if not raw_text:
                     last_error = "Empty response."
+                    semantic_feedback = ""
+                    last_failure_was_semantic = False
                     continue
                 try:
                     parsed = PlannerOutputModel.model_validate_json(raw_text)
-                    latency_ms = int((time.monotonic() - started_at) * 1000)
-                    return parsed, response.usage, latency_ms, response.stop_reason
+                    accepted = _handle_candidate_response(
+                        parsed,
+                        usage=response.usage,
+                        stop_reason=response.stop_reason,
+                        response_text=raw_text,
+                        attempt=attempt,
+                    )
+                    if accepted is not None:
+                        return accepted
                 except ValidationError as e:
                     last_error = str(e)
+                    semantic_feedback = ""
+                    last_failure_was_semantic = False
                     logger.warning("Planner schema validation failed (attempt %d): %s", attempt, e)
                     if hasattr(self._llm, 'record_failure'):
                         self._llm.record_failure()
                     continue
             except ValidationError as e:
                 last_error = str(e)
+                semantic_feedback = ""
+                last_failure_was_semantic = False
                 logger.warning("Planner structured validation failed (attempt %d): %s", attempt, e)
                 if hasattr(self._llm, 'record_failure'):
                     self._llm.record_failure()
@@ -544,10 +584,57 @@ class TaskPlanner:
                 raise
             except Exception as e:
                 last_error = f"{type(e).__name__}: {e}"
+                semantic_feedback = ""
+                last_failure_was_semantic = False
                 logger.warning("Planner structured request failed (attempt %d): %s", attempt, e)
                 continue
 
+        if last_failure_was_semantic:
+            raise PlannerSemanticRetryExhausted(last_error)
         raise ValueError(
             "Planner failed to produce a valid structured response after "
             f"{MAX_STRUCTURED_RETRIES} attempts.\nLast error: {last_error}"
+        )
+
+    def _semantic_plan_error(
+        self,
+        structured: PlannerOutputModel,
+        response_stop_reason: Optional[str],
+    ) -> Optional[str]:
+        """Return an error message when a schema-valid plan is still unusable."""
+        plan_data = structured.model_dump()
+
+        # Allow empty subtasks if the planner has questions (it's asking for clarification).
+        has_subtasks = bool(plan_data.get("subtasks"))
+        has_questions = bool(plan_data.get("questions"))
+        if has_subtasks or has_questions:
+            return None
+
+        analysis_preview = (plan_data.get("analysis") or "")[:500]
+        subtasks_raw = plan_data.get("subtasks")
+        logger.warning(
+            "Planner returned no subtasks. subtasks=%r, analysis=%s",
+            subtasks_raw, analysis_preview,
+        )
+        message_parts = ["Planner returned no subtasks and no questions."]
+        if response_stop_reason:
+            message_parts.append(f"stop_reason={response_stop_reason}.")
+        if analysis_preview:
+            message_parts.append(f"Analysis: {analysis_preview}")
+        return " ".join(message_parts)
+
+    def _semantic_repair_feedback(self, response_text: str, semantic_error: str) -> str:
+        """Ask the provider to repair a schema-valid but unusable plan."""
+        previous_response = (response_text or "").strip() or "{}"
+        return (
+            "The previous structured plan was schema-valid but unusable because it contained "
+            "no subtasks and no clarification questions.\n\n"
+            f"Failure summary:\n{semantic_error}\n\n"
+            "Previous structured response:\n"
+            f"{previous_response}\n\n"
+            "Return exactly one of:\n"
+            "1. one or more bounded executable subtasks, or\n"
+            "2. one or more clarification questions.\n\n"
+            "Do not return analysis-only output.\n"
+            "Return ONLY a valid JSON object matching the required schema."
         )

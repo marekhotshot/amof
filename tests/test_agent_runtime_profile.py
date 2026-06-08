@@ -318,42 +318,117 @@ class _ProviderErrorPlannerLLM:
         return "openrouter/invalid"
 
 
+def _make_structured_planner_response(
+    *,
+    analysis: str,
+    subtasks: list[dict[str, object]] | None = None,
+    questions: list[str] | None = None,
+    execution_order: list[str] | None = None,
+    risks: list[str] | None = None,
+    verification: str = "",
+    stop_reason: str = "end_turn",
+    request_id: str = "req-structured-plan",
+) -> StructuredLLMResponse:
+    from amof.orchestrator.agent_models import PlannerOutputModel
+
+    subtasks = subtasks or []
+    questions = questions or []
+    execution_order = execution_order or [str(item["id"]) for item in subtasks]
+    risks = risks or []
+    text = json.dumps(
+        {
+            "analysis": analysis,
+            "subtasks": subtasks,
+            "execution_order": execution_order,
+            "risks": risks,
+            "verification": verification,
+            "questions": questions,
+        },
+        separators=(",", ":"),
+    )
+    return StructuredLLMResponse(
+        parsed=PlannerOutputModel(
+            analysis=analysis,
+            subtasks=subtasks,
+            execution_order=execution_order,
+            risks=risks,
+            verification=verification,
+            questions=questions,
+        ),
+        usage=Usage(
+            model="openai/gpt-4o-mini",
+            prompt_tokens=42,
+            completion_tokens=11,
+            latency_ms=17,
+            estimated_cost=0.0,
+            provider="remote-ial",
+            upstream_provider="openrouter",
+            upstream_model="openai/gpt-4o-mini",
+            request_id=request_id,
+            cost_status="unknown",
+            cost_observed=False,
+        ),
+        stop_reason=stop_reason,
+        text=text,
+    )
+
+
+class _SequencedStructuredPlannerLLM:
+    def __init__(self, responses: list[StructuredLLMResponse | Exception]) -> None:
+        self._responses = list(responses)
+        self.calls = 0
+        self.messages_history: list[list[dict[str, str]]] = []
+
+    def chat_structured(self, **kwargs):
+        messages = []
+        for message in kwargs.get("messages", []):
+            messages.append(
+                {
+                    "role": str(message.get("role", "")),
+                    "content": str(message.get("content", "")),
+                }
+            )
+        self.messages_history.append(messages)
+        if self.calls >= len(self._responses):
+            raise AssertionError("No scripted structured planner response remaining")
+        response = self._responses[self.calls]
+        self.calls += 1
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def model_name(self) -> str:
+        return "remote-ial/openai/gpt-4o-mini"
+
+    def chat(self, *args, **kwargs):
+        raise AssertionError("chat() should not be used when chat_structured succeeds")
+
+
 class _EmptyStructuredPlannerLLM:
     def __init__(self) -> None:
         self.calls = 0
+        self.messages_history: list[list[dict[str, str]]] = []
 
     def chat_structured(self, **kwargs):
-        from amof.orchestrator.agent_models import PlannerOutputModel
-
         self.calls += 1
-        return StructuredLLMResponse(
-            parsed=PlannerOutputModel(
-                analysis="Structured planner returned only analysis text.",
-                subtasks=[],
-                execution_order=[],
-                risks=[],
-                verification="",
-                questions=[],
-            ),
-            usage=Usage(
-                model="openai/gpt-4o-mini",
-                prompt_tokens=42,
-                completion_tokens=11,
-                latency_ms=17,
-                estimated_cost=0.0,
-                provider="remote-ial",
-                upstream_provider="openrouter",
-                upstream_model="openai/gpt-4o-mini",
-                request_id="req-empty-plan",
-                cost_status="unknown",
-                cost_observed=False,
-            ),
+        self.messages_history.append(
+            [
+                {
+                    "role": str(message.get("role", "")),
+                    "content": str(message.get("content", "")),
+                }
+                for message in kwargs.get("messages", [])
+            ]
+        )
+        return _make_structured_planner_response(
+            analysis="Structured planner returned only analysis text.",
+            subtasks=[],
+            execution_order=[],
+            risks=[],
+            verification="",
+            questions=[],
             stop_reason="end_turn",
-            text=(
-                '{"analysis":"Structured planner returned only analysis text.",'
-                '"subtasks":[],"execution_order":[],"risks":[],"verification":"",'
-                '"questions":[]}'
-            ),
+            request_id="req-empty-plan",
         )
 
     def model_name(self) -> str:
@@ -368,47 +443,24 @@ class _SuccessfulStructuredPlannerLLM:
         self.calls = 0
 
     def chat_structured(self, **kwargs):
-        from amof.orchestrator.agent_models import PlannerOutputModel
-
         self.calls += 1
-        return StructuredLLMResponse(
-            parsed=PlannerOutputModel(
-                analysis="Inspect the bounded repo before making changes.",
-                subtasks=[
-                    {
-                        "id": "1",
-                        "title": "Inspect README",
-                        "description": "Read the README to gather context.",
-                        "runner": "code",
-                        "depends_on": [],
-                    }
-                ],
-                execution_order=["1"],
-                risks=["README may be stale."],
-                verification="Review the bounded README findings.",
-                questions=[],
-            ),
-            usage=Usage(
-                model="openai/gpt-4o-mini",
-                prompt_tokens=40,
-                completion_tokens=12,
-                latency_ms=15,
-                estimated_cost=0.0,
-                provider="remote-ial",
-                upstream_provider="openrouter",
-                upstream_model="openai/gpt-4o-mini",
-                request_id="req-successful-plan",
-                cost_status="unknown",
-                cost_observed=False,
-            ),
+        return _make_structured_planner_response(
+            analysis="Inspect the bounded repo before making changes.",
+            subtasks=[
+                {
+                    "id": "1",
+                    "title": "Inspect README",
+                    "description": "Read the README to gather context.",
+                    "runner": "code",
+                    "depends_on": [],
+                }
+            ],
+            execution_order=["1"],
+            risks=["README may be stale."],
+            verification="Review the bounded README findings.",
+            questions=[],
             stop_reason="end_turn",
-            text=(
-                '{"analysis":"Inspect the bounded repo before making changes.",'
-                '"subtasks":[{"id":"1","title":"Inspect README","description":"Read the README to gather context.",'
-                '"runner":"code","depends_on":[]}],'
-                '"execution_order":["1"],"risks":["README may be stale."],'
-                '"verification":"Review the bounded README findings.","questions":[]}'
-            ),
+            request_id="req-successful-plan",
         )
 
     def model_name(self) -> str:
@@ -1156,16 +1208,119 @@ class AgentRuntimeProfileTests(unittest.TestCase):
         self.assertEqual(planner_llm.calls, 1)
 
     def test_planner_empty_structured_response_reports_real_cause(self) -> None:
-        planner_llm = _EmptyStructuredPlannerLLM()
+        planner_llm = _SequencedStructuredPlannerLLM(
+            [
+                _make_structured_planner_response(
+                    analysis="Structured planner returned only analysis text.",
+                    stop_reason="end_turn",
+                    request_id="req-empty-plan-1",
+                ),
+                _make_structured_planner_response(
+                    analysis="Structured planner still returned analysis text.",
+                    stop_reason="stop",
+                    request_id="req-empty-plan-2",
+                ),
+                _make_structured_planner_response(
+                    analysis="Structured planner never returned executable work.",
+                    stop_reason="max_tokens",
+                    request_id="req-empty-plan-3",
+                ),
+            ]
+        )
         planner = TaskPlanner(planner_llm=planner_llm, workspace_root=ROOT)
 
         with self.assertRaisesRegex(
             ValueError,
-            r"Planner returned no subtasks and no questions\. stop_reason=end_turn\.",
+            r"Planner returned no subtasks and no questions\. stop_reason=max_tokens\.",
         ):
             planner.plan("Inspect", "README only")
 
-        self.assertEqual(planner_llm.calls, 1)
+        self.assertEqual(planner_llm.calls, 3)
+        self.assertEqual(len(planner_llm.messages_history[0]), 1)
+        self.assertIn(
+            "schema-valid but unusable because it contained no subtasks and no clarification questions",
+            planner_llm.messages_history[1][-1]["content"],
+        )
+        self.assertIn(
+            "Do not return analysis-only output.",
+            planner_llm.messages_history[1][-1]["content"],
+        )
+        self.assertIn(
+            '"analysis":"Structured planner returned only analysis text."',
+            planner_llm.messages_history[1][-1]["content"],
+        )
+
+    def test_planner_empty_structured_response_repairs_into_subtasks(self) -> None:
+        planner_llm = _SequencedStructuredPlannerLLM(
+            [
+                _make_structured_planner_response(
+                    analysis="Initial analysis-only response.",
+                    stop_reason="stop",
+                    request_id="req-semantic-empty",
+                ),
+                _make_structured_planner_response(
+                    analysis="Recovered with executable work.",
+                    subtasks=[
+                        {
+                            "id": "1",
+                            "title": "Inspect README",
+                            "description": "Read the README to gather context.",
+                            "runner": "code",
+                            "depends_on": [],
+                        }
+                    ],
+                    execution_order=["1"],
+                    verification="Review the README findings.",
+                    stop_reason="end_turn",
+                    request_id="req-semantic-repaired",
+                ),
+            ]
+        )
+        planner = TaskPlanner(planner_llm=planner_llm, workspace_root=ROOT)
+
+        plan = planner.plan("Inspect", "README only")
+
+        self.assertEqual(planner_llm.calls, 2)
+        self.assertEqual([subtask.id for subtask in plan.subtasks], ["1"])
+        self.assertEqual(plan.questions, [])
+        self.assertEqual(plan.planning_cost_status, "unknown")
+        self.assertFalse(plan.planning_cost_observed)
+        self.assertIn(
+            "Return exactly one of:",
+            planner_llm.messages_history[1][-1]["content"],
+        )
+        self.assertIn(
+            '"analysis":"Initial analysis-only response."',
+            planner_llm.messages_history[1][-1]["content"],
+        )
+
+    def test_planner_empty_structured_response_repairs_into_questions(self) -> None:
+        planner_llm = _SequencedStructuredPlannerLLM(
+            [
+                _make_structured_planner_response(
+                    analysis="Need more detail before acting.",
+                    stop_reason="stop",
+                    request_id="req-semantic-empty-questions",
+                ),
+                _make_structured_planner_response(
+                    analysis="Clarification required.",
+                    questions=["Which README section should be inspected first?"],
+                    stop_reason="end_turn",
+                    request_id="req-semantic-questions",
+                ),
+            ]
+        )
+        planner = TaskPlanner(planner_llm=planner_llm, workspace_root=ROOT)
+
+        plan = planner.plan("Inspect", "README only")
+
+        self.assertEqual(planner_llm.calls, 2)
+        self.assertEqual(plan.subtasks, [])
+        self.assertEqual(plan.questions, ["Which README section should be inspected first?"])
+        self.assertIn(
+            "no subtasks and no clarification questions",
+            planner_llm.messages_history[1][-1]["content"],
+        )
 
     def test_planner_successful_structured_response_preserves_unknown_cost_truth(self) -> None:
         planner_llm = _SuccessfulStructuredPlannerLLM()
@@ -3570,6 +3725,80 @@ class AgentPlanExecuteEnvelopeTests(unittest.TestCase):
         self.assertTrue(journal_exists)
         self.assertEqual(envelope.stop_reason, "completed")
 
+    def test_question_only_noninteractive_plan_blocks_truthfully(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-agent-envelope-clarification-"
+        ) as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            manifest = self._manifest(repo)
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
+
+            from amof.orchestrator.planner import ExecutionPlan
+
+            question_only_plan = ExecutionPlan(
+                analysis="Need clarification before planning executable work.",
+                subtasks=[],
+                execution_order=[],
+                risks=[],
+                verification="",
+                questions=["Which part of the repository should be inspected first?"],
+                planner_model="openai/gpt-4o-mini",
+                planning_cost=0.0,
+                planning_cost_status="unknown",
+                planning_cost_observed=False,
+                planning_latency_ms=17,
+            )
+
+            _FakeAgent.instances.clear()
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("amof.orchestrator.runners.Agent", _FakeAgent):
+                        with patch(
+                            "amof.orchestrator.planner.TaskPlanner.plan",
+                            return_value=question_only_plan,
+                        ):
+                            envelope = agent_cmd.run_agent_plan_execute_envelope(
+                                manifest,
+                                {
+                                    "goal": "Inspect this repo",
+                                    "provider": "openrouter",
+                                    "no_follow_up": True,
+                                },
+                            )
+            event_log_path = Path(str(envelope.event_log_path))
+            journal_path = Path(str(envelope.journal_path))
+            event_exists = event_log_path.is_file()
+            journal_exists = journal_path.is_file()
+            event_log_text = event_log_path.read_text(encoding="utf-8")
+            journal_text = journal_path.read_text(encoding="utf-8")
+
+        self.assertEqual(envelope.status, "blocked")
+        self.assertEqual(envelope.exit_code, 1)
+        self.assertEqual(envelope.stop_reason, "clarification_required")
+        self.assertIn("Clarification required before execution:", envelope.final_text)
+        self.assertIn(
+            "Which part of the repository should be inspected first?",
+            envelope.final_text,
+        )
+        self.assertIsNone(envelope.plan_path)
+        self.assertIsNone(envelope.checkpoint_path)
+        self.assertTrue(event_exists)
+        self.assertTrue(journal_exists)
+        self.assertEqual(_FakeAgent.instances, [])
+        self.assertEqual(
+            AgentRunResult(**envelope.to_dict()).stop_reason,
+            "clarification_required",
+        )
+        self.assertIn('"event_type": "session_start"', event_log_text)
+        self.assertIn('"event_type": "session_end"', event_log_text)
+        self.assertIn("**Outcome**: clarification_required", journal_text)
+
     def test_provider_configuration_failure_returns_structured_failed_envelope(
         self,
     ) -> None:
@@ -3740,6 +3969,10 @@ class AgentPlanExecuteEnvelopeTests(unittest.TestCase):
         )
         self.assertIn('"event_type": "session_start"', event_log_text)
         self.assertNotIn("req-empty-plan", event_log_text)
+        self.assertIn(
+            "schema-valid but unusable because it contained no subtasks and no clarification questions",
+            planner_llm.messages_history[1][-1]["content"],
+        )
 
     def test_readiness_capability_block_returns_structured_blocked_envelope(
         self,

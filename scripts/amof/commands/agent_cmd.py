@@ -3559,7 +3559,11 @@ def cmd_agent(
     if plan_execute and (goal or plan_execute_resume):
         from ..orchestrator.executor import SubtaskExecutor
         from ..orchestrator.llm.base import ProviderError
-        from ..orchestrator.planner import ExecutionPlan, TaskPlanner
+        from ..orchestrator.planner import (
+            ExecutionPlan,
+            PlannerSemanticRetryExhausted,
+            TaskPlanner,
+        )
 
         # Determine planner model (provider-aware default; explicit flag/env wins).
         planner_model_id = _default_planner_model(
@@ -3603,6 +3607,43 @@ def cmd_agent(
                 event_log_path=events.log_path,
                 studio_session_id=effective_studio_session_id,
             )
+
+        def _finalize_plan_execute_terminal(
+            *,
+            status: str,
+            exit_code: int,
+            stop_reason: str,
+            final_text: str,
+            plan: Any = None,
+            checkpoint_path: Any = None,
+        ) -> int | AgentPlanExecuteEnvelope:
+            events.session_end(telemetry.to_dict())
+            _save_session(session, telemetry, events, workspace_root)
+            journal_path = _generate_journal(
+                session,
+                goal,
+                stop_reason,
+                telemetry,
+                events,
+                manifest,
+                workspace_root,
+                plan,
+            )
+            if _json_envelope:
+                return _build_plan_execute_envelope(
+                    status=status,
+                    session_id=session.id,
+                    exit_code=exit_code,
+                    stop_reason=stop_reason,
+                    final_text=final_text,
+                    telemetry=telemetry,
+                    plan_path=getattr(plan, "file_path", None),
+                    checkpoint_path=checkpoint_path,
+                    event_log_path=events.log_path,
+                    journal_path=journal_path,
+                    studio_session_id=effective_studio_session_id,
+                )
+            return exit_code
 
         # Check if we're resuming from a plan file
         plan = None
@@ -3799,6 +3840,10 @@ def cmd_agent(
                                 event_log_path=events.log_path,
                             )
                         return 1
+                    except PlannerSemanticRetryExhausted as e:
+                        planning_failure_text = f"Planning failed after {max_plan_retries} attempts: {e}"
+                        sys.stderr.write(f"[plan-execute] {planning_failure_text}\n")
+                        break
                     except Exception as e:
                         if attempt < max_plan_retries:
                             sys.stderr.write(
@@ -3845,6 +3890,21 @@ def cmd_agent(
                         print(
                             "[plan-execute] Noninteractive mode enabled; skipping clarification questions."
                         )
+                        if not plan.subtasks:
+                            clarification_lines = [
+                                "Clarification required before execution:",
+                                *[
+                                    f"{i}. {question}"
+                                    for i, question in enumerate(plan.questions, 1)
+                                ],
+                            ]
+                            return _finalize_plan_execute_terminal(
+                                status="blocked",
+                                exit_code=1,
+                                stop_reason="clarification_required",
+                                final_text="\n".join(clarification_lines),
+                                plan=None,
+                            )
                     else:
                         try:
                             user_answers = input(
@@ -4838,7 +4898,11 @@ def _run_interactive_shell(
     """
     from ..orchestrator import colors as c
     from ..orchestrator.executor import SubtaskExecutor
-    from ..orchestrator.planner import ExecutionPlan, TaskPlanner
+    from ..orchestrator.planner import (
+        ExecutionPlan,
+        PlannerSemanticRetryExhausted,
+        TaskPlanner,
+    )
 
     eco = manifest.get("ecosystem", "")
     events.session_start(mode="interactive", goal="interactive-shell", ecosystem=eco)
@@ -5254,6 +5318,9 @@ def _run_plan_flow(
             except KeyboardInterrupt:
                 print(f"\n{c.info('  (planning cancelled)')}")
                 return
+            except PlannerSemanticRetryExhausted as exc:
+                print(c.error(f"  Planning failed after {max_retries} attempts: {exc}"))
+                break
             except Exception as exc:
                 if attempt < max_retries:
                     print(c.error(f"  Attempt {attempt}/{max_retries} failed: {exc}"))
