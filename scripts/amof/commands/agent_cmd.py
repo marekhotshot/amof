@@ -24,7 +24,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, fields
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 from ..app_paths import get_app_paths, runs_dir, vector_store_dir
@@ -4448,6 +4448,9 @@ def cmd_agent(
             guardrail_info=guardrail_info,
             verbose=verbose,
             continue_budget=continue_budget,
+            attach_studio_run=_attach_studio_run,
+            json_envelope=_json_envelope,
+            studio_session_id=effective_studio_session_id,
         )
 
     return 0
@@ -4882,6 +4885,9 @@ def _run_interactive_shell(
     guardrail_info: Optional[str],
     verbose: bool,
     continue_budget: float = 1.0,
+    attach_studio_run: Optional[Callable[[str], Optional[str]]] = None,
+    json_envelope: bool = False,
+    studio_session_id: Optional[str] = None,
 ) -> int:
     """Run interactive chat shell with two modes: execute (default) and plan.
 
@@ -4906,16 +4912,18 @@ def _run_interactive_shell(
 
     eco = manifest.get("ecosystem", "")
     events.session_start(mode="interactive", goal="interactive-shell", ecosystem=eco)
-    studio_attach_error = _attach_studio_run("interactive")
+    studio_attach_error = (
+        attach_studio_run("interactive") if attach_studio_run is not None else None
+    )
     if studio_attach_error:
         sys.stderr.write(f"[agent] {studio_attach_error}\n")
         return _json_plan_execute_early_exit(
-            json_envelope=_json_envelope,
+            json_envelope=json_envelope,
             stop_reason="studio_session_invalid",
             final_text=studio_attach_error,
             session_id=session.id,
             event_log_path=events.log_path,
-            studio_session_id=effective_studio_session_id,
+            studio_session_id=studio_session_id,
         )
 
     # Banner

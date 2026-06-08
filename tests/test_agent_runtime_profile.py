@@ -3347,6 +3347,46 @@ Add a function.
         self.assertEqual(result, 0)
         self.assertEqual(fake_agent.run_calls, 0)
 
+    def test_interactive_shell_attaches_studio_run_once(self) -> None:
+        from amof.orchestrator.events import EventLog
+        from amof.orchestrator.session import Session
+        from amof.orchestrator.telemetry import SessionTelemetry
+
+        attach_calls: list[str] = []
+        with tempfile.TemporaryDirectory(prefix="amof-interactive-studio-") as td:
+            temp = Path(td)
+            repo = temp / "repo"
+            repo.mkdir()
+            fake_agent = _FakeInteractiveAgent()
+            manifest = {"ecosystem": "demo-repo", "manifest_source": "appdata"}
+            env = {"AMOF_HOME": str(temp / "amof-home")}
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch("builtins.input", return_value="exit"):
+                        result = agent_cmd._run_interactive_shell(
+                            agent=fake_agent,
+                            planner_llm=object(),
+                            planner_model_id="fake-planner",
+                            runner_factory=None,
+                            session=Session(mode="build"),
+                            telemetry=SessionTelemetry(),
+                            events=EventLog(),
+                            guardrails=Guardrails(
+                                config=GuardrailConfig.public_defaults()
+                            ),
+                            workspace_root=repo,
+                            manifest=manifest,
+                            codebase_context="",
+                            guardrail_info=None,
+                            verbose=False,
+                            attach_studio_run=lambda mode: attach_calls.append(mode) or None,
+                            studio_session_id="studio-20260608-004150",
+                        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(fake_agent.run_calls, 0)
+        self.assertEqual(attach_calls, ["interactive"])
+
 
 class _SequentialRunnerFactory:
     """Runs subtasks in order; records stop reasons per call."""
