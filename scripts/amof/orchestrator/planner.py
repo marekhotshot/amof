@@ -409,7 +409,10 @@ class TaskPlanner:
 
         start = time.monotonic()
 
-        structured, usage, latency_ms = self._request_structured_plan(user_message, start)
+        structured, usage, latency_ms, response_stop_reason = self._request_structured_plan(
+            user_message,
+            start,
+        )
         plan_data = structured.model_dump()
 
         # Validate that we got a usable plan (not just a fragment from truncation repair).
@@ -423,11 +426,12 @@ class TaskPlanner:
                 "Planner returned no subtasks. subtasks=%r, analysis=%s",
                 subtasks_raw, analysis_preview,
             )
-            raise ValueError(
-                "Planner returned no subtasks and no questions. "
-                f"stop_reason={response.stop_reason}. "
-                f"Analysis: {analysis_preview}"
-            )
+            message_parts = ["Planner returned no subtasks and no questions."]
+            if response_stop_reason:
+                message_parts.append(f"stop_reason={response_stop_reason}.")
+            if analysis_preview:
+                message_parts.append(f"Analysis: {analysis_preview}")
+            raise ValueError(" ".join(message_parts))
 
         # Build ExecutionPlan
         subtasks = []
@@ -473,7 +477,7 @@ class TaskPlanner:
         self,
         user_message: str,
         started_at: float,
-    ) -> tuple[PlannerOutputModel, Any, int]:
+    ) -> tuple[PlannerOutputModel, Any, int, Optional[str]]:
         """Request a planner output validated by Pydantic with self-correction retries."""
         messages = [{"role": "user", "content": user_message}]
         last_error = ""
@@ -499,7 +503,12 @@ class TaskPlanner:
                 )
                 self._last_thinking = None
                 latency_ms = int((time.monotonic() - started_at) * 1000)
-                return structured.parsed, structured.usage, latency_ms
+                return (
+                    structured.parsed,
+                    structured.usage,
+                    latency_ms,
+                    getattr(structured, "stop_reason", None),
+                )
             except NotImplementedError:
                 # Fallback providers: strict JSON + Pydantic validation loop.
                 response = self._llm.chat(
@@ -518,7 +527,7 @@ class TaskPlanner:
                 try:
                     parsed = PlannerOutputModel.model_validate_json(raw_text)
                     latency_ms = int((time.monotonic() - started_at) * 1000)
-                    return parsed, response.usage, latency_ms
+                    return parsed, response.usage, latency_ms, response.stop_reason
                 except ValidationError as e:
                     last_error = str(e)
                     logger.warning("Planner schema validation failed (attempt %d): %s", attempt, e)

@@ -20,8 +20,9 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from amof.commands import agent_cmd
+from amof.contracts_runtime import AgentRunResult
 from amof.orchestrator.events import EventLog
-from amof.orchestrator.llm.base import ProviderError
+from amof.orchestrator.llm.base import ProviderError, StructuredLLMResponse, Usage
 from amof.orchestrator.planner import TaskPlanner
 from amof.orchestrator.runners import PUBLIC_DEFAULT_RUNNERS_CONFIG, RunnerFactory
 from amof.orchestrator.telemetry import SessionTelemetry
@@ -315,6 +316,103 @@ class _ProviderErrorPlannerLLM:
 
     def model_name(self) -> str:
         return "openrouter/invalid"
+
+
+class _EmptyStructuredPlannerLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat_structured(self, **kwargs):
+        from amof.orchestrator.agent_models import PlannerOutputModel
+
+        self.calls += 1
+        return StructuredLLMResponse(
+            parsed=PlannerOutputModel(
+                analysis="Structured planner returned only analysis text.",
+                subtasks=[],
+                execution_order=[],
+                risks=[],
+                verification="",
+                questions=[],
+            ),
+            usage=Usage(
+                model="openai/gpt-4o-mini",
+                prompt_tokens=42,
+                completion_tokens=11,
+                latency_ms=17,
+                estimated_cost=0.0,
+                provider="remote-ial",
+                upstream_provider="openrouter",
+                upstream_model="openai/gpt-4o-mini",
+                request_id="req-empty-plan",
+                cost_status="unknown",
+                cost_observed=False,
+            ),
+            stop_reason="end_turn",
+            text=(
+                '{"analysis":"Structured planner returned only analysis text.",'
+                '"subtasks":[],"execution_order":[],"risks":[],"verification":"",'
+                '"questions":[]}'
+            ),
+        )
+
+    def model_name(self) -> str:
+        return "remote-ial/openai/gpt-4o-mini"
+
+    def chat(self, *args, **kwargs):
+        raise AssertionError("chat() should not be used when chat_structured succeeds")
+
+
+class _SuccessfulStructuredPlannerLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat_structured(self, **kwargs):
+        from amof.orchestrator.agent_models import PlannerOutputModel
+
+        self.calls += 1
+        return StructuredLLMResponse(
+            parsed=PlannerOutputModel(
+                analysis="Inspect the bounded repo before making changes.",
+                subtasks=[
+                    {
+                        "id": "1",
+                        "title": "Inspect README",
+                        "description": "Read the README to gather context.",
+                        "runner": "code",
+                        "depends_on": [],
+                    }
+                ],
+                execution_order=["1"],
+                risks=["README may be stale."],
+                verification="Review the bounded README findings.",
+                questions=[],
+            ),
+            usage=Usage(
+                model="openai/gpt-4o-mini",
+                prompt_tokens=40,
+                completion_tokens=12,
+                latency_ms=15,
+                estimated_cost=0.0,
+                provider="remote-ial",
+                upstream_provider="openrouter",
+                upstream_model="openai/gpt-4o-mini",
+                request_id="req-successful-plan",
+                cost_status="unknown",
+                cost_observed=False,
+            ),
+            stop_reason="end_turn",
+            text=(
+                '{"analysis":"Inspect the bounded repo before making changes.",'
+                '"subtasks":[{"id":"1","title":"Inspect README","description":"Read the README to gather context.",'
+                '"runner":"code","depends_on":[]}],'
+                '"execution_order":["1"],"risks":["README may be stale."],'
+                '"verification":"Review the bounded README findings.","questions":[]}'
+            ),
+        )
+
+    def model_name(self) -> str:
+        return "remote-ial/openai/gpt-4o-mini"
 
 
 class AgentRuntimeProfileTests(unittest.TestCase):
@@ -1056,6 +1154,32 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             planner.plan("Inspect", "README only")
 
         self.assertEqual(planner_llm.calls, 1)
+
+    def test_planner_empty_structured_response_reports_real_cause(self) -> None:
+        planner_llm = _EmptyStructuredPlannerLLM()
+        planner = TaskPlanner(planner_llm=planner_llm, workspace_root=ROOT)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Planner returned no subtasks and no questions\. stop_reason=end_turn\.",
+        ):
+            planner.plan("Inspect", "README only")
+
+        self.assertEqual(planner_llm.calls, 1)
+
+    def test_planner_successful_structured_response_preserves_unknown_cost_truth(self) -> None:
+        planner_llm = _SuccessfulStructuredPlannerLLM()
+        planner = TaskPlanner(planner_llm=planner_llm, workspace_root=ROOT)
+
+        plan = planner.plan("Inspect", "README only")
+
+        self.assertEqual(planner_llm.calls, 1)
+        self.assertEqual([subtask.id for subtask in plan.subtasks], ["1"])
+        self.assertEqual(plan.execution_order, ["1"])
+        self.assertEqual(plan.planner_model, "openai/gpt-4o-mini")
+        self.assertEqual(plan.planning_cost, 0.0)
+        self.assertEqual(plan.planning_cost_status, "unknown")
+        self.assertFalse(plan.planning_cost_observed)
 
     def test_public_default_runner_config_is_bounded(self) -> None:
         code_runner = PUBLIC_DEFAULT_RUNNERS_CONFIG["runners"]["code"]
@@ -3562,6 +3686,60 @@ class AgentPlanExecuteEnvelopeTests(unittest.TestCase):
             "Planner failed to produce a valid structured response", envelope.final_text
         )
         self.assertNotEqual(envelope.stop_reason, "invalid_json_mode_result")
+
+    def test_empty_structured_plan_retries_bounded_and_reports_real_cause(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-agent-envelope-empty-plan-"
+        ) as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            manifest = self._manifest(repo)
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
+            planner_llm = _EmptyStructuredPlannerLLM()
+
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch(
+                        "amof.orchestrator.llm.openai_client.OpenAIClient",
+                        return_value=planner_llm,
+                    ):
+                        envelope = agent_cmd.run_agent_plan_execute_envelope(
+                            manifest,
+                            {
+                                "goal": "Inspect this repo",
+                                "provider": "openrouter",
+                                "no_follow_up": True,
+                            },
+                        )
+            event_log_path = Path(str(envelope.event_log_path))
+            event_exists = event_log_path.is_file()
+            event_log_text = event_log_path.read_text(encoding="utf-8")
+
+        self.assertEqual(planner_llm.calls, 3)
+        self.assertEqual(envelope.status, "failed")
+        self.assertEqual(envelope.exit_code, 1)
+        self.assertEqual(envelope.stop_reason, "planning_failed")
+        self.assertIn(
+            "Planner returned no subtasks and no questions. stop_reason=end_turn.",
+            envelope.final_text,
+        )
+        self.assertNotIn("name 'response' is not defined", envelope.final_text)
+        self.assertIsNone(envelope.plan_path)
+        self.assertIsNone(envelope.journal_path)
+        self.assertIsNone(envelope.checkpoint_path)
+        self.assertTrue(event_exists)
+        self.assertEqual(envelope.session_id, event_log_path.parent.name)
+        self.assertEqual(
+            AgentRunResult(**envelope.to_dict()).stop_reason,
+            "planning_failed",
+        )
+        self.assertIn('"event_type": "session_start"', event_log_text)
+        self.assertNotIn("req-empty-plan", event_log_text)
 
     def test_readiness_capability_block_returns_structured_blocked_envelope(
         self,
