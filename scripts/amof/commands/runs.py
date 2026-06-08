@@ -21,6 +21,7 @@ class RunsCliError(RuntimeError):
 class RunSummary:
     run_id: str
     session_id: str
+    studio_session_id: str | None
     ticket_id: str | None
     status: str
     planning_mode: str | None
@@ -39,6 +40,7 @@ class RunSummary:
         return {
             "run_id": self.run_id,
             "session_id": self.session_id,
+            "studio_session_id": self.studio_session_id,
             "ticket_id": self.ticket_id,
             "status": self.status,
             "planning_mode": self.planning_mode,
@@ -127,6 +129,7 @@ def _compute_run_summary(events_path: Path) -> RunSummary:
     session_dir = events_path.parent
     session_id = _first_nonempty(events, "session_id") or session_dir.name
     run_id = _first_nonempty(events, "run_id") or session_dir.name
+    studio_session_id = _first_nonempty(events, "studio_session_id")
     ticket_id = _first_nonempty(events, "ticket_id")
     planning_mode = _first_nonempty(events, "planning_mode")
     started_at = None
@@ -179,6 +182,7 @@ def _compute_run_summary(events_path: Path) -> RunSummary:
     return RunSummary(
         run_id=run_id,
         session_id=session_id,
+        studio_session_id=studio_session_id,
         ticket_id=ticket_id,
         status=status,
         planning_mode=planning_mode,
@@ -242,6 +246,7 @@ def _print_runs_table(runs: list[RunSummary]) -> None:
     headers = (
         "run_id",
         "session_id",
+        "studio_session_id",
         "ticket_id",
         "status",
         "planning_mode",
@@ -257,6 +262,7 @@ def _print_runs_table(runs: list[RunSummary]) -> None:
                 (
                     run.run_id,
                     run.session_id,
+                    run.studio_session_id or "-",
                     run.ticket_id or "-",
                     run.status,
                     run.planning_mode or "-",
@@ -273,6 +279,7 @@ def _print_show(run: RunSummary) -> None:
     pairs = [
         ("run_id", run.run_id),
         ("session_id", run.session_id),
+        ("studio_session_id", run.studio_session_id or "-"),
         ("ticket_id", run.ticket_id or "-"),
         ("status", run.status),
         ("planning_mode", run.planning_mode or "-"),

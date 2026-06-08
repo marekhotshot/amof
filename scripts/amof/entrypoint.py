@@ -34,6 +34,7 @@ NO_ECOSYSTEM_COMMANDS = {
     "execution",
     "loop",
     "runs",
+    "studio",
     "update",
     "uninstall",
     "shell",
@@ -193,6 +194,7 @@ cmd_runner = _lazy_command("runner", "cmd_runner")
 cmd_execution = _lazy_command("execution", "cmd_execution")
 cmd_loop = _lazy_command("loop", "cmd_loop")
 cmd_runs = _lazy_command("runs", "cmd_runs")
+cmd_studio = _lazy_command("studio", "cmd_studio")
 cmd_agent = _lazy_command("agent_cmd", "cmd_agent")
 cmd_manifest = _lazy_command("manifest_cmd", "cmd_manifest")
 cmd_release = _lazy_command("release", "cmd_release")
@@ -280,6 +282,8 @@ def main() -> None:
             sys.exit(cmd_loop(args))
         if args.command == "runs":
             sys.exit(cmd_runs(args))
+        if args.command == "studio":
+            sys.exit(cmd_studio(args))
         if args.command == "update":
             sys.exit(cmd_update(args))
         if args.command == "uninstall":
@@ -551,6 +555,7 @@ def main() -> None:
                 planner_model=getattr(args, "planner_model", None),
                 provider=getattr(args, "provider", None),
                 resume_session=getattr(args, "resume", None),
+                studio_session_id=getattr(args, "studio_session", None),
                 follow_up=getattr(args, "follow_up", None),
                 follow_up_file=getattr(args, "follow_up_file", None),
                 plan_file=getattr(args, "plan_file", None),

@@ -13,6 +13,7 @@ from typing import Any
 
 from ..app_paths import evidence_dir, materialized_runs_dir, runs_dir
 from ..app_config import resolve_active_context_name
+from ..contracts_runtime import ContractError, PlanBundle
 from ..orchestrator.events import EventLog
 from ..orchestrator.llm.base import ProviderError
 from ..orchestrator.llm.remote_ial import RemoteIALClient
@@ -70,7 +71,7 @@ Requirements:
 
 SESSION_PROMPT = """You are the AMOF bounded intake session assistant.
 
-You are helping shape a proposal-only PlanPacket.
+You are helping shape a proposal-only PlanBundle.
 
 Hard rules:
 - do not execute anything
@@ -99,41 +100,8 @@ class ChatPlanError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class PlanPacket:
-    """Non-executable proposal for AMOF Director."""
-
-    objective: str
-    repo_scope: str
-    files_to_inspect: list[str]
-    proposed_steps: list[str]
-    risks: list[str]
-    validation_plan: list[str]
-    execution_prompt_for_director: str
-    requires_user_approval: bool = True
-    execution_allowed: bool = False
-    ticket_id: str | None = None
-    proposed_ticket_id: str | None = None
-
-    def __post_init__(self) -> None:
-        if not (self.ticket_id or self.proposed_ticket_id):
-            raise ChatPlanError("PlanPacket requires ticket_id or proposed_ticket_id.")
-        if not self.objective.strip():
-            raise ChatPlanError("PlanPacket objective is required.")
-        if not self.repo_scope.strip():
-            raise ChatPlanError("PlanPacket repo_scope is required.")
-        if not self.files_to_inspect:
-            raise ChatPlanError("PlanPacket files_to_inspect must not be empty.")
-        if not self.proposed_steps:
-            raise ChatPlanError("PlanPacket proposed_steps must not be empty.")
-        if not self.validation_plan:
-            raise ChatPlanError("PlanPacket validation_plan must not be empty.")
-        if self.requires_user_approval is not True:
-            raise ChatPlanError("PlanPacket requires_user_approval must be true.")
-        if self.execution_allowed is not False:
-            raise ChatPlanError("PlanPacket execution_allowed must be false.")
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+class PlanPacket(PlanBundle):
+    """Compatibility alias for the canonical proposal-only PlanBundle."""
 
 
 @dataclass(frozen=True)
@@ -178,6 +146,7 @@ class ChatPlanResult:
             "session_id": self.session_id,
             "result_kind": self.result_kind,
             "non_executable_until_user_approval": self.non_executable_until_user_approval,
+            "plan_bundle": self.plan_packet.to_dict(),
             "plan_packet": self.plan_packet.to_dict(),
             "inference": self.inference.to_dict(),
             "evidence": self.evidence,
@@ -217,6 +186,8 @@ class IntakeSessionState:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "IntakeSessionState":
+        plan_bundle_payload = payload.get("plan_bundle")
+        plan_packet_payload = payload.get("plan_packet")
         return cls(
             session_id=str(payload.get("session_id") or ""),
             repo_path=str(payload.get("repo_path") or ""),
@@ -247,7 +218,11 @@ class IntakeSessionState:
             finalized_at=str(payload.get("finalized_at")).strip() or None
             if payload.get("finalized_at") is not None
             else None,
-            plan_packet=payload.get("plan_packet") if isinstance(payload.get("plan_packet"), dict) else None,
+            plan_packet=plan_bundle_payload
+            if isinstance(plan_bundle_payload, dict)
+            else plan_packet_payload
+            if isinstance(plan_packet_payload, dict)
+            else None,
             transcript=list(payload.get("transcript") or []),
         )
 
@@ -273,12 +248,14 @@ class IntakeSessionResult:
     plan_packet: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["plan_bundle"] = self.plan_packet
+        return payload
 
 
 @dataclass(frozen=True)
 class ApprovedPlanArtifact:
-    """Explicit approval artifact for a finalized proposal-only PlanPacket."""
+    """Explicit approval artifact for a finalized proposal-only PlanBundle."""
 
     approval_id: str
     approval_state: str
@@ -308,10 +285,14 @@ class ApprovedPlanArtifact:
             raise ChatPlanError("ApprovedPlanArtifact plan_packet is required.")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["plan_bundle"] = self.plan_packet
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ApprovedPlanArtifact":
+        plan_bundle_payload = payload.get("plan_bundle")
+        plan_packet_payload = payload.get("plan_packet")
         return cls(
             approval_id=str(payload.get("approval_id") or ""),
             approval_state=str(payload.get("approval_state") or ""),
@@ -320,7 +301,7 @@ class ApprovedPlanArtifact:
             source_session=dict(payload.get("source_session") or {}),
             repo_truth=dict(payload.get("repo_truth") or {}),
             context_truth=dict(payload.get("context_truth") or {}),
-            plan_packet=dict(payload.get("plan_packet") or {}),
+            plan_packet=dict(plan_bundle_payload or plan_packet_payload or {}),
             approved_by=str(payload.get("approved_by")).strip() or None
             if payload.get("approved_by") is not None
             else None,
@@ -332,7 +313,7 @@ class ApprovedPlanArtifact:
 
 @dataclass(frozen=True)
 class ChatApprovalResult:
-    """Structured command result for explicit PlanPacket approval."""
+    """Structured command result for explicit PlanBundle approval."""
 
     result_kind: str
     approval_id: str
@@ -405,20 +386,28 @@ class _SessionTelemetry:
     total_calls: int = 0
     latest_usage: InferenceAttribution | None = None
     unknown_cost_calls: int = 0
+    observed_cost_calls: int = 0
 
     def record(self, usage: InferenceAttribution) -> None:
         if usage.cost_status == "observed":
             self.total_cost += usage.estimated_cost
+            self.observed_cost_calls += 1
         else:
             self.unknown_cost_calls += 1
         self.total_calls += 1
         self.latest_usage = usage
 
     def to_dict(self) -> dict[str, Any]:
+        cost_status = (
+            "unknown"
+            if self.unknown_cost_calls > 0 and self.observed_cost_calls == 0
+            else "observed"
+        )
         payload: dict[str, Any] = {
-            "total_cost": round(self.total_cost, 6),
+            "total_cost": None if cost_status == "unknown" else round(self.total_cost, 6),
             "total_calls": self.total_calls,
             "unknown_cost_calls": self.unknown_cost_calls,
+            "cost_status": cost_status,
         }
         if self.latest_usage is not None:
             payload.update(
@@ -438,6 +427,40 @@ class _SessionTelemetry:
                 }
             )
         return payload
+
+
+def _emit_terminal_chat_events(
+    *,
+    events: EventLog,
+    telemetry: _SessionTelemetry,
+    receipt_ref: str | None = None,
+    result_kind: str,
+) -> None:
+    telemetry_payload = telemetry.to_dict()
+    events.session_end(telemetry_payload)
+    latest_usage = telemetry.latest_usage
+    finish_payload: dict[str, Any] = {
+        "result_kind": result_kind,
+        "total_calls": telemetry_payload["total_calls"],
+        "cost_status": telemetry_payload["cost_status"],
+        "estimated_cost": telemetry_payload["total_cost"],
+    }
+    if receipt_ref:
+        finish_payload["receipt_ref"] = receipt_ref
+    if latest_usage is not None:
+        finish_payload.update(
+            {
+                "transport_provider": latest_usage.transport_provider,
+                "upstream_provider": latest_usage.upstream_provider,
+                "upstream_model": latest_usage.upstream_model,
+                "request_id": latest_usage.request_id,
+                "tokens_in": latest_usage.prompt_tokens,
+                "tokens_out": latest_usage.completion_tokens,
+                "latency_ms": latest_usage.latency_ms,
+                "provider_generation_ref": latest_usage.provider_generation_ref,
+            }
+        )
+    events.log("run_finished", **finish_payload)
 
 
 def _now_iso() -> str:
@@ -723,7 +746,7 @@ def _assert_no_shell_text(values: list[str], *, field_name: str) -> None:
 
 def _normalize_execution_prompt(value: str) -> str:
     prompt = _require_text(value, "execution_prompt_for_director")
-    approval_line = "Proposal only. Do not execute until the user explicitly approves this PlanPacket."
+    approval_line = "Proposal only. Do not execute until the user explicitly approves this PlanBundle."
     if _contains_shell_like_text(prompt):
         raise ChatPlanError("execution_prompt_for_director must not contain shell commands.")
     if approval_line.lower() in prompt.lower():
@@ -832,7 +855,9 @@ def _load_session_state(session_id: str) -> IntakeSessionState:
 
 
 def _save_session_state(state: IntakeSessionState) -> Path:
-    return _write_json(_session_state_path(state.session_id), state.to_dict())
+    payload = state.to_dict()
+    payload["plan_bundle"] = state.plan_packet
+    return _write_json(_session_state_path(state.session_id), payload)
 
 
 def _plan_packet_payload_from_state(state: IntakeSessionState) -> dict[str, Any]:
@@ -1081,21 +1106,24 @@ def _plan_packet_from_payload(
     validation_plan = _string_list(payload, "validation_plan")
     _assert_no_shell_text(proposed_steps, field_name="proposed_steps")
     _assert_no_shell_text(validation_plan, field_name="validation_plan")
-    return PlanPacket(
-        ticket_id=normalized_ticket_id,
-        proposed_ticket_id=proposed_ticket_id,
-        objective=objective_text,
-        repo_scope=repo_scope,
-        files_to_inspect=files_to_inspect,
-        proposed_steps=proposed_steps,
-        risks=risks,
-        validation_plan=validation_plan,
-        execution_prompt_for_director=_normalize_execution_prompt(
-            _require_text(payload.get("execution_prompt_for_director"), "execution_prompt_for_director")
-        ),
-        requires_user_approval=True,
-        execution_allowed=False,
-    )
+    try:
+        return PlanPacket(
+            ticket_id=normalized_ticket_id,
+            proposed_ticket_id=proposed_ticket_id,
+            objective=objective_text,
+            repo_scope=repo_scope,
+            files_to_inspect=files_to_inspect,
+            proposed_steps=proposed_steps,
+            risks=risks,
+            validation_plan=validation_plan,
+            execution_prompt_for_director=_normalize_execution_prompt(
+                _require_text(payload.get("execution_prompt_for_director"), "execution_prompt_for_director")
+            ),
+            requires_user_approval=True,
+            execution_allowed=False,
+        )
+    except ContractError as exc:
+        raise ChatPlanError(str(exc)) from exc
 
 
 def _session_result(state: IntakeSessionState) -> IntakeSessionResult:
@@ -1479,7 +1507,7 @@ def finalize_bounded_chat_session(
         questions_asked=state.questions_asked,
         max_questions=state.max_questions,
         pending_question=None,
-        assistant_message="PlanPacket finalized.",
+        assistant_message="PlanBundle finalized.",
         files_to_inspect=list(state.files_to_inspect),
         non_executable_until_user_approval=True,
         evidence={
@@ -1498,13 +1526,19 @@ def finalize_bounded_chat_session(
     )
     stored_payload = _sanitize_evidence_value(result.to_dict(), mode=_resolve_evidence_policy(cfg)["messages"])
     plan_result_path.write_text(json.dumps(stored_payload, indent=2) + "\n", encoding="utf-8")
+    _emit_terminal_chat_events(
+        events=events,
+        telemetry=telemetry,
+        receipt_ref=str(plan_result_path),
+        result_kind="chat_finalize_proposal",
+    )
     updated_state = IntakeSessionState(
         **{
             **state.to_dict(),
             "status": "finalized",
             "updated_at": _now_iso(),
             "pending_question": None,
-            "assistant_message": "PlanPacket finalized.",
+            "assistant_message": "PlanBundle finalized.",
             "plan_result_path": str(plan_result_path),
             "finalized_at": _now_iso(),
             "plan_packet": packet.to_dict(),
@@ -1760,21 +1794,24 @@ def plan_read_only_chat(
     validation_plan = _string_list(payload, "validation_plan")
     _assert_no_shell_text(proposed_steps, field_name="proposed_steps")
     _assert_no_shell_text(validation_plan, field_name="validation_plan")
-    packet = PlanPacket(
-        ticket_id=normalized_ticket_id,
-        proposed_ticket_id=proposed_ticket_id,
-        objective=objective_text,
-        repo_scope=repo_scope,
-        files_to_inspect=list(planning_receipt_payload.get("files_to_inspect") or []),
-        proposed_steps=proposed_steps,
-        risks=risks,
-        validation_plan=validation_plan,
-        execution_prompt_for_director=_normalize_execution_prompt(
-            _require_text(payload.get("execution_prompt_for_director"), "execution_prompt_for_director")
-        ),
-        requires_user_approval=True,
-        execution_allowed=False,
-    )
+    try:
+        packet = PlanPacket(
+            ticket_id=normalized_ticket_id,
+            proposed_ticket_id=proposed_ticket_id,
+            objective=objective_text,
+            repo_scope=repo_scope,
+            files_to_inspect=list(planning_receipt_payload.get("files_to_inspect") or []),
+            proposed_steps=proposed_steps,
+            risks=risks,
+            validation_plan=validation_plan,
+            execution_prompt_for_director=_normalize_execution_prompt(
+                _require_text(payload.get("execution_prompt_for_director"), "execution_prompt_for_director")
+            ),
+            requires_user_approval=True,
+            execution_allowed=False,
+        )
+    except ContractError as exc:
+        raise ChatPlanError(str(exc)) from exc
 
     response_json = json.dumps(packet.to_dict(), indent=2)
     session.add_assistant_message(content=response_json)

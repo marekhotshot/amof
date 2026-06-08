@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/agent-run-result.schema.json",
+  "title": "Agent Run Result",
+  "description": "Canonical governed result contract for AMOF agent plan-execute runs.",
+  "type": "object",
+  "propertyNames": {
+    "not": {
+      "pattern": "(^|_|-)(secret|token|password|credential|credentials|api_key|apikey|auth_header|authorization)(_|-|$)"
+    }
+  },
+  "required": [
+    "result_kind",
+    "contract_version",
+    "schema_version",
+    "status",
+    "session_id",
+    "exit_code",
+    "stop_reason",
+    "final_text",
+    "plan_path",
+    "checkpoint_path",
+    "event_log_path",
+    "journal_path",
+    "budget_summary"
+  ],
+  "properties": {
+    "result_kind": {
+      "type": "string",
+      "const": "agent_run_result"
+    },
+    "contract_version": {
+      "type": "string",
+      "const": "agent-run-v1"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "failed", "blocked"]
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "exit_code": {
+      "type": "integer"
+    },
+    "studio_session_id": {
+      "type": ["string", "null"],
+      "description": "Optional Studio Session parent correlation for runs launched under Studio.",
+      "pattern": "^studio-[0-9]{8}-[0-9]{6}(?:-[0-9]{2})?$"
+    },
+    "stop_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "final_text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plan_path": {
+      "type": ["string", "null"]
+    },
+    "checkpoint_path": {
+      "type": ["string", "null"]
+    },
+    "event_log_path": {
+      "type": ["string", "null"]
+    },
+    "journal_path": {
+      "type": ["string", "null"]
+    },
+    "budget_summary": {
+      "type": "object",
+      "required": ["limit", "spent", "remaining"],
+      "propertyNames": {
+        "not": {
+          "pattern": "(^|_|-)(secret|token|password|credential|credentials|api_key|apikey|auth_header|authorization)(_|-|$)"
+        }
+      },
+      "properties": {
+        "limit": {
+          "type": ["number", "null"]
+        },
+        "spent": {
+          "type": "number"
+        },
+        "remaining": {
+          "type": ["number", "null"]
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

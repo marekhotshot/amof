@@ -25,7 +25,7 @@ from .base import (
     ToolCallRequest,
     Usage,
     classify_provider_status,
-    estimate_cost,
+    estimate_cost_details,
     get_context_window,
 )
 
@@ -531,17 +531,20 @@ class AnthropicClient(LLMClient):
         """Build normalized usage metrics from Anthropic response."""
         cache_creation = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
         cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+        estimated_cost, cost_status, cost_observed = estimate_cost_details(
+            response.model,
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            cache_creation_tokens=cache_creation,
+            cache_read_tokens=cache_read,
+        )
         return Usage(
             model=response.model,
             prompt_tokens=response.usage.input_tokens,
             completion_tokens=response.usage.output_tokens,
             latency_ms=latency_ms,
-            estimated_cost=estimate_cost(
-                response.model,
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-                cache_creation_tokens=cache_creation,
-                cache_read_tokens=cache_read,
-            ),
+            estimated_cost=estimated_cost,
             context_window=get_context_window(response.model),
+            cost_status=cost_status,
+            cost_observed=cost_observed,
         )

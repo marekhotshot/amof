@@ -24,6 +24,7 @@ class LazyCommandLoadingTests(unittest.TestCase):
         _clear_modules(
             "amof.commands",
             "amof.commands.help_cmd",
+            "amof.commands.studio",
             "amof.commands.promote_main",
             "amof.commands.release",
         )
@@ -31,6 +32,7 @@ class LazyCommandLoadingTests(unittest.TestCase):
         commands = importlib.import_module("amof.commands")
 
         self.assertNotIn("amof.commands.help_cmd", sys.modules)
+        self.assertNotIn("amof.commands.studio", sys.modules)
         self.assertNotIn("amof.commands.promote_main", sys.modules)
         self.assertNotIn("amof.commands.release", sys.modules)
 
@@ -38,6 +40,7 @@ class LazyCommandLoadingTests(unittest.TestCase):
 
         self.assertTrue(callable(cmd_help))
         self.assertIn("amof.commands.help_cmd", sys.modules)
+        self.assertNotIn("amof.commands.studio", sys.modules)
         self.assertNotIn("amof.commands.promote_main", sys.modules)
         self.assertNotIn("amof.commands.release", sys.modules)
 
@@ -45,6 +48,7 @@ class LazyCommandLoadingTests(unittest.TestCase):
         _clear_modules(
             "amof.entrypoint",
             "amof.commands.help_cmd",
+            "amof.commands.studio",
             "amof.commands.promote_main",
             "amof.commands.release",
         )
@@ -52,6 +56,7 @@ class LazyCommandLoadingTests(unittest.TestCase):
         entrypoint = importlib.import_module("amof.entrypoint")
 
         self.assertNotIn("amof.commands.help_cmd", sys.modules)
+        self.assertNotIn("amof.commands.studio", sys.modules)
         self.assertNotIn("amof.commands.promote_main", sys.modules)
         self.assertNotIn("amof.commands.release", sys.modules)
 
@@ -60,6 +65,7 @@ class LazyCommandLoadingTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertIn("amof.commands.help_cmd", sys.modules)
+        self.assertNotIn("amof.commands.studio", sys.modules)
         self.assertNotIn("amof.commands.promote_main", sys.modules)
         self.assertNotIn("amof.commands.release", sys.modules)
 

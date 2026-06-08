@@ -380,6 +380,58 @@ def canonical_model_name(model: str) -> str:
     return model
 
 
+def lookup_model_pricing(model: str) -> Optional[Dict[str, float]]:
+    """Resolve pricing metadata for a model, if AMOF knows it."""
+    model_key = canonical_model_name(model)
+    pricing = MODEL_PRICING.get(model_key)
+    if pricing:
+        return pricing
+    for name, candidate in MODEL_PRICING.items():
+        if model_key.startswith(name.rsplit("-", 1)[0]):
+            return candidate
+    return None
+
+
+def estimate_cost_details(
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cache_creation_tokens: int = 0,
+    cache_read_tokens: int = 0,
+) -> tuple[float, str, bool]:
+    """Estimate cost and truth status for one call.
+
+    Returns `(estimated_cost, cost_status, cost_observed)`.
+    """
+    pricing = lookup_model_pricing(model)
+    if not pricing:
+        return 0.0, "unknown", False
+
+    input_price = pricing["input"]
+
+    non_cached_input = max(0, prompt_tokens - cache_creation_tokens - cache_read_tokens)
+    input_cost = (non_cached_input / 1_000_000) * input_price
+
+    if _is_openai_model(model):
+        cache_write_cost = (cache_creation_tokens / 1_000_000) * input_price
+        cache_read_cost = (cache_read_tokens / 1_000_000) * input_price * 0.50
+    else:
+        cache_write_cost = (cache_creation_tokens / 1_000_000) * input_price * 1.25
+        cache_read_cost = (cache_read_tokens / 1_000_000) * input_price * 0.10
+
+    output_cost = (completion_tokens / 1_000_000) * pricing["output"]
+    return round(input_cost + cache_write_cost + cache_read_cost + output_cost, 6), "observed", True
+
+
+def normalized_usage_cost(usage: Usage) -> tuple[str, float | None]:
+    """Return truthful `(cost_status, estimated_cost)` for emitted artifacts."""
+    raw_status = str(getattr(usage, "cost_status", "observed") or "observed").strip().lower()
+    observed = bool(getattr(usage, "cost_observed", True))
+    if raw_status != "observed" or not observed:
+        return "unknown", None
+    return "observed", float(getattr(usage, "estimated_cost", 0.0) or 0.0)
+
+
 def estimate_cost(
     model: str,
     prompt_tokens: int,
@@ -400,36 +452,14 @@ def estimate_cost(
     - cache_creation_tokens: no extra charge (automatic caching)
     - cache_read_tokens: charged at 0.50x input price (50% discount)
     """
-    model_key = canonical_model_name(model)
-    pricing = MODEL_PRICING.get(model_key)
-    if not pricing:
-        # Unknown model -- try prefix matching
-        for name, p in MODEL_PRICING.items():
-            if model_key.startswith(name.rsplit("-", 1)[0]):
-                pricing = p
-                break
-    if not pricing:
-        return 0.0
-
-    input_price = pricing["input"]
-
-    # Split input tokens into cached and non-cached
-    non_cached_input = max(0, prompt_tokens - cache_creation_tokens - cache_read_tokens)
-    input_cost = (non_cached_input / 1_000_000) * input_price
-
-    # Provider-specific cache discount rates
-    if _is_openai_model(model):
-        # OpenAI: no write premium, 50% discount on reads
-        cache_write_cost = (cache_creation_tokens / 1_000_000) * input_price  # 1.0x
-        cache_read_cost = (cache_read_tokens / 1_000_000) * input_price * 0.50
-    else:
-        # Anthropic: 1.25x write premium, 90% discount on reads
-        cache_write_cost = (cache_creation_tokens / 1_000_000) * input_price * 1.25
-        cache_read_cost = (cache_read_tokens / 1_000_000) * input_price * 0.10
-
-    output_cost = (completion_tokens / 1_000_000) * pricing["output"]
-
-    return round(input_cost + cache_write_cost + cache_read_cost + output_cost, 6)
+    estimated_cost, _cost_status, _cost_observed = estimate_cost_details(
+        model,
+        prompt_tokens,
+        completion_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        cache_read_tokens=cache_read_tokens,
+    )
+    return estimated_cost
 
 
 def get_context_window(model: str) -> int:

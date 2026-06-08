@@ -22,6 +22,10 @@ VALID_EXAMPLE_PATH = ROOT / "contracts" / "examples" / "external-agent-plan-exec
 MINIMAL_EXAMPLE_PATH = ROOT / "contracts" / "examples" / "external-agent-plan-execute-request.minimal.example.json"
 INVALID_EXAMPLE_PATH = ROOT / "contracts" / "examples" / "external-agent-plan-execute-request.invalid-unsafe.example.json"
 RESULT_ENVELOPE_SCHEMA_PATH = ROOT / "contracts" / "execution-handoff-result.schema.json"
+AGENT_RUN_RESULT_SCHEMA_PATH = ROOT / "contracts" / "agent-run-result.schema.json"
+AGENT_RUN_RESULT_EXAMPLE_PATH = ROOT / "contracts" / "examples" / "agent-run-result.example.json"
+PLAN_BUNDLE_SCHEMA_PATH = ROOT / "contracts" / "plan-bundle.schema.json"
+PLAN_BUNDLE_EXAMPLE_PATH = ROOT / "contracts" / "examples" / "plan-bundle.example.json"
 
 
 def _load(path: Path) -> dict:
@@ -186,7 +190,19 @@ class ExternalAgentPlanExecuteRequestSchemaTests(unittest.TestCase):
         self.assertNotIn("request_id", runtime_payload)
         self.assertNotIn("mode", runtime_payload)
 
-    def test_result_envelope_contract_remains_unchanged(self) -> None:
+    def test_plan_bundle_contract_is_versioned_and_strict(self) -> None:
+        schema = _load(PLAN_BUNDLE_SCHEMA_PATH)
+        example = _load(PLAN_BUNDLE_EXAMPLE_PATH)
+
+        self.assertEqual(schema["properties"]["result_kind"]["const"], "plan_bundle")
+        self.assertEqual(schema["properties"]["contract_version"]["const"], "plan-bundle-v1")
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(example["result_kind"], "plan_bundle")
+        self.assertEqual(example["contract_version"], "plan-bundle-v1")
+        self.assertTrue(example["requires_user_approval"])
+        self.assertFalse(example["execution_allowed"])
+
+    def test_result_envelope_contract_exposes_canonical_agent_run_shape(self) -> None:
         envelope = AgentPlanExecuteEnvelope(
             schema_version=1,
             status="completed",
@@ -203,6 +219,8 @@ class ExternalAgentPlanExecuteRequestSchemaTests(unittest.TestCase):
         self.assertEqual(
             set(envelope.to_dict()),
             {
+                "result_kind",
+                "contract_version",
                 "schema_version",
                 "status",
                 "session_id",
@@ -216,6 +234,14 @@ class ExternalAgentPlanExecuteRequestSchemaTests(unittest.TestCase):
                 "budget_summary",
             },
         )
+        self.assertEqual(envelope.to_dict()["result_kind"], "agent_run_result")
+        self.assertEqual(envelope.to_dict()["contract_version"], "agent-run-v1")
+        agent_run_schema = _load(AGENT_RUN_RESULT_SCHEMA_PATH)
+        agent_run_example = _load(AGENT_RUN_RESULT_EXAMPLE_PATH)
+        self.assertEqual(agent_run_schema["properties"]["result_kind"]["const"], "agent_run_result")
+        self.assertEqual(agent_run_schema["properties"]["contract_version"]["const"], "agent-run-v1")
+        self.assertEqual(agent_run_example["result_kind"], "agent_run_result")
+        self.assertEqual(agent_run_example["contract_version"], "agent-run-v1")
         schema = _load(RESULT_ENVELOPE_SCHEMA_PATH)
         self.assertEqual(schema["$id"], "https://amof.dev/contracts/execution-handoff-result.schema.json")
         self.assertEqual(schema["properties"]["result_kind"]["const"], "workspace_materialization_handoff_result")

@@ -322,12 +322,11 @@ class LocalOpenAICompatibleClient(OpenAIClient):
           (``local/<host>/<model>`` or ``runpod/<host>/<model>``) so
           operators can see in the run timeline which provider served the
           call.
-        - ``estimated_cost`` is **always** ``0.0``. We deliberately do not
-          fall back to ``estimate_cost(...)`` (which would attach a fake
-          cloud-equivalent price) because that would lie to the operator
-          about real spend. For Runpod the real spend is per-second GPU
-          billing, not per-token; surfacing it requires a separate
-          billing-side integration that lives outside this client.
+        - ``estimated_cost`` stays ``0.0`` internally, but the emitted cost
+          truth is marked unknown so artifacts never claim a fake free call.
+          For Runpod the real spend is per-second GPU billing, not per-token;
+          surfacing it requires a separate billing-side integration that lives
+          outside this client.
         """
 
         prompt_tokens = response.usage.prompt_tokens if response.usage else 0
@@ -340,6 +339,8 @@ class LocalOpenAICompatibleClient(OpenAIClient):
             latency_ms=latency_ms,
             estimated_cost=0.0,
             context_window=self.context_window(),
+            cost_status="unknown",
+            cost_observed=False,
         )
 
     def _parse_response(self, response: Any, latency_ms: int) -> LLMResponse:

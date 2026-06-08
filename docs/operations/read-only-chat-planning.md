@@ -6,7 +6,10 @@ Status: public MVP
 
 `amof chat plan` is the first bounded AMOF chat/planning surface that routes
 one planning call through the active `remote-ial` provider profile and emits a
-proposal-only `PlanPacket` for AMOF Director.
+proposal-only `PlanBundle` for AMOF Director.
+
+`PlanPacket` remains as a compatibility alias in runtime payloads, but the
+canonical planning contract is now `plan_bundle`.
 
 It is intentionally narrower than `amof agent`:
 
@@ -28,8 +31,8 @@ the target repo. For precise planning, pass explicit `--file` values.
 
 ## Output
 
-The command prints a structured `PlanPacket` proposal plus transport/evidence
-metadata. The `PlanPacket` is always non-executable and always carries:
+The command prints a structured `PlanBundle` proposal plus transport/evidence
+metadata. The canonical bundle is always non-executable and always carries:
 
 - `requires_user_approval: true`
 - `execution_allowed: false`

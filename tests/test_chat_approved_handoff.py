@@ -88,7 +88,7 @@ def _finalized_session(repo: Path, amof_home: Path) -> chat.IntakeSessionResult:
                 "ticket_id": "AMOF-283",
                 "proposed_ticket_id": None,
                 "proposed_steps": [
-                    "Write an explicit approval artifact for finalized PlanPackets.",
+                    "Write an explicit approval artifact for finalized PlanBundles.",
                     "Convert approved artifacts into Director intake envelopes without execution side effects.",
                 ],
                 "risks": ["Crossing the chat boundary into execution would violate ownership rules."],
@@ -112,7 +112,7 @@ def _finalized_session(repo: Path, amof_home: Path) -> chat.IntakeSessionResult:
                                 return_value={"messages": "full", "journal": "full"},
                             ):
                                 started = chat.start_bounded_chat_session(
-                                    objective="Bridge approved PlanPackets into existing workspace handoff contracts.",
+                                    objective="Bridge approved PlanBundles into existing workspace handoff contracts.",
                                     repo=repo,
                                     ticket_id="AMOF-283",
                                 )

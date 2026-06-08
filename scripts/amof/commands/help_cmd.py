@@ -40,8 +40,23 @@ _HELP: Dict[str, str] = {
 
   This command reads only a bounded set of repo files, routes inference through
   the active remote-ial provider profile, writes evidence to AMOF app-data under
-  chat-plan run paths, and emits a non-executable PlanPacket with
+  chat-plan run paths, and emits a non-executable PlanBundle with
   `execution_allowed: false` that still requires user approval.
+""",
+
+    "studio": """
+  amof studio — Additive Studio Session ledger core
+
+  Public use:
+    amof studio create
+    amof studio show studio-20260607-203142
+    amof studio checkpoint add studio-20260607-203142 --summary "Planning complete"
+    amof studio attach-run studio-20260607-203142 20260607-193107
+    amof studio end studio-20260607-203142
+
+  Studio commands create an append-only parent session ledger in AMOF app-data.
+  They do not rename existing run `session_id` values and do not require a
+  polished client to manage attached runs.
 """,
 
     "agent": """
@@ -286,6 +301,7 @@ _PUBLIC_TOPICS = [
     "update",
     "uninstall",
     "troubleshoot",
+    "studio",
 ]
 _ADVANCED_TOPICS = ["status", "context", "manifest", "generated-build", "director", "workspace", "mcp", "server"]
 _WORKSPACE_TOPICS = ["install", "sync", "ticket"]

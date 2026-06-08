@@ -28,7 +28,7 @@ from .base import (
     Usage,
     canonical_model_name,
     classify_provider_status,
-    estimate_cost,
+    estimate_cost_details,
     get_context_window,
 )
 
@@ -532,8 +532,10 @@ class OpenAIClient(LLMClient):
         if cost_from_provider is not None:
             try:
                 estimated_cost = float(cost_from_provider)
+                cost_status = "observed"
+                cost_observed = True
             except (TypeError, ValueError):
-                estimated_cost = estimate_cost(
+                estimated_cost, cost_status, cost_observed = estimate_cost_details(
                     response.model or self._model,
                     prompt_tokens,
                     completion_tokens,
@@ -541,7 +543,7 @@ class OpenAIClient(LLMClient):
                     cache_read_tokens=cache_read,
                 )
         else:
-            estimated_cost = estimate_cost(
+            estimated_cost, cost_status, cost_observed = estimate_cost_details(
                 response.model or self._model,
                 prompt_tokens,
                 completion_tokens,
@@ -556,4 +558,6 @@ class OpenAIClient(LLMClient):
             latency_ms=latency_ms,
             estimated_cost=estimated_cost,
             context_window=get_context_window(response.model or self._model),
+            cost_status=cost_status,
+            cost_observed=cost_observed,
         )

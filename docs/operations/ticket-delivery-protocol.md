@@ -15,7 +15,7 @@ validated delivery.
 
 AMOF workflow ownership is split as follows:
 
-- `chat`: intake, clarification, and proposal-only `PlanPacket` shaping
+- `chat`: intake, clarification, and proposal-only `PlanBundle` shaping
 - `agent`: approved execution path
 - `ticket`: delivery lifecycle, worktree creation/switching, `PlanItems`,
   checkpoint commits, validation receipts, and readiness state

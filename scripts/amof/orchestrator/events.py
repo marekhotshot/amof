@@ -25,6 +25,7 @@ class EventLog:
         runs_dir: Optional[Path] = None,
         *,
         run_id: Optional[str] = None,
+        studio_session_id: Optional[str] = None,
         ticket_id: Optional[str] = None,
         planning_mode: Optional[str] = None,
         context: Optional[str] = None,
@@ -32,6 +33,9 @@ class EventLog:
     ):
         self.session_id = session_id or datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         self.run_id = str(run_id or self.session_id)
+        self.studio_session_id = (
+            str(studio_session_id).strip() if studio_session_id is not None else None
+        )
         self.ticket_id = str(ticket_id).strip() if ticket_id is not None else None
         self.planning_mode = str(planning_mode).strip() if planning_mode is not None else None
         self.context = str(context).strip() if context is not None else None
@@ -58,6 +62,7 @@ class EventLog:
         severity = str(payload.pop("severity", "info") or "info")
         actor = str(payload.pop("actor", self.actor) or self.actor)
         ticket_id = payload.pop("ticket_id", self.ticket_id)
+        studio_session_id = payload.pop("studio_session_id", self.studio_session_id)
         planning_mode = payload.pop("planning_mode", self.planning_mode)
         context = payload.pop("context", self.context)
         event = {
@@ -76,6 +81,8 @@ class EventLog:
             "type": event_type,
             **payload,
         }
+        if studio_session_id is not None:
+            event["studio_session_id"] = studio_session_id
         self._events.append(event)
         self._append_to_file(event)
         return event
@@ -379,6 +386,7 @@ class EventLog:
             for e in llm_calls
             if isinstance(e.get("cost"), (int, float))
         )
+        unknown_cost_calls = sum(1 for e in llm_calls if e.get("cost_status") == "unknown")
         total_tokens_in = sum(e.get("tokens", {}).get("in", 0) for e in llm_calls)
         total_tokens_out = sum(e.get("tokens", {}).get("out", 0) for e in llm_calls)
         total_latency = sum(e.get("latency_ms", 0) for e in llm_calls)
@@ -404,7 +412,9 @@ class EventLog:
 
         result = {
             "llm_calls": len(llm_calls),
-            "total_cost": round(total_cost, 6),
+            "total_cost": None if unknown_cost_calls > 0 and total_cost == 0.0 else round(total_cost, 6),
+            "cost_status": "unknown" if unknown_cost_calls > 0 and total_cost == 0.0 else "observed",
+            "unknown_cost_calls": unknown_cost_calls,
             "total_tokens": {"in": total_tokens_in, "out": total_tokens_out},
             "avg_latency_ms": total_latency // max(len(llm_calls), 1),
             "tool_calls": len(tool_calls),
@@ -466,9 +476,15 @@ class EventLog:
                 lines.append(f"[{ts}] ERROR [{event.get('error_type', '?')}] {event.get('message', '')[:80]}")
             elif etype == "session_end":
                 telem = event.get("telemetry", {})
+                total_cost = telem.get("total_cost")
+                cost_text = (
+                    f"${float(total_cost):.4f}"
+                    if isinstance(total_cost, (int, float))
+                    else "cost=unknown"
+                )
                 lines.append(
                     f"[{ts}] SESSION END — "
-                    f"${telem.get('total_cost', 0):.4f} "
+                    f"{cost_text} "
                     f"{telem.get('total_calls', 0)} calls"
                 )
             elif etype == "context_summarized":

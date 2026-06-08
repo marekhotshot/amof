@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/studio-session.schema.json",
+  "title": "Studio Session",
+  "description": "Canonical Studio Session manifest stored at session.json. Secrets, provider credentials, and raw auth material are forbidden.",
+  "type": "object",
+  "propertyNames": {
+    "not": {
+      "pattern": "(^|_|-)(secret|token|password|credential|credentials|api_key|apikey|auth_header|authorization)(_|-|$)"
+    }
+  },
+  "required": [
+    "schema_version",
+    "studio_session_id",
+    "status",
+    "created_at",
+    "ended_at",
+    "capture_state",
+    "finalization_state",
+    "redaction_policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "studio_session_id": {
+      "type": "string",
+      "pattern": "^studio-[0-9]{8}-[0-9]{6}(?:-[0-9]{2})?$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "ended"]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ended_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "capture_state": {
+      "type": "object",
+      "propertyNames": {
+        "not": {
+          "pattern": "(^|_|-)(secret|token|password|credential|credentials|api_key|apikey|auth_header|authorization)(_|-|$)"
+        }
+      },
+      "required": ["recording", "streaming"],
+      "properties": {
+        "recording": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streaming": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "finalization_state": {
+      "type": "string",
+      "minLength": 1
+    },
+    "redaction_policy": {
+      "type": "object",
+      "propertyNames": {
+        "not": {
+          "pattern": "(^|_|-)(secret|token|password|credential|credentials|api_key|apikey|auth_header|authorization)(_|-|$)"
+        }
+      },
+      "required": ["safe_summary_only"],
+      "properties": {
+        "safe_summary_only": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

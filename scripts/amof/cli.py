@@ -24,6 +24,7 @@ PUBLIC_HELP_COMMANDS = (
     "execution",
     "loop",
     "runs",
+    "studio",
     "agent",
     "bootstrap",
     "update",
@@ -60,6 +61,7 @@ def parse_args() -> argparse.Namespace:
         "  amof setup provider --list         Show public provider templates\n"
         "  amof init --adopt .                Adopt the current Git repo\n"
         '  amof chat plan "Inspect this repo"  Route read-only planning through remote IAL\n'
+        "  amof studio create                Start a Studio Session ledger\n"
         '  amof agent --plan "Inspect this repo"  Run a read-only plan\n'
         "  amof handoff prepare --payload-kind selected-text --source chatgpt --target zed --preview\n"
         "  amof bootstrap bundle --json       Emit bootstrap evidence\n"
@@ -769,7 +771,7 @@ def parse_args() -> argparse.Namespace:
     chat_sub = chat_parser.add_subparsers(dest="chat_cmd", required=True)
     chat_plan = chat_sub.add_parser(
         "plan",
-        help="Build one non-executable PlanPacket proposal for AMOF Director",
+        help="Build one non-executable PlanBundle proposal for AMOF Director",
     )
     chat_plan.add_argument(
         "objective",
@@ -782,7 +784,7 @@ def parse_args() -> argparse.Namespace:
     )
     chat_plan.add_argument(
         "--ticket-id",
-        help="Optional ticket identifier to pin into the PlanPacket",
+        help="Optional ticket identifier to pin into the PlanBundle",
     )
     chat_plan.add_argument(
         "--file",
@@ -824,7 +826,7 @@ def parse_args() -> argparse.Namespace:
     )
     chat_start.add_argument(
         "--ticket-id",
-        help="Optional ticket identifier to pin into the eventual PlanPacket",
+        help="Optional ticket identifier to pin into the eventual PlanBundle",
     )
     chat_start.add_argument(
         "--file",
@@ -867,12 +869,12 @@ def parse_args() -> argparse.Namespace:
     chat_status.add_argument("session_id", help="Existing bounded intake session id")
     chat_finalize = chat_sub.add_parser(
         "finalize",
-        help="Finalize one bounded intake session into a proposal-only PlanPacket",
+        help="Finalize one bounded intake session into a proposal-only PlanBundle",
     )
     chat_finalize.add_argument("session_id", help="Existing bounded intake session id")
     chat_approve = chat_sub.add_parser(
         "approve",
-        help="Write one explicit approval artifact for a finalized proposal-only PlanPacket",
+        help="Write one explicit approval artifact for a finalized proposal-only PlanBundle",
     )
     chat_approve.add_argument(
         "session_id", help="Existing finalized bounded intake session id"
@@ -887,7 +889,7 @@ def parse_args() -> argparse.Namespace:
     )
     chat_handoff = chat_sub.add_parser(
         "handoff",
-        help="Convert one approved PlanPacket artifact into a Director Intake execution envelope",
+        help="Convert one approved PlanBundle artifact into a Director Intake execution envelope",
     )
     chat_handoff.add_argument(
         "approval_id_or_path",
@@ -968,6 +970,65 @@ def parse_args() -> argparse.Namespace:
         help="Maximum follow polls before exit (default: 20)",
     )
     runs_tail.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+
+    studio_parser = subparsers.add_parser(
+        "studio",
+        help="Create and inspect additive Studio Session ledgers",
+    )
+    studio_sub = studio_parser.add_subparsers(dest="studio_cmd", required=True)
+    studio_create = studio_sub.add_parser(
+        "create",
+        help="Create one append-only Studio Session ledger",
+    )
+    studio_create.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    studio_show = studio_sub.add_parser(
+        "show",
+        help="Show one Studio Session ledger",
+    )
+    studio_show.add_argument("studio_session_id", help="Studio Session identifier")
+    studio_show.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    studio_checkpoint = studio_sub.add_parser(
+        "checkpoint",
+        help="Manage Studio Session checkpoints",
+    )
+    studio_checkpoint_sub = studio_checkpoint.add_subparsers(
+        dest="studio_checkpoint_cmd",
+        required=True,
+    )
+    studio_checkpoint_add = studio_checkpoint_sub.add_parser(
+        "add",
+        help="Append one manual checkpoint to a Studio Session",
+    )
+    studio_checkpoint_add.add_argument("studio_session_id", help="Studio Session identifier")
+    studio_checkpoint_add.add_argument(
+        "--summary",
+        required=True,
+        help="Short operator checkpoint summary",
+    )
+    studio_checkpoint_add.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    studio_attach_run = studio_sub.add_parser(
+        "attach-run",
+        help="Attach one existing AMOF run to a Studio Session ledger",
+    )
+    studio_attach_run.add_argument("studio_session_id", help="Studio Session identifier")
+    studio_attach_run.add_argument("run_id", help="Existing AMOF run id or session id")
+    studio_attach_run.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    studio_end = studio_sub.add_parser(
+        "end",
+        help="End one Studio Session ledger",
+    )
+    studio_end.add_argument("studio_session_id", help="Studio Session identifier")
+    studio_end.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON"
     )
 
@@ -1329,6 +1390,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="SESSION_ID",
         help="Resume a previous session (loads messages + telemetry; plan checkpoints restore subtask state)",
+    )
+    agent_parser.add_argument(
+        "--studio-session",
+        default=None,
+        metavar="STUDIO_SESSION_ID",
+        help="Optional parent Studio Session id to correlate this new run with",
     )
     agent_parser.add_argument(
         "--follow-up",

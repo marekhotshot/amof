@@ -71,6 +71,8 @@ class ExecutionPlan:
     # Metadata
     planner_model: str = ""
     planning_cost: float = 0.0
+    planning_cost_status: str = "observed"
+    planning_cost_observed: bool = True
     planning_latency_ms: int = 0
     file_path: Optional[Path] = None  # path to persisted .md file
     continue_on_failure: bool = False
@@ -159,6 +161,10 @@ class ExecutionPlan:
             lines.append(f"**Planner model**: {self.planner_model}")
         if self.planning_cost > 0:
             lines.append(f"**Planning cost**: ${self.planning_cost:.4f}")
+        elif self.planner_model and (
+            self.planning_cost_status != "observed" or not self.planning_cost_observed
+        ):
+            lines.append("**Planning cost**: unknown")
         lines.append("")
 
         # Analysis
@@ -442,7 +448,17 @@ class TaskPlanner:
             verification=plan_data.get("verification", ""),
             questions=plan_data.get("questions", []),
             planner_model=usage.model if usage else self._llm.model_name(),
-            planning_cost=usage.estimated_cost if usage else 0.0,
+            planning_cost=(
+                usage.estimated_cost
+                if usage
+                and getattr(usage, "cost_status", "observed") == "observed"
+                and bool(getattr(usage, "cost_observed", True))
+                else 0.0
+            ),
+            planning_cost_status=(
+                str(getattr(usage, "cost_status", "observed") or "observed") if usage else "observed"
+            ),
+            planning_cost_observed=bool(getattr(usage, "cost_observed", True)) if usage else True,
             planning_latency_ms=latency_ms,
         )
 

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "studio_session_id": "studio-20260608-004150",
+  "status": "active",
+  "created_at": "2026-06-08T00:41:50+00:00",
+  "ended_at": null,
+  "capture_state": {
+    "recording": "not_started",
+    "streaming": "not_started"
+  },
+  "finalization_state": "not_started",
+  "redaction_policy": {
+    "safe_summary_only": true
+  }
+}

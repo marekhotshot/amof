@@ -1,0 +1,20 @@
+{
+  "result_kind": "agent_run_result",
+  "contract_version": "agent-run-v1",
+  "schema_version": 1,
+  "status": "completed",
+  "session_id": "20260607-220000",
+  "studio_session_id": "studio-20260608-004150",
+  "exit_code": 0,
+  "stop_reason": "completed",
+  "final_text": "Execution complete: 3/3 completed, 0 failed, 0 skipped",
+  "plan_path": "/tmp/amof/plan.md",
+  "checkpoint_path": null,
+  "event_log_path": "/tmp/amof/events.jsonl",
+  "journal_path": "/tmp/amof/journal.md",
+  "budget_summary": {
+    "limit": 2.0,
+    "spent": 0.42,
+    "remaining": 1.58
+  }
+}

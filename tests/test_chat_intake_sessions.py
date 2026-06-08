@@ -39,8 +39,14 @@ def _fake_planning_context(repo: Path) -> object:
 
 
 class _FakeQueuedClient:
-    def __init__(self, payloads: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        payloads: list[dict[str, object]],
+        *,
+        usage_payloads: list[dict[str, object]] | None = None,
+    ) -> None:
         self.payloads = list(payloads)
+        self.usage_payloads = list(usage_payloads or [])
         self.calls = 0
 
     def chat(self, *args, **kwargs) -> LLMResponse:
@@ -48,16 +54,19 @@ class _FakeQueuedClient:
             raise AssertionError("no more queued chat responses")
         self.calls += 1
         payload = self.payloads.pop(0)
+        usage_payload = self.usage_payloads.pop(0) if self.usage_payloads else {}
+        usage_kwargs = {
+            "model": "remote-ial/test-model",
+            "prompt_tokens": 50,
+            "completion_tokens": 20,
+            "latency_ms": 5,
+            "estimated_cost": 0.01,
+            "provider": "remote-ial",
+        }
+        usage_kwargs.update(usage_payload)
         return LLMResponse(
             text=json.dumps(payload),
-            usage=Usage(
-                model="remote-ial/test-model",
-                prompt_tokens=50,
-                completion_tokens=20,
-                latency_ms=5,
-                estimated_cost=0.01,
-                provider="remote-ial",
-            ),
+            usage=Usage(**usage_kwargs),
         )
 
 
@@ -185,9 +194,70 @@ class ChatIntakeSessionTests(unittest.TestCase):
             self.assertEqual(finalized.status, "finalized")
             self.assertIsNotNone(finalized.plan_packet)
             self.assertTrue(finalized.non_executable_until_user_approval)
+            self.assertEqual(finalized.to_dict()["plan_bundle"]["result_kind"], "plan_bundle")
             self.assertFalse(finalized.plan_packet["execution_allowed"])
             self.assertTrue(finalized.plan_packet["requires_user_approval"])
             self.assertTrue(Path(finalized.evidence["plan_result_path"]).exists())
+
+    def test_finalize_unknown_cost_stays_truthful_in_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-chat-session-finalize-unknown-cost-") as td:
+            temp = Path(td)
+            repo = temp / "repo"
+            repo.mkdir()
+            (repo / "README.md").write_text("# Repo\n", encoding="utf-8")
+            (repo / "app.py").write_text("print('hello')\n", encoding="utf-8")
+            amof_home = temp / "amof-home"
+            fake_client = _FakeQueuedClient(
+                [
+                    {
+                        "state": "ready_to_finalize",
+                        "assistant_message": "Ready to finalize now.",
+                        "question": None,
+                        "rationale": "Sufficient context already exists.",
+                    },
+                    {
+                        "ticket_id": "AMOF-282",
+                        "proposed_ticket_id": None,
+                        "proposed_steps": ["Finalize one bounded proposal."],
+                        "risks": ["Provider cost truth is unavailable."],
+                        "validation_plan": ["Verify runtime artifacts keep null cost."],
+                        "execution_prompt_for_director": "Proposal only.",
+                        "execution_allowed": False,
+                    },
+                ],
+                usage_payloads=[
+                    {"estimated_cost": 0.0, "cost_status": "unknown", "cost_observed": False},
+                    {"estimated_cost": 0.0, "cost_status": "unknown", "cost_observed": False},
+                ],
+            )
+            with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
+                with patch.object(chat, "build_canonical_planning_context", return_value=_fake_planning_context(repo)):
+                    with patch.object(chat, "_active_provider_profile", return_value={"name": "test", "provider": "remote-ial"}):
+                        with patch.object(chat, "_profile_model", return_value="remote-ial/test-model"):
+                            with patch.object(chat, "_build_remote_ial_client", return_value=fake_client):
+                                with patch.object(chat, "_load_agent_config", return_value={}):
+                                    with patch.object(chat, "_resolve_evidence_policy", return_value={"messages": "full", "journal": "full"}):
+                                        started = chat.start_bounded_chat_session(
+                                            objective="Clarify AMOF-282 session flow",
+                                            repo=repo,
+                                            ticket_id="AMOF-282",
+                                        )
+                                        finalized = chat.finalize_bounded_chat_session(session_id=started.session_id)
+
+            telemetry_path = Path(finalized.evidence["session_dir"]) / "telemetry.json"
+            telemetry_payload = json.loads(telemetry_path.read_text(encoding="utf-8"))
+            self.assertIsNone(telemetry_payload["total_cost"])
+            self.assertEqual(telemetry_payload["cost_status"], "unknown")
+            self.assertEqual(telemetry_payload["unknown_cost_calls"], 1)
+
+            events_path = Path(finalized.evidence["events_path"])
+            events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(events[-1]["event_type"], "run_finished")
+            self.assertEqual(events[-1]["cost_status"], "unknown")
+            self.assertIsNone(events[-1]["estimated_cost"])
+            self.assertEqual(events[-2]["event_type"], "session_end")
+            self.assertIsNone(events[-2]["telemetry"]["total_cost"])
+            self.assertEqual(events[-2]["telemetry"]["cost_status"], "unknown")
 
 
 if __name__ == "__main__":

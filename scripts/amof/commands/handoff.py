@@ -126,6 +126,7 @@ class HandoffExecutionReceipt:
     exit_code: int
     stop_reason: str
     session_id: str
+    studio_session_id: str | None
     result_path: Optional[str]
     result_sha256: Optional[str]
     evidence: dict[str, Optional[str]]
@@ -142,6 +143,11 @@ class HandoffExecutionReceipt:
             "exit_code": self.exit_code,
             "stop_reason": self.stop_reason,
             "session_id": self.session_id,
+            **(
+                {"studio_session_id": self.studio_session_id}
+                if self.studio_session_id is not None
+                else {}
+            ),
             "result_path": self.result_path,
             "result_sha256": self.result_sha256,
             "evidence": dict(self.evidence),
@@ -704,6 +710,7 @@ def _execute_agent_from_handoff(
             exit_code=1,
             stop_reason="handoff_dispatch_failed",
             session_id="",
+            studio_session_id=None,
             result_path=None,
             result_sha256=None,
             evidence={},
@@ -738,6 +745,7 @@ def _execute_agent_from_handoff(
         exit_code=int(result_payload.get("exit_code") or 0),
         stop_reason=str(result_payload.get("stop_reason") or ""),
         session_id=str(result_payload.get("session_id") or ""),
+        studio_session_id=str(result_payload.get("studio_session_id") or "").strip() or None,
         result_path=str(result_path),
         result_sha256=result_sha256,
         evidence=_build_safe_evidence_refs(result_payload),

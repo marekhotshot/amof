@@ -98,6 +98,10 @@ def runs_dir() -> Path:
     return get_app_paths().data_root / "runs"
 
 
+def studio_dir() -> Path:
+    return get_app_paths().data_root / "studio"
+
+
 def director_prepare_runs_dir() -> Path:
     return get_app_paths().data_root / "evidence" / "prepare-runs"
 
@@ -191,6 +195,7 @@ __all__ = [
     "queue_dir",
     "receipts_dir",
     "runs_dir",
+    "studio_dir",
     "templates_dir",
     "ticket_worktrees_dir",
     "tmp_dir",

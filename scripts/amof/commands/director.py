@@ -121,7 +121,10 @@ def build_approved_plan_handoff_envelope(
     source_session = _require_mapping(approval_payload.get("source_session"), "approval.source_session")
     repo_truth = _require_mapping(approval_payload.get("repo_truth"), "approval.repo_truth")
     context_truth = _require_mapping(approval_payload.get("context_truth"), "approval.context_truth")
-    plan_packet = _require_mapping(approval_payload.get("plan_packet"), "approval.plan_packet")
+    plan_bundle = _require_mapping(
+        approval_payload.get("plan_bundle") or approval_payload.get("plan_packet"),
+        "approval.plan_bundle",
+    )
 
     repo_source = (
         str(repo_truth.get("canonical_remote_url") or "").strip()
@@ -134,14 +137,14 @@ def build_approved_plan_handoff_envelope(
         str(repo_truth.get("origin_main_sha") or ""),
         field_name="approval.repo_truth.origin_main_sha",
     )
-    objective = _require_text(plan_packet.get("objective"), "approval.plan_packet.objective")
+    objective = _require_text(plan_bundle.get("objective"), "approval.plan_bundle.objective")
     files_to_inspect = _string_list(
-        plan_packet.get("files_to_inspect") or [],
-        "approval.plan_packet.files_to_inspect",
+        plan_bundle.get("files_to_inspect") or [],
+        "approval.plan_bundle.files_to_inspect",
     )
     ticket_id = (
-        str(plan_packet.get("ticket_id") or "").strip()
-        or str(plan_packet.get("proposed_ticket_id") or "").strip()
+        str(plan_bundle.get("ticket_id") or "").strip()
+        or str(plan_bundle.get("proposed_ticket_id") or "").strip()
         or None
     )
     session_id = _require_text(source_session.get("session_id"), "approval.source_session.session_id")
@@ -155,14 +158,14 @@ def build_approved_plan_handoff_envelope(
     )
     indexed_context_path = str(context_truth.get("indexed_context_path") or "").strip()
     planning_branch_ref = str(repo_truth.get("planning_branch_ref") or "").strip() or "origin/main"
-    risk_reasons = [str(item).strip() for item in plan_packet.get("risks") or [] if str(item).strip()]
+    risk_reasons = [str(item).strip() for item in plan_bundle.get("risks") or [] if str(item).strip()]
 
     paths_read = [approval_artifact_path, plan_result_path, planning_receipt_path]
     if indexed_context_path:
         paths_read.append(indexed_context_path)
 
     source_summary = (
-        f"Approved PlanPacket from session {session_id} targets {repo_source} at exact SHA {expected_sha}."
+        f"Approved PlanBundle from session {session_id} targets {repo_source} at exact SHA {expected_sha}."
     )
     return {
         "result_kind": "director_intake_execution_contract",
@@ -170,7 +173,7 @@ def build_approved_plan_handoff_envelope(
             "ticket_id": ticket_id,
             "rough_intent": objective,
             "bounded_goal": (
-                "Convert one approved proposal-only PlanPacket into a workspace-materialization "
+                "Convert one approved proposal-only PlanBundle into a workspace-materialization "
                 "handoff without invoking agent execution."
             ),
             "task_kind": "other",
@@ -191,13 +194,13 @@ def build_approved_plan_handoff_envelope(
                 {
                     "kind": "file",
                     "path": approval_artifact_path,
-                    "summary": "Explicit operator approval artifact for the finalized PlanPacket.",
+                    "summary": "Explicit operator approval artifact for the finalized PlanBundle.",
                     "freshness": "fresh",
                 },
                 {
                     "kind": "file",
                     "path": plan_result_path,
-                    "summary": "Finalized proposal-only PlanPacket emitted by bounded chat.",
+                    "summary": "Finalized proposal-only PlanBundle emitted by bounded chat.",
                     "freshness": "fresh",
                 },
                 {

@@ -28,6 +28,13 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from ..app_paths import get_app_paths, runs_dir, vector_store_dir
+from ..contracts_runtime import AgentRunResult
+from .studio import (
+    StudioCliError,
+    attach_run_reference,
+    read_studio_session_id_from_events,
+    require_active_studio_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,33 +134,8 @@ class AgentPlanExecuteJsonRequest:
 
 
 @dataclass(frozen=True)
-class AgentPlanExecuteEnvelope:
-    schema_version: int
-    status: str
-    session_id: str
-    exit_code: int
-    stop_reason: str
-    final_text: str
-    plan_path: Optional[str]
-    checkpoint_path: Optional[str]
-    event_log_path: Optional[str]
-    journal_path: Optional[str]
-    budget_summary: Dict[str, Any]
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "schema_version": self.schema_version,
-            "status": self.status,
-            "session_id": self.session_id,
-            "exit_code": self.exit_code,
-            "stop_reason": self.stop_reason,
-            "final_text": self.final_text,
-            "plan_path": self.plan_path,
-            "checkpoint_path": self.checkpoint_path,
-            "event_log_path": self.event_log_path,
-            "journal_path": self.journal_path,
-            "budget_summary": dict(self.budget_summary),
-        }
+class AgentPlanExecuteEnvelope(AgentRunResult):
+    """Compatibility alias for the canonical governed Agent Run result."""
 
 
 @dataclass(frozen=True)
@@ -401,7 +383,14 @@ def _build_plan_execute_envelope(
     checkpoint_path: Any = None,
     event_log_path: Any = None,
     journal_path: Any = None,
+    studio_session_id: Optional[str] = None,
 ) -> AgentPlanExecuteEnvelope:
+    resolved_studio_session_id = studio_session_id
+    event_log_artifact = _artifact_path_text(event_log_path)
+    if resolved_studio_session_id is None and event_log_artifact is not None:
+        resolved_studio_session_id = read_studio_session_id_from_events(
+            Path(event_log_artifact)
+        )
     return AgentPlanExecuteEnvelope(
         schema_version=1,
         status=status,
@@ -411,9 +400,10 @@ def _build_plan_execute_envelope(
         final_text=final_text,
         plan_path=_artifact_path_text(plan_path),
         checkpoint_path=_artifact_path_text(checkpoint_path),
-        event_log_path=_artifact_path_text(event_log_path),
+        event_log_path=event_log_artifact,
         journal_path=_artifact_path_text(journal_path),
         budget_summary=_budget_summary_payload(telemetry),
+        studio_session_id=resolved_studio_session_id,
     )
 
 
@@ -423,6 +413,7 @@ def _failed_json_envelope(
     final_text: str,
     session_id: str = "",
     budget_summary: Optional[Dict[str, Any]] = None,
+    studio_session_id: Optional[str] = None,
 ) -> AgentPlanExecuteEnvelope:
     return AgentPlanExecuteEnvelope(
         schema_version=1,
@@ -437,6 +428,7 @@ def _failed_json_envelope(
         journal_path=None,
         budget_summary=budget_summary
         or {"limit": None, "spent": 0.0, "remaining": None},
+        studio_session_id=studio_session_id,
     )
 
 
@@ -453,6 +445,7 @@ def _json_plan_execute_early_exit(
     checkpoint_path: Any = None,
     event_log_path: Any = None,
     journal_path: Any = None,
+    studio_session_id: Optional[str] = None,
 ) -> int | AgentPlanExecuteEnvelope:
     if not json_envelope:
         return exit_code
@@ -468,6 +461,7 @@ def _json_plan_execute_early_exit(
             checkpoint_path=checkpoint_path,
             event_log_path=event_log_path,
             journal_path=journal_path,
+            studio_session_id=studio_session_id,
         )
     return AgentPlanExecuteEnvelope(
         schema_version=1,
@@ -481,11 +475,15 @@ def _json_plan_execute_early_exit(
         event_log_path=_artifact_path_text(event_log_path),
         journal_path=_artifact_path_text(journal_path),
         budget_summary={"limit": None, "spent": 0.0, "remaining": None},
+        studio_session_id=studio_session_id,
     )
 
 
 def _run_agent_plan_execute_request(
-    manifest: Dict[str, Any], request: AgentPlanExecuteJsonRequest
+    manifest: Dict[str, Any],
+    request: AgentPlanExecuteJsonRequest,
+    *,
+    studio_session_id: Optional[str] = None,
 ) -> AgentPlanExecuteEnvelope:
     with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
         result = cmd_agent(
@@ -505,6 +503,7 @@ def _run_agent_plan_execute_request(
             approve_capabilities=request.approve_capabilities,
             approve_tool_packs=request.approve_tool_packs,
             approve_writable_roots=request.approve_writable_roots,
+            studio_session_id=studio_session_id,
             _json_envelope=True,
         )
     if isinstance(result, AgentPlanExecuteEnvelope):
@@ -516,17 +515,31 @@ def _run_agent_plan_execute_request(
 
 
 def run_agent_plan_execute_envelope(
-    manifest: Dict[str, Any], payload: Any
+    manifest: Dict[str, Any],
+    payload: Any,
+    *,
+    studio_session_id: Optional[str] = None,
 ) -> AgentPlanExecuteEnvelope:
     request = parse_agent_plan_execute_json_request(payload)
-    return _run_agent_plan_execute_request(manifest, request)
+    return _run_agent_plan_execute_request(
+        manifest,
+        request,
+        studio_session_id=studio_session_id,
+    )
 
 
 def run_external_agent_plan_execute_envelope(
-    manifest: Dict[str, Any], payload: Any
+    manifest: Dict[str, Any],
+    payload: Any,
+    *,
+    studio_session_id: Optional[str] = None,
 ) -> AgentPlanExecuteCorrelationEnvelope:
     external_request = parse_external_agent_plan_execute_request(payload)
-    envelope = _run_agent_plan_execute_request(manifest, external_request.request)
+    envelope = _run_agent_plan_execute_request(
+        manifest,
+        external_request.request,
+        studio_session_id=studio_session_id,
+    )
     return AgentPlanExecuteCorrelationEnvelope(
         schema_version=1,
         request_id=external_request.request_id,
@@ -625,7 +638,11 @@ def cmd_agent_request_json(manifest: Dict[str, Any], args: Any) -> int:
     payload = None
     try:
         payload = _load_request_json_payload(str(getattr(args, "request_json", "")))
-        response = run_external_agent_plan_execute_envelope(manifest, payload)
+        response = run_external_agent_plan_execute_envelope(
+            manifest,
+            payload,
+            studio_session_id=str(getattr(args, "studio_session", None) or "").strip() or None,
+        )
     except ValueError as exc:
         response = _correlated_failed_json_envelope(
             stop_reason="invalid_request",
@@ -689,6 +706,40 @@ def _agent_allowed_rules_path() -> Path:
 def _agent_runs_session_dir(session_id: str, *, session_subdir: str = "runs") -> Path:
     base_dir = runs_dir() if session_subdir == "runs" else runs_dir() / session_subdir
     return base_dir / session_id
+
+
+def _normalized_studio_session_id(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _resume_events_path(session_id: str) -> Path:
+    return _agent_runs_session_dir(session_id) / "events.jsonl"
+
+
+def _resolve_effective_studio_session_id(
+    *,
+    requested_studio_session_id: Optional[str],
+    resume_session: Optional[str],
+) -> Optional[str]:
+    existing_studio_session_id = None
+    if resume_session:
+        resume_events = _resume_events_path(resume_session)
+        if resume_events.exists():
+            existing_studio_session_id = read_studio_session_id_from_events(resume_events)
+    if (
+        requested_studio_session_id is not None
+        and existing_studio_session_id is not None
+        and requested_studio_session_id != existing_studio_session_id
+    ):
+        raise ValueError(
+            "resume session already carries a different studio_session_id; "
+            f"resume={resume_session} existing={existing_studio_session_id} "
+            f"requested={requested_studio_session_id}"
+        )
+    return requested_studio_session_id or existing_studio_session_id
 
 
 def _legacy_session_dir(
@@ -2556,6 +2607,7 @@ def cmd_agent(
     approve_capabilities: Optional[List[str]] = None,
     approve_tool_packs: Optional[List[str]] = None,
     approve_writable_roots: Optional[List[str]] = None,
+    studio_session_id: Optional[str] = None,
     _json_envelope: bool = False,
 ) -> int | AgentPlanExecuteEnvelope:
     """Run the AMOF coding agent.
@@ -2656,6 +2708,24 @@ def cmd_agent(
             json_envelope=_json_envelope,
             stop_reason="runtime_configuration_invalid",
             final_text=followup_err,
+        )
+
+    requested_studio_session_id = _normalized_studio_session_id(studio_session_id)
+    try:
+        effective_studio_session_id = _resolve_effective_studio_session_id(
+            requested_studio_session_id=requested_studio_session_id,
+            resume_session=resume_session,
+        )
+        if effective_studio_session_id is not None:
+            require_active_studio_session(effective_studio_session_id)
+    except (ValueError, StudioCliError) as exc:
+        studio_error = str(exc)
+        sys.stderr.write(f"[agent] {studio_error}\n")
+        return _json_plan_execute_early_exit(
+            json_envelope=_json_envelope,
+            stop_reason="studio_session_invalid",
+            final_text=studio_error,
+            studio_session_id=requested_studio_session_id,
         )
 
     # Export thinking budget from config (picked up by AnthropicClient)
@@ -3009,7 +3079,28 @@ def cmd_agent(
         max_cost=max_cost,
         warning_thresholds=[float(t) for t in budget_thresholds],
     )
-    events = EventLog(session_id=session.id)
+    events = EventLog(
+        session_id=session.id,
+        studio_session_id=effective_studio_session_id,
+    )
+
+    def _attach_studio_run(mode_label: str) -> Optional[str]:
+        if effective_studio_session_id is None:
+            return None
+        try:
+            attach_run_reference(
+                studio_session_id=effective_studio_session_id,
+                run_id=session.id,
+                session_id=session.id,
+                surface="agent",
+                mode=mode_label,
+                status="running",
+                events_path=str(events.log_path),
+                session_path=str(events.session_dir),
+            )
+        except StudioCliError as exc:
+            return str(exc)
+        return None
 
     # ---- Model setup ----
     model_router = None
@@ -3501,6 +3592,17 @@ def cmd_agent(
         events.session_start(
             mode="plan-execute", goal=goal, ecosystem=session.ecosystem
         )
+        studio_attach_error = _attach_studio_run("execute")
+        if studio_attach_error:
+            sys.stderr.write(f"[agent] {studio_attach_error}\n")
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="studio_session_invalid",
+                final_text=studio_attach_error,
+                session_id=session.id,
+                event_log_path=events.log_path,
+                studio_session_id=effective_studio_session_id,
+            )
 
         # Check if we're resuming from a plan file
         plan = None
@@ -3970,7 +4072,11 @@ def cmd_agent(
             return readiness_exit
 
         # Record planning cost in telemetry
-        if plan.planning_cost > 0:
+        if plan.planner_model and (
+            plan.planning_cost > 0
+            or plan.planning_cost_status != "observed"
+            or not plan.planning_cost_observed
+        ):
             from ..orchestrator.llm.base import Usage
 
             planner_usage = Usage(
@@ -3979,6 +4085,8 @@ def cmd_agent(
                 completion_tokens=0,
                 latency_ms=plan.planning_latency_ms,
                 estimated_cost=plan.planning_cost,
+                cost_status=plan.planning_cost_status,
+                cost_observed=plan.planning_cost_observed,
             )
             telemetry.record_from_usage(planner_usage, tier="strong")
 
@@ -4178,6 +4286,17 @@ def cmd_agent(
     if goal:
         # Single-shot mode
         events.session_start(mode=mode, goal=goal, ecosystem=session.ecosystem)
+        studio_attach_error = _attach_studio_run("plan" if plan_mode else "execute")
+        if studio_attach_error:
+            sys.stderr.write(f"[agent] {studio_attach_error}\n")
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="studio_session_invalid",
+                final_text=studio_attach_error,
+                session_id=session.id,
+                event_log_path=events.log_path,
+                studio_session_id=effective_studio_session_id,
+            )
 
         model_info = primary_llm.model_name()
         if model_router:
@@ -4723,6 +4842,17 @@ def _run_interactive_shell(
 
     eco = manifest.get("ecosystem", "")
     events.session_start(mode="interactive", goal="interactive-shell", ecosystem=eco)
+    studio_attach_error = _attach_studio_run("interactive")
+    if studio_attach_error:
+        sys.stderr.write(f"[agent] {studio_attach_error}\n")
+        return _json_plan_execute_early_exit(
+            json_envelope=_json_envelope,
+            stop_reason="studio_session_invalid",
+            final_text=studio_attach_error,
+            session_id=session.id,
+            event_log_path=events.log_path,
+            studio_session_id=effective_studio_session_id,
+        )
 
     # Banner
     print()
@@ -5145,7 +5275,11 @@ def _run_plan_flow(
                 print(c.info(f"  ... ({len(thinking_lines) - 20} more lines)"))
 
         # Record planning cost
-        if plan.planning_cost > 0:
+        if plan.planner_model and (
+            plan.planning_cost > 0
+            or plan.planning_cost_status != "observed"
+            or not plan.planning_cost_observed
+        ):
             from ..orchestrator.llm.base import Usage
 
             planner_usage = Usage(
@@ -5154,6 +5288,8 @@ def _run_plan_flow(
                 completion_tokens=0,
                 latency_ms=plan.planning_latency_ms,
                 estimated_cost=plan.planning_cost,
+                cost_status=plan.planning_cost_status,
+                cost_observed=plan.planning_cost_observed,
             )
             telemetry.record_from_usage(planner_usage, tier="strong")
 

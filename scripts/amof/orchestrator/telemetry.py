@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from .llm.base import Usage, normalized_usage_cost
+
 
 @dataclass
 class CallMetrics:
@@ -180,16 +182,14 @@ class SessionTelemetry:
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
             context_used_pct=usage.context_used_pct,
-            estimated_cost=usage.estimated_cost,
+            estimated_cost=0.0,
             latency_ms=usage.latency_ms,
             tier=tier,
             provider=provider,
-            cost_status=(
-                str(getattr(usage, "cost_status", "observed") or "observed")
-                if bool(getattr(usage, "cost_observed", True))
-                else "unknown"
-            ),
+            cost_status="unknown",
         )
+        metrics.cost_status, normalized_cost = normalized_usage_cost(usage)
+        metrics.estimated_cost = normalized_cost or 0.0
         self.record(metrics)
         return metrics
 
@@ -342,10 +342,12 @@ class SessionTelemetry:
         if "prompt_cache" in data:
             telemetry.cache_creation_tokens = data["prompt_cache"].get("creation_tokens", 0)
             telemetry.cache_read_tokens = data["prompt_cache"].get("read_tokens", 0)
+        telemetry._unknown_cost_calls = int(data.get("unknown_cost_calls") or 0)
         inspected_files = data.get("inspected_files", {}).get("files", [])
         if isinstance(inspected_files, list):
             telemetry.inspected_files = [path for path in inspected_files if isinstance(path, str)]
-        telemetry._restored_cost = float(data.get("total_cost") or 0.0)
+        total_cost = data.get("total_cost")
+        telemetry._restored_cost = float(total_cost or 0.0) if total_cost is not None else 0.0
         return telemetry
 
     @property
@@ -555,10 +557,17 @@ class SessionTelemetry:
 
     def to_dict(self) -> dict:
         """Serialize for event log."""
+        observed_cost = round(self.total_cost, 6)
+        cost_status = (
+            "unknown"
+            if self.unknown_cost_calls > 0 and observed_cost == 0.0
+            else "observed"
+        )
         result = {
             "total_calls": self.total_calls,
             "total_tokens": {"in": self.total_prompt_tokens, "out": self.total_completion_tokens},
-            "total_cost": round(self.total_cost, 6),
+            "total_cost": None if cost_status == "unknown" else observed_cost,
+            "cost_status": cost_status,
             "total_latency_ms": self.total_latency_ms,
             "elapsed_seconds": round(self.elapsed_seconds, 1),
             "peak_context_pct": round(self.peak_context_pct, 1),

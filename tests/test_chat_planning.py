@@ -73,11 +73,11 @@ def _remote_ial_success_payload(*, ticket_id: str = "AMOF-CHAT-001") -> dict[str
                     "The bounded file set may omit runtime or integration context.",
                 ],
                 "validation_plan": [
-                    "Review the PlanPacket fields and confirm scope before any execution.",
+                    "Review the PlanBundle fields and confirm scope before any execution.",
                     "Require explicit user approval before Director receives the prompt.",
                 ],
                 "execution_prompt_for_director": (
-                    "Prepare a Director intake proposal from this PlanPacket only. "
+                    "Prepare a Director intake proposal from this PlanBundle only. "
                     "Await user approval before any execution flow."
                 ),
                 "execution_allowed": False,
@@ -269,6 +269,7 @@ class ChatPlanningTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertTrue(output_path.exists())
             payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["plan_bundle"]["result_kind"], "plan_bundle")
             self.assertEqual(payload["plan_packet"]["ticket_id"], "AMOF-CONFIG-LAYER-MVP-001")
 
     def test_plan_packet_preserves_remote_ial_attribution(self) -> None:
@@ -305,6 +306,7 @@ class ChatPlanningTests(unittest.TestCase):
             self.assertEqual(result.plan_packet.ticket_id, "AMOF-CHAT-001")
             self.assertTrue(result.plan_packet.requires_user_approval)
             self.assertFalse(result.plan_packet.execution_allowed)
+            self.assertEqual(result.to_dict()["plan_bundle"]["result_kind"], "plan_bundle")
             self.assertEqual(result.inference.transport_provider, "remote-ial")
             self.assertEqual(result.inference.upstream_provider, "openrouter")
             self.assertEqual(result.inference.upstream_model, "openai/gpt-4o-mini")

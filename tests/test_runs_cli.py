@@ -104,6 +104,7 @@ class RunsCliTests(unittest.TestCase):
                         "event_id": "run-b:0002",
                         "run_id": "run-b",
                         "session_id": "run-b",
+                        "studio_session_id": "studio-20260608-004150",
                         "timestamp": "2026-05-30T10:00:01+00:00",
                         "event_type": "planning_context_receipt_written",
                         "severity": "info",
@@ -133,6 +134,7 @@ class RunsCliTests(unittest.TestCase):
             self.assertEqual(stderr.getvalue(), "")
             output = stdout.getvalue()
             self.assertIn("run_id: run-b", output)
+            self.assertIn("studio_session_id: studio-20260608-004150", output)
             self.assertIn("cost_status: unknown", output)
             self.assertIn("estimated_cost: -", output)
             self.assertIn("output_path:", output)
