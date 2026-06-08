@@ -257,7 +257,7 @@ def parse_agent_plan_execute_json_request(payload: Any) -> AgentPlanExecuteJsonR
 
 def _external_agent_plan_execute_request_schema_path() -> Path:
     return (
-        Path(__file__).resolve().parents[3]
+        Path(__file__).resolve().parents[1]
         / "contracts"
         / "external-agent-plan-execute-request.schema.json"
     )

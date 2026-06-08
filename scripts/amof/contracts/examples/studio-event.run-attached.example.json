@@ -1,0 +1,11 @@
+{
+  "event_id": "studio-20260608-004150:0002",
+  "studio_session_id": "studio-20260608-004150",
+  "timestamp": "2026-06-08T00:42:00+00:00",
+  "event_type": "run.attached",
+  "run_id": "20260608-004200",
+  "session_id": "20260608-004200",
+  "surface": "agent",
+  "mode": "execute",
+  "events_path": "/tmp/amof-home/share/runs/20260608-004200/events.jsonl"
+}

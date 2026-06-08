@@ -1,0 +1,58 @@
+{
+  "planning_only": true,
+  "dispatch": "none",
+  "intake_id": "amof-intake-authority-fixture",
+  "ticket_id": "AMOF-INTAKE-AUTHORITY-EVALUATION-001",
+  "packet_ref": "tests/fixtures/intake-authority-bounded.yaml",
+  "active_context": "local",
+  "candidate_count": 1,
+  "candidates": [
+    {
+      "runner_id": "authority-local-planning",
+      "context": "local",
+      "status": "available",
+      "supported_task_kinds": [
+        "other"
+      ],
+      "allowed_mutation_modes": [
+        "read_only"
+      ],
+      "capabilities": [
+        "intake.validate",
+        "intake.plan"
+      ],
+      "authority_evidence": {
+        "runner_id": "authority-local-planning",
+        "runner_reason": "authority-local-planning: eligible",
+        "authority_decision_class": "bounded_action",
+        "authority_allowed": true,
+        "authority_eligible_tools": [
+          "Read"
+        ],
+        "authority_ineligible_tools": [
+          "Shell",
+          "MissingTool"
+        ],
+        "authority_blockers": []
+      }
+    }
+  ],
+  "reasons": [
+    "authority-local-planning: eligible"
+  ],
+  "authority_gate": {
+    "artifact_ref": "contracts/examples/intake-authority-evaluation-bounded-action.example.json",
+    "decision_class": "bounded_action",
+    "allowed": true,
+    "blockers": [],
+    "eligible_tools": [
+      "Read"
+    ],
+    "ineligible_tools": [
+      "Shell",
+      "MissingTool"
+    ],
+    "rationale": "Fixture intake requests bounded read authority evaluation only."
+  },
+  "ineligible_candidates": []
+}

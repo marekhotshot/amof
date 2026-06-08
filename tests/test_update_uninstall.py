@@ -39,6 +39,15 @@ class UpdateCommandTests(unittest.TestCase):
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
         self.assertEqual(data["project"]["version"], update_cmd.__version__)
 
+    def test_package_metadata_includes_contract_assets(self) -> None:
+        pyproject = ROOT / "pyproject.toml"
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        package_data = data["tool"]["setuptools"]["package-data"]["amof"]
+
+        self.assertIn("contracts/*.json", package_data)
+        self.assertIn("contracts/*.md", package_data)
+        self.assertIn("contracts/examples/*.json", package_data)
+
     def test_update_command_is_no_ecosystem_command(self) -> None:
         import amof.entrypoint as entrypoint
 
@@ -155,6 +164,16 @@ class UpdateCommandTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("source checkout install", stderr.getvalue())
         self.assertEqual(calls, [])
+
+    def test_external_agent_schema_path_resolves_from_package_tree(self) -> None:
+        from amof.commands import agent_cmd
+
+        schema_path = agent_cmd._external_agent_plan_execute_request_schema_path()
+
+        self.assertEqual(
+            schema_path.name, "external-agent-plan-execute-request.schema.json"
+        )
+        self.assertTrue(schema_path.exists())
 
 
 class UninstallCommandTests(unittest.TestCase):

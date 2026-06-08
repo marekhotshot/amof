@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/director-intake-execution-contract.schema.json",
+  "title": "Director Intake Execution Contract",
+  "description": "Authoritative planning-only intake envelope for AMOF editor and client integrations. Intake converts rough intent into a bounded execution handoff without mutating files or runtime surfaces. See contracts/director-intake-client-contract.md.",
+  "type": "object",
+  "required": [
+    "result_kind",
+    "ticket_summary",
+    "inspection_scope",
+    "source_truth",
+    "runtime_truth",
+    "workspace_truth",
+    "allowed_mutations",
+    "forbidden_mutations",
+    "validation_gates",
+    "stop_conditions",
+    "risk_classification",
+    "executor_disposition",
+    "next_executor_prompt"
+  ],
+  "properties": {
+    "result_kind": {
+      "type": "string",
+      "const": "director_intake_execution_contract"
+    },
+    "contract_version": {
+      "type": "string",
+      "description": "Optional schema version label for prompt clients."
+    },
+    "ticket_summary": {
+      "type": "object",
+      "required": ["rough_intent", "bounded_goal", "task_kind"],
+      "properties": {
+        "ticket_id": {
+          "type": "string"
+        },
+        "rough_intent": {
+          "type": "string"
+        },
+        "bounded_goal": {
+          "type": "string"
+        },
+        "task_kind": {
+          "type": "string",
+          "enum": [
+            "dirty_workspace_intake",
+            "runtime_failure_diagnosis",
+            "bounded_source_fix_ticket",
+            "other"
+          ]
+        },
+        "target_environment": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "inspection_scope": {
+      "type": "object",
+      "required": ["repos", "paths_read", "runtime_sources"],
+      "properties": {
+        "repos": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "paths_read": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "runtime_sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "source_truth": {
+      "$ref": "#/$defs/truthDomain"
+    },
+    "runtime_truth": {
+      "$ref": "#/$defs/truthDomain"
+    },
+    "workspace_truth": {
+      "$ref": "#/$defs/truthDomain"
+    },
+    "allowed_mutations": {
+      "type": "array",
+      "description": "Mutation classes the eventual executor may perform if all validation gates pass.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "forbidden_mutations": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Mutation classes the eventual executor must not perform.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "validation_gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/validationGate"
+      }
+    },
+    "ambiguities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ambiguity"
+      }
+    },
+    "stop_conditions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "risk_classification": {
+      "type": "object",
+      "required": ["level", "reasons"],
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"]
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "executor_disposition": {
+      "type": "string",
+      "enum": ["replay_now", "replay_later", "defer", "kill"]
+    },
+    "next_executor_prompt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_handoff": {
+      "$ref": "#/$defs/executionHandoff"
+    }
+  },
+  "$defs": {
+    "truthDomain": {
+      "type": "object",
+      "required": ["status", "summary", "evidence"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["confirmed", "partial", "unknown", "stale", "conflicted"]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["kind", "summary"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["file", "contract", "audit", "runtime", "workspace", "operator_statement", "other"]
+        },
+        "path": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "freshness": {
+          "type": "string",
+          "enum": ["fresh", "stale", "unknown"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "validationGate": {
+      "type": "object",
+      "required": ["name", "requirement", "failure_action"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "requirement": {
+          "type": "string"
+        },
+        "failure_action": {
+          "type": "string",
+          "enum": ["stop", "defer", "kill"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ambiguity": {
+      "type": "object",
+      "required": ["question", "impact"],
+      "properties": {
+        "question": {
+          "type": "string"
+        },
+        "impact": {
+          "type": "string"
+        },
+        "required_resolver": {
+          "type": "string",
+          "enum": ["operator", "director", "executor", "external"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "executionHandoff": {
+      "type": "object",
+      "required": ["handoff_kind", "workspace_materialization"],
+      "description": "Optional dry-run handoff payload for a minimal executor bridge. Present when the Director Intake envelope is ready to materialize an isolated per-run workspace without mutating source or runtime surfaces.",
+      "properties": {
+        "handoff_kind": {
+          "type": "string",
+          "const": "workspace_materialization_dry_run"
+        },
+        "workspace_materialization": {
+          "$ref": "#/$defs/workspaceMaterializationRequest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "workspaceMaterializationRequest": {
+      "type": "object",
+      "required": ["repo", "expected_sha", "run_id", "target_base_dir"],
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "Git URL or local repository path to clone into the isolated run workspace."
+        },
+        "expected_sha": {
+          "type": "string",
+          "description": "Exact commit SHA that the execution workspace must materialize."
+        },
+        "run_id": {
+          "type": "string",
+          "description": "Opaque run identifier used to create the isolated run root."
+        },
+        "target_base_dir": {
+          "type": "string",
+          "description": "Base directory under which the run workspace and receipts will be created."
+        },
+        "branch_or_ref": {
+          "type": "string",
+          "description": "Optional branch or ref label recorded in the workspace receipt."
+        },
+        "candidate_sha": {
+          "type": "string",
+          "description": "Optional candidate SHA recorded in the workspace receipt."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

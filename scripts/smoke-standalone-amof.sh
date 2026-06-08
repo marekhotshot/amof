@@ -66,8 +66,8 @@ chmod 0755 "${FAKE_BIN}/cursor"
   git status --short > "${LOG_DIR}/target-status.txt"
 )
 
-if ! rg -q '^AMOF v3\.0\.3$' "${LOG_DIR}/version.txt"; then
-  echo "FAIL: standalone artifact did not report AMOF v3.0.3" >&2
+if ! rg -q '^AMOF v3\.1\.0$' "${LOG_DIR}/version.txt"; then
+  echo "FAIL: standalone artifact did not report AMOF v3.1.0" >&2
   exit 1
 fi
 

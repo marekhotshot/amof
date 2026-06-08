@@ -8,7 +8,7 @@ a clean source checkout. Public end users should normally install the released
 CLI with pipx:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.3"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.1.0"
 ```
 
 ## Goal

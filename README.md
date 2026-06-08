@@ -2,7 +2,7 @@
   <img src="docs/assets/amof-logo.svg" alt="AMOF logo" width="140" />
 </p>
 
-<h1 align="center">AMOF 3.0 Runtime Authority is live.</h1>
+<h1 align="center">AMOF 3.1 governed execution is live.</h1>
 
 <p align="center"><strong>Agentic Operations Fabric</strong></p>
 
@@ -10,19 +10,19 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v3.0.3-0A7FFF.svg" alt="release v3.0.3" />
+  <img src="https://img.shields.io/badge/release-v3.1.0-0A7FFF.svg" alt="release v3.1.0" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
 AI agents are cheap. Runtime truth is not.
 
-AMOF v3.0.3 is a local-first CLI and Runtime Authority surface for governed AI
-work. It controls context, execution readiness, policy attribution, receipts,
-and evidence before cognition workers mutate anything. It validates the
-workstation, stores app-data and receipts outside the target repo, records
-provider profile references, and packages the post-`v3.0.2` local-planning
-runner template/readiness dogfood path without changing runtime execution
-semantics.
+AMOF v3.1.0 is a local-first CLI and governed runtime surface for canonical
+planning and execution contracts, governed handoff-to-agent execution, truthful
+planner recovery, truthful clarification-required termination, and an
+experimental Studio Session ledger for correlating governed runs, checkpoints,
+and evidence. It validates the workstation, stores app-data and receipts
+outside the target repo, records provider profile references, and keeps Studio
+optional.
 
 AMOF is for platform and DevOps engineers who want an auditable runtime loop:
 LLM calls are workers inside a governed runtime, not the authority for source
@@ -70,14 +70,16 @@ AMOF does not trust chat output as runtime truth. Runtime truth is emitted as
 inspectable evidence through receipts, runtime logs, run records, intake
 records, selected context, runner metadata, and bounded loop reports.
 
-Public v3.0.3 runtime authority surfaces:
+Public v3.1.0 runtime authority surfaces:
 
 - context selection via `amof context`
 - governed intake validation/submission via `amof intake`
 - runner registry metadata via `amof runner`
+- handoff packet preparation and governed agent execution via `amof handoff`
+- canonical planning/execution result inspection via `amof runs`
+- experimental Studio Session ledger correlation via `amof studio`
 - execution readiness scan/report via `amof execution` (`NO_EXECUTION_PERFORMED`)
 - bounded loops via `amof loop` (`NO_MUTATION_PERFORMED`, `NO_REMOTE_EXECUTION_DISPATCHED`)
-- run inspection via `amof runs`
 - runtime logs and receipt/evidence surfaces with public-safe metadata
 
 ## Governed Intake
@@ -159,7 +161,7 @@ Those belong outside the public product tree.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v3.0.3 surface:
+This public `main` intentionally keeps a narrow, installable v3.1.0 surface:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -173,6 +175,10 @@ This public `main` intentionally keeps a narrow, installable v3.0.3 surface:
 - `amof chat approve <session-id>`
 - `amof chat handoff <approval-id-or-path>`
 - `amof agent --plan "Inspect this repo"`
+- `amof handoff prepare --help`
+- `amof handoff execute-agent --help`
+- `amof studio --help`
+- `amof runs --help`
 - `amof execution scan --help`
 - `amof execution report --help`
 - `amof runner template --kind local-planning`
@@ -182,7 +188,7 @@ This public `main` intentionally keeps a narrow, installable v3.0.3 surface:
 
 ## Released Public CLI Surface
 
-What works in v3.0.3:
+What works in v3.1.0:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -206,6 +212,13 @@ What works in v3.0.3:
 - `amof chat approve <session-id>`
 - `amof chat handoff <approval-id-or-path>`
 - `amof agent --plan "Inspect this repo"`
+- `amof handoff prepare --json`
+- `amof handoff execute-agent <packet-or-dir>`
+- `amof studio create --json`
+- `amof studio show --json <studio-session-id>`
+- `amof studio checkpoint add --summary "..." <studio-session-id>`
+- `amof studio end --json <studio-session-id>`
+- `amof runs show <run-id>`
 - `amof runner template --kind local-planning`
 - `amof runner register <runner.yaml>`
 - `amof runner list`
@@ -286,7 +299,7 @@ an explicit checkout-local virtualenv.
 Use this if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.3"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.1.0"
 ```
 
 This installs the `amof` CLI from the public GitHub tag into a pipx-managed
@@ -315,7 +328,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v3.0.3
+amof update --version v3.1.0
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -393,7 +406,7 @@ Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.0.3"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.1.0"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
@@ -411,14 +424,17 @@ message rather than fail on missing `--ecosystem/-e`.
 
 ## Bounded Loops and Scan/Report
 
-The v3.0.3 Runtime Authority release packages the post-`v3.0.2` local-planning
-runner/readiness dogfood path while keeping governed non-mutation runtime
-flows:
+The v3.1.0 release broadens the public governed runtime surface while keeping
+policy and evidence boundaries explicit:
 
 - `amof execution scan` and `amof execution report` for readiness and evidence
   (`NO_EXECUTION_PERFORMED`)
 - `amof loop` for bounded long-running loops with stop conditions and evidence
   (`NO_MUTATION_PERFORMED`, `NO_REMOTE_EXECUTION_DISPATCHED`)
+- `amof handoff prepare` and `amof handoff execute-agent` for governed agent
+  dispatch with contract-bound evidence
+- `amof studio` for an experimental Studio Session ledger that correlates runs,
+  checkpoints, and evidence without automatic session creation
 
 This release framing does not claim autonomous remote dispatch or unrestricted
 mutation execution in public runtime surfaces.
@@ -576,35 +592,38 @@ Additional public docs retained in this repo include:
 
 ## Release State
 
-- `AMOF_300_RELEASE_PUBLIC_DOCS_BACKFILL`
-- `v3.0.3` is the current AMOF 3.0 Runtime Authority release packaging the
-  post-`v3.0.2` runner-template dogfood fixes.
+- `v3.1.0` is the current AMOF public release.
 - `v3.0.0` remains as a historical broken escaped tag and is not rewritten.
 - `v3.0.1` remains as the prior correction release in this line.
-- Runtime Authority framing for public `v3.0.3` includes:
+- Public `v3.1.0` includes:
   - explicit runtime context via `amof context`
   - intake contract and CLI intake via `amof intake`
   - runner capability registry via `amof runner`
-  - `amof runner template --kind local-planning`
-  - local runner registration/list/doctor/match without dispatch
+  - canonical `PlanBundle` and `AgentRunResult` contracts
+  - governed handoff packet preparation and agent execution
+  - truthful planner semantic repair and clarification-required termination
+  - truthful unknown-cost handling and deterministic runtime evidence
+  - experimental Studio Session ledger for correlating governed runs,
+    checkpoints, and evidence
+  - `studio_session_id` correlation across agent and handoff flows
+  - legacy handoff compatibility without `studio_session_id`
   - execution scan/report surfaces with `NO_EXECUTION_PERFORMED`
   - bounded loops with `NO_MUTATION_PERFORMED` and `NO_REMOTE_EXECUTION_DISPATCHED`
-  - runtime evidence inspection via `amof runs` and runtime logs contract tests
-  - remote IAL cost truth with `REMOTE_IAL_SMOKE_STATUS_EXPLICIT=PASS`
-  - adopted repo context resolution for app-data ecosystems
-  - external repo dogfood through `hotshot.sk`, including dotted repo-name
-    context resolution
-  - aggregate intake missing-field reporting
-  - `amof intake template --kind bounded_intake_task`
+  - runtime evidence inspection via `amof runs`
   - standalone smoke current-version hygiene for released artifacts
-- Current `v3.0.3` limitations:
-  - no remote execution dispatch
-  - no mutation execution
-  - console runtime logs viewer is not part of `v3.0.3`
+- Studio in `v3.1.0` is positioned as: Experimental Studio Session ledger for
+  correlating governed runs, checkpoints, and evidence.
+- Current `v3.1.0` limitations:
+  - detached checkouts still require adoption knowledge
+  - raw Studio `runs.json` remains attachment-time ledger truth
+  - browser UX for Studio correlation remains private/operator-side
+  - no transcript synchronization or active-session discovery
+  - no browser/userscript integration is included in this release
 - Release evidence docs:
+  - `docs/releases/amof-3.1.0.md`
   - `docs/releases/amof-3.0-closeout.md`
   - `docs/releases/amof-3.0.0-tag.md`
-- `docs/releases/amof-3.0-runtime-authority.md` tracks the current release truth (`v3.0.3`).
+- `docs/releases/amof-3.0-runtime-authority.md` remains historical release evidence for the previous line.
 - The `v3.0.0` tag documentation remains historical evidence of the broken escaped release.
 
 ## Change History

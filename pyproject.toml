@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "amof"
-version = "3.0.3"
+version = "3.1.0"
 description = "Agentic Operations Fabric"
 requires-python = ">=3.11"
 license = {file = "LICENSE"}
@@ -38,6 +38,14 @@ amof = "amof.__main__:main"
 
 [tool.setuptools]
 package-dir = {"" = "scripts"}
+
+[tool.setuptools.package-data]
+amof = [
+    "contracts/*.json",
+    "contracts/*.md",
+    "contracts/examples/*.json",
+    "contracts/examples/*.md",
+]
 
 [tool.setuptools.packages.find]
 where = ["scripts"]

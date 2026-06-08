@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "run_id": "20260608-004200",
+  "agent_run_id": null,
+  "session_id": "20260608-004200",
+  "studio_session_id": "studio-20260608-004150",
+  "surface": "agent",
+  "mode": "execute",
+  "status": "finished",
+  "events_path": "/tmp/amof-home/share/runs/20260608-004200/events.jsonl",
+  "session_path": "/tmp/amof-home/share/runs/20260608-004200",
+  "output_path": "/tmp/amof-home/share/runs/20260608-004200/plan-result.json",
+  "attached_at": "2026-06-08T00:42:00+00:00"
+}

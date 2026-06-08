@@ -1,0 +1,537 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/governed-workstation-bootstrap-contract.schema.json",
+  "title": "Governed Workstation Bootstrap Contract",
+  "description": "Read-only evidence contract describing the current AMOF governed workstation bootstrap substrate and its PASS/WARN/BLOCKED readiness classification.",
+  "type": "object",
+  "required": [
+    "result_kind",
+    "contract_version",
+    "bootstrap_status",
+    "generated_at",
+    "target_workstation",
+    "source_repos",
+    "runtime_roots",
+    "forbidden_state_roots",
+    "provider_authority",
+    "director_prerequisites",
+    "doctor_gates",
+    "evidence_outputs",
+    "mutation_policy",
+    "rollback_policy"
+  ],
+  "properties": {
+    "result_kind": {
+      "type": "string",
+      "const": "amof_governed_workstation_bootstrap_contract"
+    },
+    "contract_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bootstrap_status": {
+      "$ref": "#/$defs/status"
+    },
+    "generated_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "target_workstation": {
+      "type": "object",
+      "required": [
+        "os",
+        "architecture",
+        "shell",
+        "layout_mode",
+        "required_local_tools",
+        "optional_local_tools"
+      ],
+      "properties": {
+        "os": {
+          "type": "string",
+          "minLength": 1
+        },
+        "architecture": {
+          "type": "string",
+          "minLength": 1
+        },
+        "shell": {
+          "type": "string",
+          "minLength": 1
+        },
+        "layout_mode": {
+          "type": "string",
+          "enum": [
+            "standalone_repo",
+            "split_workspace"
+          ]
+        },
+        "required_local_tools": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "optional_local_tools": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    },
+    "source_repos": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sourceRepo"
+      }
+    },
+    "runtime_roots": {
+      "type": "object",
+      "required": [
+        "config_root",
+        "data_root",
+        "cache_root",
+        "state_root",
+        "evidence_dir",
+        "runs_dir",
+        "workspaces_dir",
+        "materialized_runs_dir",
+        "receipts_dir",
+        "logs_dir",
+        "locks_dir",
+        "queue_dir",
+        "tmp_dir",
+        "provider_profiles_dir"
+      ],
+      "properties": {
+        "config_root": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "data_root": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "cache_root": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "state_root": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "evidence_dir": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "runs_dir": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "workspaces_dir": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "materialized_runs_dir": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "receipts_dir": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "logs_dir": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "locks_dir": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "queue_dir": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "tmp_dir": {
+          "$ref": "#/$defs/runtimeRoot"
+        },
+        "provider_profiles_dir": {
+          "$ref": "#/$defs/runtimeRoot"
+        }
+      },
+      "additionalProperties": false
+    },
+    "forbidden_state_roots": {
+      "$ref": "#/$defs/stringArray"
+    },
+    "provider_authority": {
+      "type": "object",
+      "required": [
+        "current_context",
+        "controlplane_mode",
+        "execution_backend",
+        "workspace_backend",
+        "evidence_backend",
+        "provider_profile_refs",
+        "provider_profile_ref_count",
+        "provider_health_status",
+        "kubeconfig_ref",
+        "kubeconfig_ref_exists",
+        "redaction_rules"
+      ],
+      "properties": {
+        "current_context": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlplane_mode": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "execution_backend": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "workspace_backend": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "evidence_backend": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "provider_profile_refs": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "provider_profile_ref_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "provider_health_status": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "unknown",
+            "unconfigured",
+            "unavailable",
+            "stale"
+          ]
+        },
+        "kubeconfig_ref": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "kubeconfig_ref_exists": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "redaction_rules": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    },
+    "director_prerequisites": {
+      "type": "object",
+      "required": [
+        "cli_import_is_canonical",
+        "required_contracts_available",
+        "isolated_workspace_base_dir",
+        "materialized_runs_dir",
+        "artifact_directory",
+        "runtime_roots_outside_source_workspaces",
+        "provider_resolution_status",
+        "doctor_surface",
+        "bootstrap_contract_surface"
+      ],
+      "properties": {
+        "cli_import_is_canonical": {
+          "type": "boolean"
+        },
+        "required_contracts_available": {
+          "type": "boolean"
+        },
+        "isolated_workspace_base_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "materialized_runs_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_directory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runtime_roots_outside_source_workspaces": {
+          "type": "boolean"
+        },
+        "provider_resolution_status": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "unknown",
+            "unconfigured",
+            "unavailable",
+            "stale"
+          ]
+        },
+        "doctor_surface": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bootstrap_contract_surface": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "doctor_gates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/doctorGate"
+      }
+    },
+    "evidence_outputs": {
+      "type": "object",
+      "required": [
+        "contract_artifact_path",
+        "bootstrap_command",
+        "bundle_directory",
+        "doctor_command",
+        "expected_artifacts",
+        "artifact_paths",
+        "sha256_manifest_path",
+        "hash_policy",
+        "replay_notes"
+      ],
+      "properties": {
+        "contract_artifact_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bootstrap_command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bundle_directory": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "doctor_command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_artifacts": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "artifact_paths": {
+          "$ref": "#/$defs/artifactPaths"
+        },
+        "sha256_manifest_path": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "hash_policy": {
+          "type": "string",
+          "const": "sha256"
+        },
+        "replay_notes": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mutation_policy": {
+      "type": "object",
+      "required": [
+        "allowed_setup_mutations",
+        "forbidden_runtime_mutations",
+        "forbidden_source_mutations"
+      ],
+      "properties": {
+        "allowed_setup_mutations": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "forbidden_runtime_mutations": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "forbidden_source_mutations": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    },
+    "rollback_policy": {
+      "type": "object",
+      "required": [
+        "cleanup_expectations",
+        "blocked_bootstrap_rules",
+        "quarantine_rules"
+      ],
+      "properties": {
+        "cleanup_expectations": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "blocked_bootstrap_rules": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "quarantine_rules": {
+          "$ref": "#/$defs/stringArray"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "WARN",
+        "BLOCKED"
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "stringOrNull": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "sourceRepo": {
+      "type": "object",
+      "required": [
+        "name",
+        "role",
+        "required",
+        "path",
+        "exists",
+        "git_remote_url",
+        "current_branch",
+        "current_head",
+        "dirty_count"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "git_remote_url": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "current_branch": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "current_head": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "dirty_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtimeRoot": {
+      "type": "object",
+      "required": [
+        "path",
+        "purpose",
+        "exists",
+        "writable",
+        "outside_source_workspaces"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "writable": {
+          "type": "boolean"
+        },
+        "outside_source_workspaces": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "artifactPaths": {
+      "type": "object",
+      "required": [
+        "contract_artifact_path",
+        "doctor_artifact_path",
+        "source_checkout_receipt_path",
+        "toolchain_receipt_path",
+        "provider_configuration_receipt_path",
+        "failure_receipt_path",
+        "summary_artifact_path",
+        "sha256_manifest_path"
+      ],
+      "properties": {
+        "contract_artifact_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "doctor_artifact_path": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "source_checkout_receipt_path": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "toolchain_receipt_path": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "provider_configuration_receipt_path": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "failure_receipt_path": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "summary_artifact_path": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "sha256_manifest_path": {
+          "$ref": "#/$defs/stringOrNull"
+        }
+      },
+      "additionalProperties": false
+    },
+    "doctorGate": {
+      "type": "object",
+      "required": [
+        "name",
+        "status",
+        "summary",
+        "evidence"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

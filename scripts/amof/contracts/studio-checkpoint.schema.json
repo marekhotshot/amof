@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/studio-checkpoint.schema.json",
+  "title": "Studio Checkpoint",
+  "description": "Canonical Studio Session checkpoint object stored one-per-line in checkpoints.jsonl. Checkpoint ids are append-only monotonic sequence markers within a Studio Session. Secrets, provider credentials, and raw auth material are forbidden.",
+  "type": "object",
+  "propertyNames": {
+    "not": {
+      "pattern": "(^|_|-)(secret|token|password|credential|credentials|api_key|apikey|auth_header|authorization)(_|-|$)"
+    }
+  },
+  "required": [
+    "schema_version",
+    "checkpoint_id",
+    "studio_session_id",
+    "summary",
+    "recorded_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "checkpoint_id": {
+      "type": "string",
+      "pattern": "^studio-[0-9]{8}-[0-9]{6}(?:-[0-9]{2})?-checkpoint-[0-9]{4}$"
+    },
+    "studio_session_id": {
+      "type": "string",
+      "pattern": "^studio-[0-9]{8}-[0-9]{6}(?:-[0-9]{2})?$"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

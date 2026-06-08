@@ -8,6 +8,47 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## v3.1.0 - Governed Execution Contracts and Studio Correlation
+
+- Release after `v3.0.3`.
+- Broadens the public install truth to governed handoff execution, canonical
+  execution contracts, truthful planner recovery, and optional Studio
+  correlation.
+
+### Highlights
+
+- Canonical planning and execution contracts.
+- Governed handoff-to-agent execution.
+- Truthful planner recovery and clarification handling.
+
+### Experimental
+
+- Experimental Studio Session ledger for correlating governed runs,
+  checkpoints, and evidence.
+- Agent and handoff correlation through `studio_session_id`.
+- Versioned Studio schemas and lifecycle artifacts.
+
+### Reliability
+
+- bounded semantic planner retries
+- truthful unknown-cost handling
+- stale-base promotion protection
+- deterministic execution and handoff evidence
+
+### Compatibility
+
+- legacy handoffs without `studio_session_id` remain valid
+- Studio is optional
+- no automatic Studio Session creation
+- no browser/userscript integration included in this release
+
+### Known limitations
+
+- detached checkouts require adoption knowledge
+- raw Studio `runs.json` is attachment-time ledger truth
+- browser UX for Studio correlation remains private/operator-side
+- no transcript synchronization or active-session discovery
+
 ## v3.0.3 - Runner Template Release Packaging
 
 - Packaging-only release after `v3.0.2`.

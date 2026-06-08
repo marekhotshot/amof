@@ -1,0 +1,28 @@
+{
+  "result_kind": "plan_bundle",
+  "contract_version": "plan-bundle-v1",
+  "ticket_id": "AMOF-PLAN-BUNDLE-AGENT-RUN-CONVERGENCE-001",
+  "proposed_ticket_id": null,
+  "objective": "Converge conversational intake, planning, and governed execution onto one planning contract.",
+  "repo_scope": "Canonical planning context for the public AMOF repo. No execution is authorized.",
+  "files_to_inspect": [
+    "scripts/amof/commands/chat.py",
+    "scripts/amof/commands/agent_cmd.py",
+    "scripts/amof/commands/director.py"
+  ],
+  "proposed_steps": [
+    "Emit one canonical proposal-only PlanBundle from conversational planning surfaces.",
+    "Bridge approved PlanBundles into the existing governed execution handoff flow.",
+    "Keep legacy plan_packet readers working as compatibility aliases."
+  ],
+  "risks": [
+    "Legacy plan surfaces still exist and must remain backward compatible while convergence lands."
+  ],
+  "validation_plan": [
+    "Run focused contract and chat planning tests.",
+    "Verify governed agent-run envelopes still round-trip through request-json mode."
+  ],
+  "execution_prompt_for_director": "Proposal only. Do not execute until the user explicitly approves this PlanBundle.",
+  "requires_user_approval": true,
+  "execution_allowed": false
+}

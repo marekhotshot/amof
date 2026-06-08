@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/up10-bootstrap-summary.schema.json",
+  "title": "UP10 Bootstrap Summary",
+  "description": "Minimal UP10 convergence summary artifact emitted alongside a governed workstation bootstrap evidence bundle.",
+  "type": "object",
+  "required": [
+    "result_kind",
+    "contract_version",
+    "generated_at",
+    "bootstrap_status",
+    "ready_for_up11",
+    "current_context",
+    "bundle_directory",
+    "artifact_paths",
+    "doctor_warning_count",
+    "doctor_failure_count",
+    "warn_gate_count",
+    "blocked_gate_count",
+    "key_reasons"
+  ],
+  "properties": {
+    "result_kind": {
+      "type": "string",
+      "const": "amof_up10_bootstrap_summary"
+    },
+    "contract_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "bootstrap_status": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "WARN",
+        "BLOCKED"
+      ]
+    },
+    "ready_for_up11": {
+      "type": "boolean"
+    },
+    "current_context": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bundle_directory": {
+      "type": "string",
+      "minLength": 1
+    },
+    "artifact_paths": {
+      "$ref": "#/$defs/artifactPaths"
+    },
+    "doctor_warning_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "doctor_failure_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "warn_gate_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "blocked_gate_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "key_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "stringOrNull": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "artifactPaths": {
+      "type": "object",
+      "required": [
+        "contract_artifact_path",
+        "doctor_artifact_path",
+        "source_checkout_receipt_path",
+        "toolchain_receipt_path",
+        "provider_configuration_receipt_path",
+        "failure_receipt_path",
+        "summary_artifact_path",
+        "sha256_manifest_path"
+      ],
+      "properties": {
+        "contract_artifact_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "doctor_artifact_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_checkout_receipt_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolchain_receipt_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_configuration_receipt_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "failure_receipt_path": {
+          "$ref": "#/$defs/stringOrNull"
+        },
+        "summary_artifact_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256_manifest_path": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

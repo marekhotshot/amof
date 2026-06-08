@@ -1,0 +1,311 @@
+{
+  "result_kind": "amof_governed_workstation_bootstrap_contract",
+  "contract_version": "2026-05-15",
+  "bootstrap_status": "BLOCKED",
+  "generated_at": "2026-05-15T10:10:00Z",
+  "target_workstation": {
+    "os": "linux",
+    "architecture": "x86_64",
+    "shell": "/bin/bash",
+    "layout_mode": "standalone_repo",
+    "required_local_tools": [
+      "git",
+      "python3"
+    ],
+    "optional_local_tools": [
+      "docker",
+      "k3d",
+      "kubectl",
+      "helm"
+    ]
+  },
+  "source_repos": [
+    {
+      "name": "root",
+      "role": "canonical_active",
+      "required": true,
+      "path": "/srv/amof",
+      "exists": true,
+      "git_remote_url": "https://github.com/example/amof.git",
+      "current_branch": "main",
+      "current_head": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "dirty_count": 0
+    },
+    {
+      "name": "canonical_amof",
+      "role": "canonical_active",
+      "required": true,
+      "path": "/srv/amof",
+      "exists": true,
+      "git_remote_url": "https://github.com/example/amof.git",
+      "current_branch": "main",
+      "current_head": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "dirty_count": 0
+    },
+    {
+      "name": "canonical_ui",
+      "role": "canonical_active",
+      "required": false,
+      "path": "/srv/amof/apps/amof-ui",
+      "exists": false,
+      "git_remote_url": null,
+      "current_branch": null,
+      "current_head": null,
+      "dirty_count": 0
+    },
+    {
+      "name": "gmd_app",
+      "role": "active_supporting",
+      "required": false,
+      "path": "/srv/gmd-app",
+      "exists": false,
+      "git_remote_url": null,
+      "current_branch": null,
+      "current_head": null,
+      "dirty_count": 0
+    }
+  ],
+  "runtime_roots": {
+    "config_root": {
+      "path": "/srv/amof/.amof-home/config",
+      "purpose": "AMOF config, contexts, and registries",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "data_root": {
+      "path": "/srv/amof/.amof-home/share",
+      "purpose": "AMOF durable app-data payloads",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "cache_root": {
+      "path": "/srv/amof/.amof-home/cache",
+      "purpose": "AMOF cache and temporary downloads",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "state_root": {
+      "path": "/srv/amof/.amof-home/state",
+      "purpose": "AMOF logs, queue state, and locks",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "evidence_dir": {
+      "path": "/srv/amof/.amof-home/share/evidence",
+      "purpose": "Bootstrap and run evidence outputs",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "runs_dir": {
+      "path": "/srv/amof/.amof-home/share/runs",
+      "purpose": "Run-level durable data",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "workspaces_dir": {
+      "path": "/srv/amof/.amof-home/share/workspaces",
+      "purpose": "Per-run isolated workspace base directory",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "materialized_runs_dir": {
+      "path": "/srv/amof/.amof-home/share/workspaces/materialized-runs",
+      "purpose": "Exact-SHA materialized workspace roots",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "receipts_dir": {
+      "path": "/srv/amof/.amof-home/share/receipts",
+      "purpose": "Receipts and supporting bootstrap artifacts",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "logs_dir": {
+      "path": "/srv/amof/.amof-home/state/logs",
+      "purpose": "Operational logs",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "locks_dir": {
+      "path": "/srv/amof/.amof-home/state/locks",
+      "purpose": "Process coordination locks",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "queue_dir": {
+      "path": "/srv/amof/.amof-home/state/queue",
+      "purpose": "Queued work state",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "tmp_dir": {
+      "path": "/srv/amof/.amof-home/cache/tmp",
+      "purpose": "Temporary scratch directory",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    },
+    "provider_profiles_dir": {
+      "path": "/srv/amof/.amof-home/config/provider-profiles",
+      "purpose": "Provider profile references",
+      "exists": true,
+      "writable": true,
+      "outside_source_workspaces": false
+    }
+  },
+  "forbidden_state_roots": [
+    "/srv/amof",
+    "/srv/amof/apps/amof-ui"
+  ],
+  "provider_authority": {
+    "current_context": "local",
+    "controlplane_mode": "local-cli",
+    "execution_backend": "local",
+    "workspace_backend": "local-appdata",
+    "evidence_backend": "local-appdata",
+    "provider_profile_refs": [],
+    "provider_profile_ref_count": 0,
+    "provider_health_status": "unconfigured",
+    "kubeconfig_ref": null,
+    "kubeconfig_ref_exists": null,
+    "redaction_rules": [
+      "do not record raw API keys or bearer tokens",
+      "do not record kubeconfig contents or private SSH keys",
+      "record only provider profile refs, secret names, boolean presence, and health classifications"
+    ]
+  },
+  "director_prerequisites": {
+    "cli_import_is_canonical": true,
+    "required_contracts_available": false,
+    "isolated_workspace_base_dir": "/srv/amof/.amof-home/share/workspaces",
+    "materialized_runs_dir": "/srv/amof/.amof-home/share/workspaces/materialized-runs",
+    "artifact_directory": "/srv/amof/.amof-home/share/evidence",
+    "runtime_roots_outside_source_workspaces": false,
+    "provider_resolution_status": "unconfigured",
+    "doctor_surface": "amof doctor --json",
+    "bootstrap_contract_surface": "amof bootstrap contract --json"
+  },
+  "doctor_gates": [
+    {
+      "name": "canonical_import_resolution",
+      "status": "PASS",
+      "summary": "Runtime import must resolve under the canonical AMOF scripts path.",
+      "evidence": "/srv/amof/scripts/amof/__init__.py"
+    },
+    {
+      "name": "git_dirty_classification",
+      "status": "PASS",
+      "summary": "Dirty state is preserved as evidence and must not be silently normalized.",
+      "evidence": "all tracked surfaces clean"
+    },
+    {
+      "name": "runtime_roots_outside_source_workspaces",
+      "status": "BLOCKED",
+      "summary": "All runtime roots must be writable and remain outside mutable source workspaces.",
+      "evidence": "/srv/amof/.amof-home/share/workspaces"
+    },
+    {
+      "name": "required_contracts_available",
+      "status": "BLOCKED",
+      "summary": "Bootstrap and Director contract schemas must be present in the canonical repo.",
+      "evidence": "contracts/governed-workstation-bootstrap-contract.schema.json missing from the checkout"
+    },
+    {
+      "name": "required_toolchain_present",
+      "status": "PASS",
+      "summary": "Required bootstrap toolchain commands must be installed and runnable.",
+      "evidence": "git=git version 2.43.0, python=Python 3.12.3"
+    },
+    {
+      "name": "optional_local_runtime_tools",
+      "status": "WARN",
+      "summary": "Optional local-runtime tools may remain WARN when local runtime proof is deferred.",
+      "evidence": "docker=missing, k3d=missing, kubectl=missing, helm=missing"
+    },
+    {
+      "name": "provider_authority_by_reference",
+      "status": "WARN",
+      "summary": "Provider authority must be described by references and redacted metadata, not raw secrets.",
+      "evidence": "provider_profile_ref_count=0; health=unconfigured"
+    },
+    {
+      "name": "secret_exposure_sanity_check",
+      "status": "BLOCKED",
+      "summary": "Obvious secret-bearing files inside the canonical source tree block bootstrap readiness.",
+      "evidence": "finding_count=1"
+    }
+  ],
+  "evidence_outputs": {
+    "contract_artifact_path": "/srv/amof/.amof-home/share/evidence/bootstrap/local/governed-workstation-bootstrap-contract.json",
+    "bootstrap_command": "amof bootstrap bundle --json",
+    "bundle_directory": "/srv/amof/.amof-home/share/evidence/bootstrap/local/20260515T101000Z",
+    "doctor_command": "amof doctor --json",
+    "artifact_paths": {
+      "contract_artifact_path": "/srv/amof/.amof-home/share/evidence/bootstrap/local/20260515T101000Z/governed-workstation-bootstrap-contract.json",
+      "doctor_artifact_path": "/srv/amof/.amof-home/share/evidence/bootstrap/local/20260515T101000Z/doctor.json",
+      "source_checkout_receipt_path": "/srv/amof/.amof-home/share/evidence/bootstrap/local/20260515T101000Z/bootstrap-source-checkout-receipt.json",
+      "toolchain_receipt_path": "/srv/amof/.amof-home/share/evidence/bootstrap/local/20260515T101000Z/bootstrap-toolchain-receipt.json",
+      "provider_configuration_receipt_path": "/srv/amof/.amof-home/share/evidence/bootstrap/local/20260515T101000Z/bootstrap-provider-configuration-receipt.json",
+      "failure_receipt_path": "/srv/amof/.amof-home/share/evidence/bootstrap/local/20260515T101000Z/bootstrap-failure-receipt.json",
+      "summary_artifact_path": "/srv/amof/.amof-home/share/evidence/bootstrap/local/20260515T101000Z/up10-bootstrap-summary.json",
+      "sha256_manifest_path": "/srv/amof/.amof-home/share/evidence/bootstrap/local/20260515T101000Z/bootstrap-sha256-manifest.json"
+    },
+    "sha256_manifest_path": "/srv/amof/.amof-home/share/evidence/bootstrap/local/20260515T101000Z/bootstrap-sha256-manifest.json",
+    "expected_artifacts": [
+      "governed-workstation-bootstrap-contract.json",
+      "doctor.json",
+      "bootstrap-source-checkout-receipt.json",
+      "bootstrap-toolchain-receipt.json",
+      "bootstrap-provider-configuration-receipt.json",
+      "up10-bootstrap-summary.json",
+      "bootstrap-sha256-manifest.json"
+    ],
+    "hash_policy": "sha256",
+    "replay_notes": [
+      "Git history remains the canonical evidence substrate for source changes.",
+      "Bootstrap WARN or BLOCKED states must be preserved as evidence rather than normalized into PASS."
+    ]
+  },
+  "mutation_policy": {
+    "allowed_setup_mutations": [
+      "create or refresh AMOF app-data roots outside source workspaces",
+      "write bootstrap evidence artifacts under the declared evidence root",
+      "initialize the default local AMOF context when absent"
+    ],
+    "forbidden_runtime_mutations": [
+      "deploy or mutate Kubernetes runtime state",
+      "patch provider credentials into runtime surfaces",
+      "perform cloud or production changes"
+    ],
+    "forbidden_source_mutations": [
+      "write operational state into source checkouts",
+      "rewrite unrelated repositories or branches",
+      "hide dirty-state or secret-exposure findings"
+    ]
+  },
+  "rollback_policy": {
+    "cleanup_expectations": [
+      "remove only evidence artifacts or temporary bootstrap outputs created by this slice",
+      "leave app-data and source history intact unless the operator explicitly requests cleanup"
+    ],
+    "blocked_bootstrap_rules": [
+      "stop when a required doctor gate is BLOCKED",
+      "preserve the blocked contract artifact and matching doctor evidence"
+    ],
+    "quarantine_rules": [
+      "quarantine and review any artifact that appears to contain secret material before reuse or publication"
+    ]
+  }
+}
