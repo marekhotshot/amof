@@ -55,6 +55,7 @@ class PreparedHandoffPacket:
     handoff_id: str
     source: str
     target: str
+    studio_session_id: str | None
     payload_kind: str
     payload: PreparedPayload
     state: str
@@ -65,6 +66,11 @@ class PreparedHandoffPacket:
             "handoff_id": self.handoff_id,
             "source": self.source,
             "target": self.target,
+            **(
+                {"studio_session_id": self.studio_session_id}
+                if self.studio_session_id is not None
+                else {}
+            ),
             "payload_kind": self.payload_kind,
             "payload": self.payload.to_dict(),
             "state": self.state,
@@ -251,7 +257,12 @@ def _validated_payload_from_text(text: Any, *, field_name: str) -> PreparedPaylo
 
 
 def _render_preview(
-    *, source: str, target: str, payload_kind: str, payload: PreparedPayload
+    *,
+    source: str,
+    target: str,
+    studio_session_id: str | None,
+    payload_kind: str,
+    payload: PreparedPayload,
 ) -> str:
     lines = [
         "[handoff] Preview",
@@ -265,6 +276,8 @@ def _render_preview(
         payload.text,
         "--- END PAYLOAD ---",
     ]
+    if studio_session_id is not None:
+        lines.insert(3, f"studio_session_id: {studio_session_id}")
     return "\n".join(lines) + "\n"
 
 
@@ -299,6 +312,8 @@ def _render_execution_preview(
         packet.payload.text,
         "--- END PAYLOAD ---",
     ]
+    if packet.studio_session_id is not None:
+        lines.insert(18, f"  studio_session_id: {packet.studio_session_id}")
     return "\n".join(lines) + "\n"
 
 
@@ -358,13 +373,19 @@ def _write_packet(packet: PreparedHandoffPacket) -> Path:
 
 
 def _build_packet(
-    *, source: str, target: str, payload_kind: str, payload: PreparedPayload
+    *,
+    source: str,
+    target: str,
+    studio_session_id: str | None,
+    payload_kind: str,
+    payload: PreparedPayload,
 ) -> PreparedHandoffPacket:
     return PreparedHandoffPacket(
         schema_version=HANDOFF_PACKET_SCHEMA_VERSION,
         handoff_id=_generate_handoff_id(payload),
         source=source,
         target=target,
+        studio_session_id=studio_session_id,
         payload_kind=payload_kind,
         payload=payload,
         state="prepared",
@@ -390,6 +411,7 @@ def _parse_prepared_handoff_packet(payload: dict[str, Any]) -> PreparedHandoffPa
         "handoff_id",
         "source",
         "target",
+        "studio_session_id",
         "payload_kind",
         "payload",
         "state",
@@ -406,6 +428,7 @@ def _parse_prepared_handoff_packet(payload: dict[str, Any]) -> PreparedHandoffPa
     target = _validate_metadata_label(
         str(payload.get("target") or ""), field_name="target"
     )
+    studio_session_id = _optional_studio_session_id(payload.get("studio_session_id"))
     payload_kind = str(payload.get("payload_kind") or "").strip().lower()
     if payload_kind not in ALLOWED_PAYLOAD_KINDS:
         raise ValueError("handoff packet payload_kind is not supported.")
@@ -440,6 +463,7 @@ def _parse_prepared_handoff_packet(payload: dict[str, Any]) -> PreparedHandoffPa
         handoff_id=handoff_id,
         source=source,
         target=target,
+        studio_session_id=studio_session_id,
         payload_kind=payload_kind,
         payload=prepared_payload,
         state="prepared",
@@ -510,6 +534,10 @@ def _optional_text(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_studio_session_id(value: Any) -> Optional[str]:
+    return _optional_text(value)
 
 
 def _string_list(values: Any) -> list[str]:
@@ -696,7 +724,9 @@ def _execute_agent_from_handoff(
 
     try:
         response = agent_cmd.run_external_agent_plan_execute_envelope(
-            manifest, request_payload
+            manifest,
+            request_payload,
+            studio_session_id=packet.studio_session_id,
         )
         result_payload = dict(response.result)
     except Exception:
@@ -778,6 +808,9 @@ def cmd_handoff_prepare(args: Any) -> int:
         target = _validate_metadata_label(
             str(getattr(args, "target", "")), field_name="target"
         )
+        studio_session_id = _optional_studio_session_id(
+            getattr(args, "studio_session", None)
+        )
         payload_kind = _payload_kind_from_cli(str(getattr(args, "payload_kind", "")))
         payload = _read_single_stdin_payload()
     except ValueError as exc:
@@ -786,7 +819,11 @@ def cmd_handoff_prepare(args: Any) -> int:
 
     _stderr(
         _render_preview(
-            source=source, target=target, payload_kind=payload_kind, payload=payload
+            source=source,
+            target=target,
+            studio_session_id=studio_session_id,
+            payload_kind=payload_kind,
+            payload=payload,
         )
     )
     if not bool(getattr(args, "confirm", False)):
@@ -796,7 +833,11 @@ def cmd_handoff_prepare(args: Any) -> int:
         return 0
 
     packet = _build_packet(
-        source=source, target=target, payload_kind=payload_kind, payload=payload
+        source=source,
+        target=target,
+        studio_session_id=studio_session_id,
+        payload_kind=payload_kind,
+        payload=payload,
     )
     packet_path = _write_packet(packet)
     receipt = PreparedHandoffReceipt(

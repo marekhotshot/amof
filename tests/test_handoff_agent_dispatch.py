@@ -6,8 +6,9 @@ import os
 import stat
 import subprocess
 import sys
+import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 import amof.entrypoint as entrypoint
 from amof.commands import agent_cmd, handoff
+from amof.commands import studio as studio_cmd
 
 
 def _execute_args(**overrides: object) -> SimpleNamespace:
@@ -53,12 +55,76 @@ def _run_execute(args: SimpleNamespace, amof_home: Path) -> tuple[int, str, str]
     return code, stdout.getvalue(), stderr.getvalue()
 
 
+@contextmanager
+def _cwd(path: Path):
+    previous = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+
+
+def _commit_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "AMOF Test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "AMOF Test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        }
+    )
+    return env
+
+
+def _init_git_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "init", "-b", "main", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (path / "README.md").write_text("test\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: init"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_commit_env(),
+    )
+
+
+class _FakeRunnerAgent:
+    instances: list["_FakeRunnerAgent"] = []
+    stop_reason = "completed"
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.llm = kwargs.get("llm") or (args[0] if args else None)
+        self.model_router = kwargs.get("model_router")
+        self.tools = kwargs.get("tools")
+        self.__class__.instances.append(self)
+
+    def run(self, goal: str) -> str:
+        return f"fake agent response for {goal}"
+
+
 def _write_packet(
     amof_home: Path,
     *,
     handoff_id: str = "handoff-test-001",
     target: str = "amof-agent",
     text: str = "Execute this bounded goal.",
+    studio_session_id: str | None = None,
 ) -> Path:
     payload = handoff.PreparedPayload(
         text=text,
@@ -71,6 +137,7 @@ def _write_packet(
         handoff_id=handoff_id,
         source="chatgpt",
         target=target,
+        studio_session_id=studio_session_id,
         payload_kind="selected_text",
         payload=payload,
         state="prepared",
@@ -86,6 +153,7 @@ def _correlation_envelope(
     exit_code: int = 0,
     stop_reason: str = "completed",
     session_id: str = "session-1",
+    studio_session_id: str | None = None,
     plan_path: str | None = "/tmp/plan.md",
     checkpoint_path: str | None = None,
     event_log_path: str | None = "/tmp/events.jsonl",
@@ -106,20 +174,59 @@ def _correlation_envelope(
             "event_log_path": event_log_path,
             "journal_path": journal_path,
             "budget_summary": {"limit": 1.0, "spent": 0.0, "remaining": 1.0},
+            **(
+                {"studio_session_id": studio_session_id}
+                if studio_session_id is not None
+                else {}
+            ),
         },
     )
 
 
 class HandoffAgentDispatchTests(unittest.TestCase):
+    def _manifest(self, repo: Path) -> dict[str, object]:
+        return {
+            "ecosystem": "demo-repo",
+            "manifest_source": "appdata",
+            "repos": [
+                {"name": "demo-repo", "path": str(repo), "url": f"local://{repo}"}
+            ],
+        }
+
+    def _write_plan(self, plan_file: Path) -> None:
+        plan_file.parent.mkdir(parents=True, exist_ok=True)
+        plan_file.write_text(
+            (
+                "# Execution Plan\n\n"
+                "**Status**: pending\n\n"
+                "## Analysis\n\n"
+                "Inspect the repository without mutating it.\n\n"
+                "---\n\n"
+                "## Tasks\n\n"
+                "- [ ] 1. **Inspect the repo** (code)\n"
+            ),
+            encoding="utf-8",
+        )
+
+    def _create_studio_session(self) -> str:
+        payload = studio_cmd._create_studio_session()
+        return str(payload["manifest"]["studio_session_id"])
+
     def test_valid_prepared_amof_agent_packet_executes_and_maps_goal_and_request_id(
         self,
     ) -> None:
         captured: dict[str, object] = {}
 
-        def _fake_runtime(manifest: dict[str, object], payload: dict[str, object]):
+        def _fake_runtime(
+            manifest: dict[str, object],
+            payload: dict[str, object],
+            *,
+            studio_session_id: str | None = None,
+        ):
             captured["manifest"] = manifest
             captured["payload"] = payload
-            return _correlation_envelope()
+            captured["studio_session_id"] = studio_session_id
+            return _correlation_envelope(studio_session_id=studio_session_id)
 
         with TemporaryDirectory(prefix="amof-handoff-dispatch-success-") as td:
             amof_home = Path(td)
@@ -146,6 +253,7 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             self.assertEqual(payload["request_id"], "handoff-test-001")
             self.assertEqual(payload["mode"], "plan-execute")
             self.assertTrue(payload["no_follow_up"])
+            self.assertIsNone(captured["studio_session_id"])
             self.assertIn("[handoff] Execute-agent preview", stderr)
             self.assertEqual(receipt["handoff_id"], "handoff-test-001")
             self.assertEqual(receipt["request_id"], "handoff-test-001")
@@ -169,6 +277,181 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             self.assertIn("Execute-agent preview", stderr)
             self.assertIn("no agent execution occurred", stderr)
             self.assertFalse((amof_home / "share" / "handoff" / "results").exists())
+
+    def test_packet_studio_session_is_forwarded_and_persisted_in_result(self) -> None:
+        studio_session_id = "studio-20260608-004150"
+        captured: dict[str, object] = {}
+
+        def _fake_runtime(
+            manifest: dict[str, object],
+            payload: dict[str, object],
+            *,
+            studio_session_id: str | None = None,
+        ):
+            captured["studio_session_id"] = studio_session_id
+            return _correlation_envelope(studio_session_id=studio_session_id)
+
+        with TemporaryDirectory(prefix="amof-handoff-dispatch-studio-field-") as td:
+            amof_home = Path(td)
+            _write_packet(amof_home, studio_session_id=studio_session_id)
+            with (
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope",
+                    side_effect=_fake_runtime,
+                ),
+            ):
+                code, stdout, stderr = _run_execute(
+                    _execute_args(confirm=True), amof_home
+                )
+            receipt = json.loads(stdout)
+            result_payload = json.loads(
+                Path(receipt["result_path"]).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["studio_session_id"], studio_session_id)
+        self.assertEqual(receipt["studio_session_id"], studio_session_id)
+        self.assertEqual(result_payload["studio_session_id"], studio_session_id)
+        self.assertIn(f"studio_session_id: {studio_session_id}", stderr)
+
+    def test_real_runtime_dispatch_reuses_existing_studio_attachment_path(self) -> None:
+        from amof.orchestrator.planner import ExecutionPlan
+
+        with tempfile.TemporaryDirectory(prefix="amof-handoff-dispatch-studio-real-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            plan_file = amof_home / "share" / "plans" / "demo-repo" / "plan.md"
+            self._write_plan(plan_file)
+            with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
+                studio_session_id = self._create_studio_session()
+                _write_packet(amof_home, studio_session_id=studio_session_id)
+                _FakeRunnerAgent.instances.clear()
+                with _cwd(repo):
+                    with (
+                        patch(
+                            "amof.commands.handoff._load_execution_manifest",
+                            return_value=self._manifest(repo),
+                        ),
+                        patch("amof.orchestrator.runners.Agent", _FakeRunnerAgent),
+                        patch(
+                            "amof.orchestrator.planner.TaskPlanner.plan",
+                            return_value=ExecutionPlan.load_from_markdown(plan_file),
+                        ),
+                        patch.dict(
+                            os.environ,
+                            {"OPENROUTER_API_KEY": "unit-test-provider-value"},
+                            clear=False,
+                        ),
+                    ):
+                        code, stdout, _stderr = _run_execute(
+                            _execute_args(confirm=True, provider="openrouter"),
+                            amof_home,
+                        )
+                receipt = json.loads(stdout)
+                result_payload = json.loads(
+                    Path(receipt["result_path"]).read_text(encoding="utf-8")
+                )
+                studio_payload = studio_cmd._studio_payload(studio_session_id)
+                studio_events = (
+                    amof_home / "share" / "studio" / studio_session_id / "events.jsonl"
+                ).read_text(encoding="utf-8")
+
+        run_attached_events = [
+            json.loads(line)
+            for line in studio_events.splitlines()
+            if line.strip() and json.loads(line).get("event_type") == "run.attached"
+        ]
+        self.assertEqual(code, 0)
+        self.assertEqual(receipt["status"], "completed")
+        self.assertEqual(receipt["studio_session_id"], studio_session_id)
+        self.assertEqual(result_payload["studio_session_id"], studio_session_id)
+        self.assertEqual(studio_payload["summary"]["attached_runs_count"], 1)
+        self.assertEqual(len(studio_payload["attached_runs"]), 1)
+        self.assertEqual(len(run_attached_events), 1)
+        self.assertEqual(
+            studio_payload["attached_runs"][0]["studio_session_id"], studio_session_id
+        )
+        self.assertEqual(
+            studio_payload["attached_runs"][0]["run_id"], result_payload["session_id"]
+        )
+        self.assertTrue(_FakeRunnerAgent.instances)
+
+    def test_invalid_studio_session_fails_truthfully(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-handoff-dispatch-studio-invalid-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            _write_packet(amof_home, studio_session_id="studio-does-not-exist")
+            with _cwd(repo):
+                with (
+                    patch(
+                        "amof.commands.handoff._load_execution_manifest",
+                        return_value=self._manifest(repo),
+                    ),
+                    patch(
+                        "amof.orchestrator.llm.openai_client.OpenAIClient"
+                    ) as openai_client,
+                ):
+                    code, stdout, _stderr = _run_execute(
+                        _execute_args(confirm=True, provider="openrouter"),
+                        amof_home,
+                    )
+            receipt = json.loads(stdout)
+            result_payload = json.loads(
+                Path(receipt["result_path"]).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["status"], "failed")
+        self.assertEqual(receipt["stop_reason"], "studio_session_invalid")
+        self.assertEqual(receipt["studio_session_id"], "studio-does-not-exist")
+        self.assertEqual(result_payload["studio_session_id"], "studio-does-not-exist")
+        self.assertEqual(result_payload["session_id"], "")
+        self.assertFalse(openai_client.called)
+
+    def test_ended_studio_session_fails_truthfully(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-handoff-dispatch-studio-ended-") as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
+                studio_session_id = self._create_studio_session()
+                studio_cmd._end_studio_session(studio_session_id)
+            _write_packet(amof_home, studio_session_id=studio_session_id)
+            with _cwd(repo):
+                with (
+                    patch(
+                        "amof.commands.handoff._load_execution_manifest",
+                        return_value=self._manifest(repo),
+                    ),
+                    patch(
+                        "amof.orchestrator.llm.openai_client.OpenAIClient"
+                    ) as openai_client,
+                ):
+                    code, stdout, _stderr = _run_execute(
+                        _execute_args(confirm=True, provider="openrouter"),
+                        amof_home,
+                    )
+            receipt = json.loads(stdout)
+            result_payload = json.loads(
+                Path(receipt["result_path"]).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["status"], "failed")
+        self.assertEqual(receipt["stop_reason"], "studio_session_invalid")
+        self.assertEqual(receipt["studio_session_id"], studio_session_id)
+        self.assertEqual(result_payload["studio_session_id"], studio_session_id)
+        self.assertEqual(result_payload["session_id"], "")
+        self.assertFalse(openai_client.called)
 
     def test_wrong_target_rejected(self) -> None:
         with TemporaryDirectory(prefix="amof-handoff-dispatch-target-") as td:
@@ -250,9 +533,15 @@ class HandoffAgentDispatchTests(unittest.TestCase):
     def test_optional_canonical_execution_fields_map_correctly(self) -> None:
         captured: dict[str, object] = {}
 
-        def _fake_runtime(manifest: dict[str, object], payload: dict[str, object]):
+        def _fake_runtime(
+            manifest: dict[str, object],
+            payload: dict[str, object],
+            *,
+            studio_session_id: str | None = None,
+        ):
             captured["payload"] = payload
-            return _correlation_envelope()
+            captured["studio_session_id"] = studio_session_id
+            return _correlation_envelope(studio_session_id=studio_session_id)
 
         args = _execute_args(
             confirm=True,
@@ -293,6 +582,7 @@ class HandoffAgentDispatchTests(unittest.TestCase):
         self.assertEqual(payload["approve_capabilities"], ["secret"])
         self.assertEqual(payload["approve_tool_packs"], ["ops-jenkins"])
         self.assertEqual(payload["approve_writable_roots"], ["/tmp/out"])
+        self.assertIsNone(captured["studio_session_id"])
         self.assertIn("selected_execution_configuration", stderr)
         self.assertIn("openrouter", stderr)
         self.assertNotIn("Execute this bounded goal.", stdout)

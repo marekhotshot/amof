@@ -203,6 +203,16 @@ def parse_args() -> argparse.Namespace:
         help="Opaque target metadata label (for example: zed)",
     )
     handoff_prepare.add_argument(
+        "--studio-session",
+        default=None,
+        metavar="STUDIO_SESSION_ID",
+        help=(
+            "Optional existing Studio Session id to preserve in the prepared handoff packet. "
+            "The Studio Session must already exist; no Studio Session is created during prepare, "
+            "and dispatch reuses this id to correlate the governed Agent run."
+        ),
+    )
+    handoff_prepare.add_argument(
         "--preview",
         action="store_true",
         default=False,

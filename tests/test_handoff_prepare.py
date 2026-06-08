@@ -34,6 +34,7 @@ def _prepare_args(**overrides: object) -> SimpleNamespace:
         "payload_kind": "selected-text",
         "source": "chatgpt",
         "target": "zed",
+        "studio_session": None,
         "preview": True,
         "confirm": False,
     }
@@ -258,6 +259,22 @@ class HandoffPrepareTests(unittest.TestCase):
                 ],
             )
 
+    def test_prepare_with_studio_session_preserves_exact_packet_field(self) -> None:
+        studio_session_id = "studio-20260608-004150"
+        with TemporaryDirectory(prefix="amof-handoff-studio-session-") as td:
+            code, stdout, stderr = _run_prepare(
+                _prepare_args(confirm=True, studio_session=studio_session_id),
+                b"correlate this run",
+                Path(td),
+            )
+            packet = json.loads(
+                Path(json.loads(stdout)["packet_path"]).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(packet["studio_session_id"], studio_session_id)
+        self.assertIn(f"studio_session_id: {studio_session_id}", stderr)
+
     def test_no_agent_invocation_subprocess_or_network_occurs(self) -> None:
         with TemporaryDirectory(prefix="amof-handoff-no-external-") as td:
             with (
@@ -332,6 +349,20 @@ class HandoffEntrypointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--request-json", result.stdout)
         self.assertIn("--json", result.stdout)
+
+    def test_handoff_prepare_help_mentions_optional_studio_session(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "amof.py"), "handoff", "prepare", "--help"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(SCRIPTS_ROOT)},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--studio-session", result.stdout)
+        self.assertIn("already exist", result.stdout)
+        self.assertIn("governed Agent run", result.stdout)
 
 
 if __name__ == "__main__":
