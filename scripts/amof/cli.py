@@ -246,6 +246,17 @@ def parse_args() -> argparse.Namespace:
         help="Explicitly confirm governed execution of the selected handoff packet",
     )
     handoff_execute_agent.add_argument(
+        "--runner-id",
+        default=None,
+        help="Explicit runner id to use for this handoff (use code for legacy built-in runner)",
+    )
+    handoff_execute_agent.add_argument(
+        "--runner-timeout-seconds",
+        type=int,
+        default=900,
+        help="Timeout for explicit dispatch backend process execution (default: 900)",
+    )
+    handoff_execute_agent.add_argument(
         "--provider",
         choices=["anthropic", "openai", "openrouter", "bedrock", "remote-ial"],
         default=None,
@@ -1131,7 +1142,7 @@ def parse_args() -> argparse.Namespace:
     runner_template.add_argument(
         "--kind",
         default="local-planning",
-        choices=["local-planning"],
+        choices=["local-planning", "hermes-opensandbox"],
         help="Template kind to print (default: local-planning)",
     )
 

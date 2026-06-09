@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
 import io
+import json
 import os
 import subprocess
 import sys
@@ -161,6 +162,93 @@ class RunnerRegistrationTests(unittest.TestCase):
             self.assertIn("REGISTERED runner_id=local-planning", register_stdout)
             self.assertEqual(register_stderr, "")
 
+    def test_hermes_runner_rejects_deploy_capability(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-reject-deploy-") as td:
+            home = Path(td) / "home"
+            code, stdout, stderr = _run_runner_cmd(_runner_args("template", kind="hermes-opensandbox"))
+            self.assertEqual(code, 0)
+            self.assertEqual(stderr, "")
+            payload = yaml.safe_load(stdout)
+            payload["capabilities"].append("deploy")
+            runner_path = _write(Path(td) / "hermes.yaml", yaml.safe_dump(payload, sort_keys=False))
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                set_current_context_name("local")
+                register_code, _register_stdout, register_stderr = _run_runner_cmd(_runner_args("register", file=str(runner_path)))
+            self.assertEqual(register_code, 1)
+            self.assertIn("dangerous capabilities", register_stderr)
+
+    def test_hermes_template_registers_and_doctor_reports_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-hermes-template-") as td:
+            home = Path(td) / "home"
+            code, stdout, stderr = _run_runner_cmd(_runner_args("template", kind="hermes-opensandbox"))
+            self.assertEqual(code, 0)
+            self.assertEqual(stderr, "")
+            payload = yaml.safe_load(stdout)
+            self.assertEqual(payload["backend"], "hermes_opensandbox")
+            self.assertIn("bounded_worktree", payload["allowed_mutation_modes"])
+            self.assertIn("bounded_write", payload["capabilities"])
+            runner_path = _write(Path(td) / "hermes.yaml", stdout)
+            health = {
+                "dispatch_available": True,
+                "runtime_health": "ready",
+                "execution_endpoint": "/tmp/hermes",
+                "process_identity": {"hermes_executable": "/tmp/hermes"},
+                "cancellation_support": "timeout_process_termination",
+                "log_event_support": "stdout_stderr_event_jsonl",
+            }
+            with (
+                patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False),
+                patch("amof.commands.runner.hermes_opensandbox.runtime_health", return_value=health),
+            ):
+                set_current_context_name("local")
+                register_code, register_stdout, register_stderr = _run_runner_cmd(
+                    _runner_args("register", file=str(runner_path))
+                )
+                self.assertEqual(register_code, 0)
+                self.assertIn("backend=hermes_opensandbox", register_stdout)
+                self.assertIn("dispatch_available=yes", register_stdout)
+                self.assertEqual(register_stderr, "")
+                doctor_code, doctor_stdout, doctor_stderr = _run_runner_cmd(_runner_args("doctor", json=True))
+
+            self.assertEqual(doctor_code, 0)
+            self.assertEqual(doctor_stderr, "")
+            doctor = json.loads(doctor_stdout)
+            self.assertEqual(doctor["dispatch"], "available")
+            self.assertTrue(doctor["runners"][0]["dispatch_available"])
+            self.assertEqual(doctor["runners"][0]["backend_type"], "hermes_opensandbox")
+
+    def test_hermes_doctor_reports_unavailable_runtime_truthfully(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-hermes-unavailable-") as td:
+            home = Path(td) / "home"
+            code, stdout, _stderr = _run_runner_cmd(_runner_args("template", kind="hermes-opensandbox"))
+            self.assertEqual(code, 0)
+            runner_path = _write(Path(td) / "hermes.yaml", stdout)
+            health = {
+                "dispatch_available": False,
+                "runtime_health": "unavailable",
+                "execution_endpoint": "/missing/hermes",
+                "process_identity": {"hermes_executable": "/missing/hermes"},
+                "cancellation_support": "timeout_process_termination",
+                "log_event_support": "stdout_stderr_event_jsonl",
+            }
+            with (
+                patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False),
+                patch("amof.commands.runner.hermes_opensandbox.runtime_health", return_value=health),
+            ):
+                set_current_context_name("local")
+                register_code, _register_stdout, _register_stderr = _run_runner_cmd(
+                    _runner_args("register", file=str(runner_path))
+                )
+                self.assertEqual(register_code, 0)
+                doctor_code, doctor_stdout, doctor_stderr = _run_runner_cmd(_runner_args("doctor", json=True))
+
+            self.assertEqual(doctor_code, 0)
+            self.assertEqual(doctor_stderr, "")
+            doctor = json.loads(doctor_stdout)
+            self.assertEqual(doctor["dispatch"], "none")
+            self.assertFalse(doctor["runners"][0]["dispatch_available"])
+            self.assertEqual(doctor["runners"][0]["runtime_health"], "unavailable")
+
     def test_generated_intake_and_runner_template_match_and_scan(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-runner-template-dogfood-") as td:
             home = Path(td) / "home"
@@ -272,7 +360,7 @@ class RunnerRegistrationTests(unittest.TestCase):
                 code, stdout, stderr = _run_runner_cmd(_runner_args("doctor"))
                 self.assertEqual(code, 0)
                 self.assertIn("RUNNER_REGISTRY_OK", stdout)
-                self.assertIn("no_dispatch=yes", stdout)
+                self.assertIn("dispatch=none", stdout)
                 self.assertEqual(stderr, "")
 
     def test_match_planning_only_context_compatible(self) -> None:

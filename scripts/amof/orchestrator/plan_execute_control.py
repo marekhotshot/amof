@@ -123,6 +123,17 @@ _CODE_EDIT_INTENT_RE = re.compile(
     r"\b(edit|modify|patch|change|write code|update file|strreplace|insert)\b",
     re.IGNORECASE,
 )
+_READ_ONLY_INSPECTION_RE = re.compile(
+    r"\b(read[- ]only|inspect|inspection|audit|review|find|locate|search|"
+    r"source code|repository source|literal)\b",
+    re.IGNORECASE,
+)
+_ACTIVE_OPERATION_INTENT_RE = re.compile(
+    r"\b(run|execute|use|call|trigger|apply|install|uninstall|upgrade|"
+    r"mutate|rotate|read\s+(?:a\s+)?(?:secret|token|credential|kubeconfig)|"
+    r"fetch|download|write|edit|modify|patch|update)\b",
+    re.IGNORECASE,
+)
 
 _TRUST_BOUNDARY_TO_FATAL = {
     "capability_not_authorized_by_trusted_intent": "capability_not_authorized_by_trusted_intent",
@@ -551,6 +562,7 @@ def derive_tool_pack_requirements(goal: str, plan: ExecutionPlan) -> ToolPackReq
     text = _plan_text(plan, goal)
     lowered = text.lower()
     req = ToolPackRequirements(packs={"core-read"})
+    read_only_inspection = _is_read_only_inspection(text)
 
     report_roots = _report_write_roots(text)
     if report_roots or "report" in lowered or "matrix" in lowered:
@@ -560,24 +572,24 @@ def derive_tool_pack_requirements(goal: str, plan: ExecutionPlan) -> ToolPackReq
     if _CODE_EDIT_INTENT_RE.search(text):
         req.packs.add("code-edit")
 
-    if _JENKINS_INTENT_RE.search(text):
+    if not read_only_inspection and _JENKINS_INTENT_RE.search(text):
         req.packs.add("ops-jenkins")
         req.controlled_execution_packs.add("ops-jenkins")
         req.executable_paths.update(_jenkins_executables(text))
 
-    if _K8S_INTENT_RE.search(text):
+    if not read_only_inspection and _K8S_INTENT_RE.search(text):
         req.packs.add("ops-k8s")
         req.controlled_execution_packs.add("ops-k8s")
         req.command_policy["ops-k8s"] = list(CORE_TOOL_PACKS["ops-k8s"].command_policy)
 
-    if _HELM_RENDER_INTENT_RE.search(text):
+    if not read_only_inspection and _HELM_RENDER_INTENT_RE.search(text):
         req.packs.add("ops-helm-render")
         req.controlled_execution_packs.add("ops-helm-render")
         req.command_policy["ops-helm-render"] = list(
             CORE_TOOL_PACKS["ops-helm-render"].command_policy
         )
 
-    if _HELM_DEPLOY_INTENT_RE.search(text):
+    if not read_only_inspection and _HELM_DEPLOY_INTENT_RE.search(text):
         req.packs.add("ops-helm-deploy")
         req.controlled_execution_packs.add("ops-helm-deploy")
         req.command_policy["ops-helm-deploy"] = list(
@@ -597,6 +609,15 @@ def derive_tool_pack_requirements(goal: str, plan: ExecutionPlan) -> ToolPackReq
 def extract_report_paths(text: str) -> List[str]:
     """Report write roots only; helper scripts are modeled by tool packs."""
     return sorted(_report_write_roots(text))
+
+
+def _is_read_only_inspection(text: str) -> bool:
+    """Treat dangerous-domain words as data when the task is only source inspection."""
+    if not _READ_ONLY_INSPECTION_RE.search(text or ""):
+        return False
+    if _ACTIVE_OPERATION_INTENT_RE.search(text or ""):
+        return False
+    return True
 
 
 def parse_tool_pack_names(names: Optional[List[str]]) -> Set[str]:
@@ -654,6 +675,8 @@ def _path_covered_by_writable_roots(path: str, roots: List[Path]) -> bool:
 
 def derive_required_capabilities(text: str) -> Set[Capability]:
     caps = set(derive_trusted_intent_caps(text))
+    if _is_read_only_inspection(text or ""):
+        return {"read"}  # type: ignore[return-value]
     if _SECRET_INTENT_RE.search(text or ""):
         caps.update({"secret", "write"})
     if _NETWORK_INTENT_RE.search(text or ""):

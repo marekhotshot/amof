@@ -52,6 +52,14 @@
       "description": "Optional Studio Session parent correlation for runs launched under Studio.",
       "pattern": "^studio-[0-9]{8}-[0-9]{6}(?:-[0-9]{2})?$"
     },
+    "runner_id": {
+      "type": ["string", "null"],
+      "description": "Optional explicit runner identity used for execution."
+    },
+    "backend": {
+      "type": ["string", "null"],
+      "description": "Optional execution backend type, for example hermes_opensandbox."
+    },
     "stop_reason": {
       "type": "string",
       "minLength": 1
@@ -71,6 +79,35 @@
     },
     "journal_path": {
       "type": ["string", "null"]
+    },
+    "runtime_log_path": {
+      "type": ["string", "null"]
+    },
+    "changed_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "validation_summary": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "approved_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "effective_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence_refs": {
+      "type": "object",
+      "additionalProperties": true
     },
     "budget_summary": {
       "type": "object",
