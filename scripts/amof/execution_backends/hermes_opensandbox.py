@@ -398,6 +398,11 @@ def run(
     final_text = stdout_path.read_text(encoding="utf-8").strip()
     if not final_text:
         final_text = stderr_path.read_text(encoding="utf-8").strip() or stop_reason
+    validation_status = _infer_validation_status(final_text)
+    if status == "completed" and validation_status == "failed":
+        status = "failed"
+        stop_reason = "validation_failed"
+        exit_code = 1
     changed = _changed_paths(workspace)
     if status == "completed" and not selection.writable_roots and changed:
         status = "failed"
@@ -417,6 +422,7 @@ def run(
         selection=selection,
         health=health,
         opensandbox_probe=opensandbox_probe,
+        validation_status=validation_status,
     )
     result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     _append_event(event_log_path, "run_finished", status=status, exit_code=exit_code, stop_reason=stop_reason)
@@ -449,6 +455,7 @@ def _result_payload(
     selection: HermesBackendSelection,
     health: dict[str, Any],
     opensandbox_probe: dict[str, Any],
+    validation_status: str = "not_run",
 ) -> dict[str, Any]:
     return {
         "result_kind": "agent_run_result",
@@ -469,7 +476,7 @@ def _result_payload(
         "journal_path": None,
         "changed_paths": changed_paths,
         "validation_summary": {
-            "status": "not_run",
+            "status": validation_status,
             "reason": "Hermes backend returns process status; focused validation must be requested in mission text.",
         },
         "approved_capabilities": list(selection.capabilities),
@@ -482,3 +489,23 @@ def _result_payload(
         },
         "budget_summary": {"limit": None, "spent": 0.0, "remaining": None},
     }
+
+
+def _infer_validation_status(final_text: str) -> str:
+    lowered = final_text.lower()
+    failure_markers = (
+        "failed (failures=",
+        "failed (errors=",
+        "traceback (most recent call last)",
+        "assertionerror",
+        "\nfail:",
+        "\nerror:",
+        "the test ran, but it did not",
+        "resulting in a failure",
+    )
+    if any(marker in lowered for marker in failure_markers):
+        return "failed"
+    success_markers = ("ran 1 test", "\nok", "validation_ok")
+    if any(marker in lowered for marker in success_markers):
+        return "passed"
+    return "not_run"
