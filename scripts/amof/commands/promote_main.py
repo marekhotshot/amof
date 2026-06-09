@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,7 @@ MAIN_PUSH_BYPASS_ENV = "AMOF_ALLOW_MAIN_PUSH"
 PROMOTION_SUBJECT_PREFIX = "chore(promote-main): promote "
 NO_GITOPS_SHA = "<none>"
 PRIVATE_PROMOTION_POLICY_RELATIVE_PATH = Path(".amof-local") / "promotion-targets.yaml"
+COMPAT_LOCK_RELATIVE_PATH = Path("compat") / "public-private.lock.yaml"
 GITHUB_AUTH_SCOPE_HINT = (
     "Set GITHUB_TOKEN (classic: repo; fine-grained: Contents read/write) "
     "or configure a non-interactive git credential.helper."
@@ -94,6 +96,7 @@ class PromoteMainPlan:
     failure_classification: str | None = None
     legacy_numeric_fallback_used: bool = False
     promotion_target_policy_path: str | None = None
+    compat_lock_reconciliation: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -897,6 +900,235 @@ def _fetch_origin_main(repo_path: Path, workspace_root: Path) -> tuple[bool, str
     return completed.returncode == 0, output
 
 
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in paths:
+        resolved = path.resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(resolved)
+    return unique
+
+
+def _operator_root_candidates(workspace_root: Path, repo_path: Path) -> list[Path]:
+    return _unique_paths(
+        [
+            workspace_root,
+            *workspace_root.parents,
+            repo_path,
+            *repo_path.parents,
+        ]
+    )
+
+
+def _find_operator_compat_lock(workspace_root: Path, repo_path: Path) -> Path | None:
+    for root in _operator_root_candidates(workspace_root, repo_path):
+        candidate = root / COMPAT_LOCK_RELATIVE_PATH
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _find_private_repo_for_compat_lock(
+    lock_path: Path,
+    *,
+    workspace_root: Path,
+    repo_path: Path,
+) -> Path | None:
+    roots = _unique_paths(
+        [
+            lock_path.parents[1],
+            *_operator_root_candidates(workspace_root, repo_path),
+        ]
+    )
+    for root in roots:
+        candidate = root / "repos" / "amof-private"
+        if (candidate / ".git").exists():
+            return candidate.resolve(strict=False)
+    return None
+
+
+def _refresh_origin_main_sha(repo_path: Path, workspace_root: Path) -> tuple[str | None, str | None]:
+    fetch_ok, fetch_out = _fetch_origin_main(repo_path, workspace_root)
+    if not fetch_ok:
+        return None, _classify_git_failure(fetch_out) or "fetch_failed"
+    try:
+        return _resolve_commit(repo_path, "origin/main"), None
+    except RuntimeError:
+        return None, "origin_main_unresolved"
+
+
+def _quote_yaml_scalar_like(existing_value: str, replacement: str) -> str:
+    text = str(existing_value or "").strip()
+    if text.startswith("'"):
+        return "'" + replacement.replace("'", "''") + "'"
+    if text.startswith('"'):
+        return '"' + replacement.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return '"' + replacement + '"'
+
+
+def _replace_yaml_section_scalar(
+    text: str,
+    *,
+    section: str,
+    key: str,
+    replacement: str,
+) -> str:
+    lines = text.splitlines()
+    section_index: int | None = None
+    next_section_index = len(lines)
+    section_re = re.compile(rf"^{re.escape(section)}\s*:\s*(?:#.*)?$")
+    top_level_re = re.compile(r"^[A-Za-z0-9_-]+\s*:")
+    key_re = re.compile(rf"^(\s+{re.escape(key)}\s*:\s*)(.*?)(\s*(?:#.*)?)$")
+    for index, line in enumerate(lines):
+        if section_index is None:
+            if section_re.match(line):
+                section_index = index
+            continue
+        if index > section_index and top_level_re.match(line):
+            next_section_index = index
+            break
+        match = key_re.match(line)
+        if match:
+            prefix, old_value, suffix = match.groups()
+            lines[index] = f"{prefix}{_quote_yaml_scalar_like(old_value, replacement)}{suffix}"
+            return "\n".join(lines) + "\n"
+    if section_index is None:
+        lines.extend([f"{section}:", f"  {key}: \"{replacement}\""])
+    else:
+        lines.insert(next_section_index, f"  {key}: \"{replacement}\"")
+    return "\n".join(lines) + "\n"
+
+
+def _run_post_reconciliation_doctor(repo_path: Path, workspace_root: Path) -> dict[str, Any]:
+    scripts_root = Path(__file__).resolve().parents[2]
+    entrypoint = scripts_root / "amof.py"
+    command = (
+        [sys.executable, str(entrypoint), "doctor", "--json"]
+        if entrypoint.exists()
+        else [sys.executable, "-m", "amof", "doctor", "--json"]
+    )
+    env = os.environ.copy()
+    env["AMOF_WORKSPACE_ROOT"] = str(workspace_root)
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(repo_path),
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except Exception:
+        return {"status": "failed", "exit_code": None}
+    return {
+        "status": "passed" if completed.returncode == 0 else "failed",
+        "exit_code": completed.returncode,
+    }
+
+
+def _reconcile_operator_compat_lock_after_promotion(
+    *,
+    workspace_root: Path,
+    public_repo_path: Path,
+) -> dict[str, Any]:
+    lock_path = _find_operator_compat_lock(workspace_root, public_repo_path)
+    if lock_path is None:
+        return {
+            "attempted": False,
+            "status": "skipped",
+            "public_origin_main": None,
+            "private_origin_main": None,
+            "lock_path": None,
+            "backup_path": None,
+            "doctor_status": "not_run",
+            "failure_reason": "compat_lock_not_found",
+        }
+    private_repo_path = _find_private_repo_for_compat_lock(
+        lock_path,
+        workspace_root=workspace_root,
+        repo_path=public_repo_path,
+    )
+    if private_repo_path is None:
+        return {
+            "attempted": True,
+            "status": "warning",
+            "public_origin_main": None,
+            "private_origin_main": None,
+            "lock_path": str(lock_path),
+            "backup_path": None,
+            "doctor_status": "not_run",
+            "failure_reason": "private_repo_not_found",
+        }
+
+    public_origin_main_sha, public_error = _refresh_origin_main_sha(
+        public_repo_path,
+        workspace_root,
+    )
+    private_origin_main_sha, private_error = _refresh_origin_main_sha(
+        private_repo_path,
+        workspace_root,
+    )
+    if public_origin_main_sha is None or private_origin_main_sha is None:
+        return {
+            "attempted": True,
+            "status": "warning",
+            "public_origin_main": public_origin_main_sha,
+            "private_origin_main": private_origin_main_sha,
+            "lock_path": str(lock_path),
+            "backup_path": None,
+            "doctor_status": "not_run",
+            "failure_reason": public_error or private_error or "origin_main_refresh_failed",
+        }
+
+    timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    backup_path = lock_path.with_name(f"{lock_path.name}.bak.{timestamp}")
+    try:
+        original = lock_path.read_text(encoding="utf-8")
+        shutil.copy2(lock_path, backup_path)
+        updated = _replace_yaml_section_scalar(
+            original,
+            section="public",
+            key="main_sha",
+            replacement=public_origin_main_sha,
+        )
+        updated = _replace_yaml_section_scalar(
+            updated,
+            section="private",
+            key="current_main_sha",
+            replacement=private_origin_main_sha,
+        )
+        lock_path.write_text(updated, encoding="utf-8")
+    except Exception:
+        return {
+            "attempted": True,
+            "status": "warning",
+            "public_origin_main": public_origin_main_sha,
+            "private_origin_main": private_origin_main_sha,
+            "lock_path": str(lock_path),
+            "backup_path": str(backup_path),
+            "doctor_status": "not_run",
+            "failure_reason": "lock_update_failed",
+        }
+
+    doctor = _run_post_reconciliation_doctor(public_repo_path, workspace_root)
+    doctor_status = "ok" if doctor.get("status") == "passed" else "warning"
+    return {
+        "attempted": True,
+        "status": "ok" if doctor_status == "ok" else "warning",
+        "public_origin_main": public_origin_main_sha,
+        "private_origin_main": private_origin_main_sha,
+        "lock_path": str(lock_path),
+        "backup_path": str(backup_path),
+        "doctor_status": doctor_status,
+        "failure_reason": None if doctor_status == "ok" else "doctor_failed",
+    }
+
+
 def _git_env_with_credentials(workspace_root: Path) -> dict[str, str]:
     for env_dir in (workspace_root, workspace_root.parent):
         _load_dotenv(env_dir / ".env")
@@ -1589,6 +1821,16 @@ def _print_plan(plan: PromoteMainPlan) -> None:
         print(f"  Failure reason: {plan.failure_reason}")
     if plan.failure_classification:
         print(f"  Failure classification: {plan.failure_classification}")
+    if plan.compat_lock_reconciliation:
+        reconciliation = plan.compat_lock_reconciliation
+        print("  Compat lock reconciliation:")
+        print(f"    status: {reconciliation.get('status', '<unknown>')}")
+        if reconciliation.get("lock_path"):
+            print(f"    lock: {reconciliation['lock_path']}")
+        if reconciliation.get("backup_path"):
+            print(f"    backup: {reconciliation['backup_path']}")
+        if reconciliation.get("doctor_status"):
+            print(f"    doctor: {reconciliation['doctor_status']}")
     print("  Code delta files:")
     for path in plan.code_delta_files or ["<none>"]:
         print(f"    - {path}")
@@ -1826,6 +2068,14 @@ def execute_promote_main_push(
                 push_attempted=True,
                 push_succeeded=True,
             )
+            if bundle.repo == "amof":
+                finalized = replace(
+                    finalized,
+                    compat_lock_reconciliation=_reconcile_operator_compat_lock_after_promotion(
+                        workspace_root=workspace_root,
+                        public_repo_path=repo_path,
+                    ),
+                )
             _rewrite_audit_record(workspace_root, finalized)
     except PromotionLockError as exc:
         finalized = replace(

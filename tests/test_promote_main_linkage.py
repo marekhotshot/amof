@@ -8,12 +8,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from amof.commands import promote_main as promote_main_module
 from amof.commands.promote_main import (
     PromoteMainInput,
+    execute_promote_main_push,
     _is_legacy_numeric_ticket_id,
     plan_promote_main_dry_run,
 )
@@ -117,6 +120,73 @@ class PromoteMainLinkageTests(unittest.TestCase):
         policy_path = _write_private_policy(temp_root, remote_url=str(remote))
 
         return temp_root, repo, branch, source_sha, expected_main_sha, policy_path
+
+    def _prepare_public_private_compat_workspace(
+        self,
+    ) -> tuple[Path, str, str, str, str, str]:
+        temp_root = Path(tempfile.mkdtemp(prefix="amof-promote-compat-lock-"))
+
+        public_remote = temp_root / "public.git"
+        subprocess.run(["git", "init", "--bare", str(public_remote)], check=True, capture_output=True, text=True)
+        public_seed = temp_root / "public-seed"
+        subprocess.run(["git", "init", "-b", "main", str(public_seed)], check=True, capture_output=True, text=True)
+        (public_seed / "README.md").write_text("# public base\n", encoding="utf-8")
+        _git(public_seed, "add", "README.md")
+        _git(public_seed, "commit", "-m", "public base")
+        _git(public_seed, "remote", "add", "origin", str(public_remote))
+        _git(public_seed, "push", "-u", "origin", "main")
+
+        public_repo = temp_root / "repos" / "amof"
+        public_repo.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "clone", str(public_remote), str(public_repo)], check=True, capture_output=True, text=True)
+        _git(public_repo, "fetch", "origin", "main")
+        expected_public_main = _git(public_repo, "rev-parse", "origin/main")
+        branch = "ticket/AMOF-PROMOTE-MAIN-COMPAT-LOCK-RECONCILE-001-promote-main-compat-lock-reconcile"
+        _git(public_repo, "checkout", "-b", branch)
+        (public_repo / "README.md").write_text("# public promoted\n", encoding="utf-8")
+        _git(public_repo, "add", "README.md")
+        _git(public_repo, "commit", "-m", "public candidate")
+        source_sha = _git(public_repo, "rev-parse", "HEAD")
+
+        private_remote = temp_root / "private.git"
+        subprocess.run(["git", "init", "--bare", str(private_remote)], check=True, capture_output=True, text=True)
+        private_seed = temp_root / "private-seed"
+        subprocess.run(["git", "init", "-b", "main", str(private_seed)], check=True, capture_output=True, text=True)
+        (private_seed / "README.md").write_text("# private base\n", encoding="utf-8")
+        _git(private_seed, "add", "README.md")
+        _git(private_seed, "commit", "-m", "private base")
+        _git(private_seed, "remote", "add", "origin", str(private_remote))
+        _git(private_seed, "push", "-u", "origin", "main")
+
+        private_repo = temp_root / "repos" / "amof-private"
+        subprocess.run(["git", "clone", str(private_remote), str(private_repo)], check=True, capture_output=True, text=True)
+        _git(private_repo, "fetch", "origin", "main")
+        private_origin_main = _git(private_repo, "rev-parse", "origin/main")
+        (private_repo / "LOCAL_ONLY.md").write_text("local divergent head\n", encoding="utf-8")
+        _git(private_repo, "add", "LOCAL_ONLY.md")
+        _git(private_repo, "commit", "-m", "local private change not on origin")
+        private_local_head = _git(private_repo, "rev-parse", "HEAD")
+
+        lock_path = temp_root / "compat" / "public-private.lock.yaml"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(
+            "public:\n"
+            "  repo_url: \"https://github.com/marekhotshot/amof.git\"\n"
+            "  main_sha: \"0000000000000000000000000000000000000000\"\n"
+            "private:\n"
+            "  repo_url: \"https://github.com/marekhotshot/amof-private.git\"\n"
+            "  current_main_sha: '1111111111111111111111111111111111111111'\n",
+            encoding="utf-8",
+        )
+
+        return (
+            temp_root,
+            branch,
+            source_sha,
+            expected_public_main,
+            private_origin_main,
+            private_local_head,
+        )
 
     def _prepare_stale_base_workspace(self, *, overlapping: bool) -> tuple[Path, str, str, str]:
         temp_root = Path(tempfile.mkdtemp(prefix="amof-promote-linkage-stale-"))
@@ -260,6 +330,127 @@ class PromoteMainLinkageTests(unittest.TestCase):
             audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
             self.assertEqual(audit_payload["repo"], "amof-private")
             self.assertEqual(audit_payload["promotion_target_policy_path"], str(policy_path.resolve(strict=False)))
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def test_successful_public_promotion_reconciles_operator_compat_lock(self) -> None:
+        (
+            temp_root,
+            branch,
+            source_sha,
+            expected_public_main,
+            private_origin_main,
+            private_local_head,
+        ) = self._prepare_public_private_compat_workspace()
+        try:
+            bundle = PromoteMainInput(
+                repo="amof",
+                ticket_id="AMOF-PROMOTE-MAIN-COMPAT-LOCK-RECONCILE-001",
+                candidate_branch=branch,
+                source_sha=source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=expected_public_main,
+                promotion_reason="test compat lock reconciliation",
+                dry_run=False,
+            )
+            with mock.patch.object(
+                promote_main_module,
+                "_run_post_reconciliation_doctor",
+                return_value={"status": "failed", "exit_code": 7},
+            ) as doctor:
+                plan = execute_promote_main_push(
+                    {"repos": [{"name": "amof", "path": str(temp_root / "repos" / "amof")}]},
+                    bundle,
+                    ecosystem=None,
+                    workspace_root=temp_root,
+                )
+
+            doctor.assert_called_once()
+            self.assertTrue(plan.ok, plan.failure_reason)
+            self.assertEqual(plan.status, "promoted")
+            self.assertEqual(plan.push_succeeded, True)
+            self.assertEqual(plan.compat_lock_reconciliation["attempted"], True)
+            self.assertEqual(plan.compat_lock_reconciliation["status"], "warning")
+            self.assertEqual(plan.compat_lock_reconciliation["doctor_status"], "warning")
+            self.assertEqual(plan.compat_lock_reconciliation["failure_reason"], "doctor_failed")
+            self.assertTrue(Path(plan.compat_lock_reconciliation["backup_path"]).is_file())
+            self.assertEqual(plan.compat_lock_reconciliation["public_origin_main"], plan.result_main_sha)
+            self.assertEqual(plan.compat_lock_reconciliation["private_origin_main"], private_origin_main)
+            self.assertNotEqual(private_local_head, private_origin_main)
+
+            lock_text = (temp_root / "compat" / "public-private.lock.yaml").read_text(encoding="utf-8")
+            self.assertIn(f'main_sha: "{plan.result_main_sha}"', lock_text)
+            self.assertIn(f"current_main_sha: '{private_origin_main}'", lock_text)
+            self.assertNotIn(private_local_head, lock_text)
+
+            audit_payload = json.loads((temp_root / plan.audit_record_path).read_text(encoding="utf-8"))
+            reconciliation = audit_payload["compat_lock_reconciliation"]
+            self.assertEqual(
+                set(reconciliation),
+                {
+                    "attempted",
+                    "status",
+                    "public_origin_main",
+                    "private_origin_main",
+                    "lock_path",
+                    "backup_path",
+                    "doctor_status",
+                    "failure_reason",
+                },
+            )
+            self.assertEqual(reconciliation["status"], "warning")
+            self.assertEqual(reconciliation["doctor_status"], "warning")
+            self.assertEqual(reconciliation["private_origin_main"], private_origin_main)
+            self.assertNotIn("stdout", json.dumps(reconciliation))
+            self.assertNotIn("stderr", json.dumps(reconciliation))
+            self.assertNotIn("LOCAL_ONLY", json.dumps(reconciliation))
+            self.assertNotIn(private_local_head, json.dumps(reconciliation))
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def test_push_failure_does_not_run_compat_lock_reconciliation(self) -> None:
+        (
+            temp_root,
+            branch,
+            source_sha,
+            expected_public_main,
+            _private_origin_main,
+            _private_local_head,
+        ) = self._prepare_public_private_compat_workspace()
+        try:
+            bundle = PromoteMainInput(
+                repo="amof",
+                ticket_id="AMOF-PROMOTE-MAIN-COMPAT-LOCK-RECONCILE-001",
+                candidate_branch=branch,
+                source_sha=source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=expected_public_main,
+                promotion_reason="test push failure skips compat reconciliation",
+                dry_run=False,
+            )
+            with mock.patch.object(
+                promote_main_module,
+                "_push_synthetic_commit",
+                return_value=(False, "simulated push failure"),
+            ):
+                with mock.patch.object(
+                    promote_main_module,
+                    "_reconcile_operator_compat_lock_after_promotion",
+                ) as reconcile:
+                    plan = execute_promote_main_push(
+                        {"repos": [{"name": "amof", "path": str(temp_root / "repos" / "amof")}]},
+                        bundle,
+                        ecosystem=None,
+                        workspace_root=temp_root,
+                    )
+
+            self.assertFalse(plan.ok)
+            self.assertEqual(plan.status, "failed")
+            self.assertEqual(plan.failure_stage, "push_rejected")
+            self.assertIsNone(plan.compat_lock_reconciliation)
+            reconcile.assert_not_called()
+            audit_payload = json.loads((temp_root / plan.audit_record_path).read_text(encoding="utf-8"))
+            self.assertIsNone(audit_payload["compat_lock_reconciliation"])
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
 
