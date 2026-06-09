@@ -4317,6 +4317,52 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         self.assertIn("ops-helm-deploy", req.packs)
         self.assertIn("k8s_mutation", req.capabilities)
 
+    def test_read_only_source_audit_does_not_select_deploy_pack(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            derive_required_capabilities,
+            derive_tool_pack_requirements,
+        )
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = (
+            "Read-only AMOF source audit: inspect current AMOF source code and "
+            "find where ops-helm-deploy, Kubernetes mutation, network, secret, "
+            "shell_limited, and missing_required_tool are mentioned."
+        )
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Audit source", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+
+        self.assertEqual(req.packs, {"core-read"})
+        self.assertEqual(req.capabilities, {"read"})
+        self.assertEqual(derive_required_capabilities(goal), {"read"})
+        self.assertNotIn("ops-helm-deploy", req.packs)
+        self.assertNotIn("ops-k8s", req.packs)
+        self.assertNotIn("secret", req.capabilities)
+        self.assertNotIn("network", req.capabilities)
+        self.assertNotIn("k8s_mutation", req.capabilities)
+
+    def test_ambiguous_dangerous_domain_words_fail_closed(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            derive_required_capabilities,
+            derive_tool_pack_requirements,
+        )
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = "Audit source references to Kubernetes, Helm deployment, and secrets."
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Audit", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+
+        self.assertEqual(req.packs, {"core-read"})
+        self.assertEqual(derive_required_capabilities(goal), {"read"})
+
     def test_report_md_under_tmp_derives_reports(self) -> None:
         from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
         from amof.orchestrator.planner import ExecutionPlan, Subtask
