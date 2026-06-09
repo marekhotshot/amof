@@ -162,6 +162,21 @@ class RunnerRegistrationTests(unittest.TestCase):
             self.assertIn("REGISTERED runner_id=local-planning", register_stdout)
             self.assertEqual(register_stderr, "")
 
+    def test_hermes_runner_rejects_deploy_capability(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-runner-reject-deploy-") as td:
+            home = Path(td) / "home"
+            code, stdout, stderr = _run_runner_cmd(_runner_args("template", kind="hermes-opensandbox"))
+            self.assertEqual(code, 0)
+            self.assertEqual(stderr, "")
+            payload = yaml.safe_load(stdout)
+            payload["capabilities"].append("deploy")
+            runner_path = _write(Path(td) / "hermes.yaml", yaml.safe_dump(payload, sort_keys=False))
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                set_current_context_name("local")
+                register_code, _register_stdout, register_stderr = _run_runner_cmd(_runner_args("register", file=str(runner_path)))
+            self.assertEqual(register_code, 1)
+            self.assertIn("dangerous capabilities", register_stderr)
+
     def test_hermes_template_registers_and_doctor_reports_dispatch(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-runner-hermes-template-") as td:
             home = Path(td) / "home"
