@@ -111,6 +111,14 @@ class AgentRunResult:
     journal_path: str | None
     budget_summary: dict[str, Any]
     studio_session_id: str | None = None
+    runner_id: str | None = None
+    backend: str | None = None
+    runtime_log_path: str | None = None
+    changed_paths: list[str] | None = None
+    validation_summary: dict[str, Any] | None = None
+    approved_capabilities: list[str] | None = None
+    effective_capabilities: list[str] | None = None
+    evidence_refs: dict[str, Any] | None = None
     schema_version: int = 1
     result_kind: str = "agent_run_result"
     contract_version: str = "agent-run-v1"
@@ -143,4 +151,12 @@ class AgentRunResult:
                 if self.studio_session_id is not None
                 else {}
             ),
+            **({"runner_id": self.runner_id} if self.runner_id is not None else {}),
+            **({"backend": self.backend} if self.backend is not None else {}),
+            **({"runtime_log_path": self.runtime_log_path} if self.runtime_log_path is not None else {}),
+            **({"changed_paths": list(self.changed_paths)} if self.changed_paths is not None else {}),
+            **({"validation_summary": dict(self.validation_summary)} if self.validation_summary is not None else {}),
+            **({"approved_capabilities": list(self.approved_capabilities)} if self.approved_capabilities is not None else {}),
+            **({"effective_capabilities": list(self.effective_capabilities)} if self.effective_capabilities is not None else {}),
+            **({"evidence_refs": dict(self.evidence_refs)} if self.evidence_refs is not None else {}),
         }

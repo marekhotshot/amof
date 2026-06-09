@@ -41,6 +41,8 @@ def _execute_args(**overrides: object) -> SimpleNamespace:
         "approve_capabilities": None,
         "approve_tool_packs": None,
         "approve_writable_roots": None,
+        "runner_id": None,
+        "runner_timeout_seconds": 900,
     }
     payload.update(overrides)
     return SimpleNamespace(**payload)
@@ -144,6 +146,33 @@ def _write_packet(
     )
     with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
         return handoff._write_packet(packet)
+
+
+def _write_runner_record(amof_home: Path, runner_id: str = "hermes-local-ticket-write", *, backend: str = "hermes_opensandbox") -> Path:
+    path = amof_home / "share" / "runners" / "registry" / f"{runner_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "runner_id": runner_id,
+                "name": "Hermes Local Ticket Write",
+                "context": "local",
+                "status": "available",
+                "backend": backend,
+                "capabilities": ["intake.validate", "intake.plan", "execution.scan_report", "read", "bounded_write"],
+                "supported_task_kinds": ["other"],
+                "allowed_mutation_modes": ["read_only", "bounded_worktree"],
+                "max_concurrency": 1,
+                "trust_level": "local",
+                "registration_source": "test",
+                "endpoint_ref": "hermes-local",
+                "authority": {"writable_roots_required": True},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def _correlation_envelope(
@@ -259,6 +288,204 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             self.assertEqual(receipt["request_id"], "handoff-test-001")
             self.assertEqual(receipt["status"], "completed")
             self.assertEqual(receipt["session_id"], "session-1")
+
+    def test_explicit_hermes_runner_dispatches_backend_and_not_builtin(self) -> None:
+        captured: dict[str, object] = {}
+
+        def _fake_hermes(**kwargs: object) -> dict[str, object]:
+            captured.update(kwargs)
+            selection = kwargs["selection"]
+            return {
+                "schema_version": 1,
+                "result_kind": "agent_run_result",
+                "contract_version": "agent-run-v1",
+                "status": "completed",
+                "session_id": "hermes-session-1",
+                "exit_code": 0,
+                "stop_reason": "completed",
+                "final_text": "hermes ok",
+                "runner_id": selection.runner_id,
+                "backend": "hermes_opensandbox",
+                "plan_path": None,
+                "checkpoint_path": None,
+                "event_log_path": "/tmp/hermes-events.jsonl",
+                "runtime_log_path": "/tmp/hermes-runtime.log",
+                "journal_path": None,
+                "changed_paths": [],
+                "validation_summary": {"status": "not_run"},
+                "approved_capabilities": list(selection.capabilities),
+                "effective_capabilities": list(selection.capabilities),
+                "evidence_refs": {},
+                "budget_summary": {"limit": None, "spent": 0.0, "remaining": None},
+            }
+
+        with TemporaryDirectory(prefix="amof-handoff-hermes-selected-") as td:
+            amof_home = Path(td)
+            _write_packet(amof_home)
+            _write_runner_record(amof_home)
+            with (
+                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
+                patch("amof.commands.handoff.hermes_opensandbox.run", side_effect=_fake_hermes),
+                patch("amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope") as builtin,
+            ):
+                code, stdout, stderr = _run_execute(
+                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"), amof_home
+                )
+
+            receipt = json.loads(stdout)
+            builtin.assert_not_called()
+            self.assertEqual(code, 0)
+            self.assertEqual(receipt["status"], "completed")
+            self.assertEqual(receipt["session_id"], "hermes-session-1")
+            self.assertIn("runtime_log_path", receipt["evidence"])
+            self.assertEqual(captured["request_id"], "handoff-test-001")
+            self.assertIn("selected_execution_configuration", stderr)
+
+    def test_explicit_unsupported_runner_fails_closed_without_builtin_substitution(self) -> None:
+        with TemporaryDirectory(prefix="amof-handoff-runner-fail-closed-") as td:
+            amof_home = Path(td)
+            _write_packet(amof_home)
+            _write_runner_record(amof_home, backend="planning_only")
+            with (
+                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
+                patch("amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope") as builtin,
+            ):
+                code, stdout, _stderr = _run_execute(
+                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"), amof_home
+                )
+
+            receipt = json.loads(stdout)
+            result = json.loads(Path(receipt["result_path"]).read_text(encoding="utf-8"))
+            builtin.assert_not_called()
+            self.assertEqual(code, 1)
+            self.assertEqual(receipt["status"], "failed")
+            self.assertEqual(receipt["stop_reason"], "selected_runner_dispatch_failed")
+            self.assertIn("does not provide dispatch backend", result["final_text"])
+
+    def test_explicit_hermes_read_only_maps_only_read_capability(self) -> None:
+        captured: dict[str, object] = {}
+
+        def _fake_hermes(**kwargs: object) -> dict[str, object]:
+            selection = kwargs["selection"]
+            captured["capabilities"] = list(selection.capabilities)
+            result = _correlation_envelope(session_id="ignored").result
+            result.update(
+                {
+                    "session_id": "hermes-read-only",
+                    "runner_id": selection.runner_id,
+                    "backend": "hermes_opensandbox",
+                    "runtime_log_path": "/tmp/runtime.log",
+                    "changed_paths": [],
+                    "validation_summary": {},
+                    "approved_capabilities": list(selection.capabilities),
+                    "effective_capabilities": list(selection.capabilities),
+                    "evidence_refs": {},
+                }
+            )
+            return result
+
+        with TemporaryDirectory(prefix="amof-handoff-hermes-readonly-") as td:
+            amof_home = Path(td)
+            _write_packet(amof_home)
+            _write_runner_record(amof_home)
+            with (
+                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
+                patch("amof.commands.handoff.hermes_opensandbox.run", side_effect=_fake_hermes),
+            ):
+                code, _stdout, _stderr = _run_execute(
+                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"), amof_home
+                )
+            self.assertEqual(code, 0)
+            self.assertEqual(captured["capabilities"], ["read"])
+
+    def test_explicit_hermes_bounded_write_requires_writable_root(self) -> None:
+        with TemporaryDirectory(prefix="amof-handoff-hermes-write-root-") as td:
+            amof_home = Path(td)
+            _write_packet(amof_home)
+            _write_runner_record(amof_home)
+            with (
+                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
+                patch("amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope") as builtin,
+            ):
+                code, stdout, _stderr = _run_execute(
+                    _execute_args(
+                        confirm=True,
+                        runner_id="hermes-local-ticket-write",
+                        approve_capabilities=["bounded_write"],
+                    ),
+                    amof_home,
+                )
+            receipt = json.loads(stdout)
+            result = json.loads(Path(receipt["result_path"]).read_text(encoding="utf-8"))
+            builtin.assert_not_called()
+            self.assertEqual(code, 1)
+            self.assertIn("require at least one explicit writable root", result["final_text"])
+
+    def test_explicit_hermes_dangerous_capability_fails_closed(self) -> None:
+        with TemporaryDirectory(prefix="amof-handoff-hermes-dangers-fail-closed-") as td:
+            amof_home = Path(td)
+            _write_packet(amof_home)
+            _write_runner_record(amof_home)
+            with (
+                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
+                patch("amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope") as builtin,
+            ):
+                code, stdout, _stderr = _run_execute(
+                    _execute_args(
+                        confirm=True,
+                        runner_id="hermes-local-ticket-write",
+                        approve_capabilities=["secrets"],
+                    ),
+                    amof_home,
+                )
+            receipt = json.loads(stdout)
+            result = json.loads(Path(receipt["result_path"]).read_text(encoding="utf-8"))
+            builtin.assert_not_called()
+            self.assertEqual(code, 1)
+            self.assertEqual(receipt["status"], "failed")
+            self.assertEqual(receipt["stop_reason"], "selected_runner_dispatch_failed")
+            self.assertIn("dangerous capabilities", result["final_text"])
+
+    def test_explicit_hermes_preserves_studio_session_id(self) -> None:
+        with TemporaryDirectory(prefix="amof-handoff-hermes-studio-") as td:
+            amof_home = Path(td)
+            with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
+                studio_session_id = self._create_studio_session()
+            _write_packet(amof_home, studio_session_id=studio_session_id)
+            _write_runner_record(amof_home)
+
+            def _fake_hermes(**kwargs: object) -> dict[str, object]:
+                result = _correlation_envelope(
+                    session_id="hermes-studio",
+                    studio_session_id=kwargs["studio_session_id"],
+                    event_log_path="/tmp/hermes-events.jsonl",
+                ).result
+                result.update(
+                    {
+                        "runner_id": "hermes-local-ticket-write",
+                        "backend": "hermes_opensandbox",
+                        "runtime_log_path": "/tmp/hermes-runtime.log",
+                        "changed_paths": [],
+                        "validation_summary": {},
+                        "approved_capabilities": ["read"],
+                        "effective_capabilities": ["read"],
+                        "evidence_refs": {},
+                    }
+                )
+                return result
+
+            with (
+                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
+                patch("amof.commands.handoff.hermes_opensandbox.run", side_effect=_fake_hermes),
+            ):
+                code, stdout, _stderr = _run_execute(
+                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"), amof_home
+                )
+            receipt = json.loads(stdout)
+            result = json.loads(Path(receipt["result_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(code, 0)
+            self.assertEqual(receipt["studio_session_id"], studio_session_id)
+            self.assertEqual(result["studio_session_id"], studio_session_id)
 
     def test_preview_without_confirmation_invokes_nothing(self) -> None:
         with TemporaryDirectory(prefix="amof-handoff-dispatch-preview-") as td:

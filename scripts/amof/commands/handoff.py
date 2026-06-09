@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from ..app_paths import ensure_app_roots, get_app_paths
 from ..commands import agent_cmd
+from ..execution_backends import hermes_opensandbox
 from ..manifest import list_available_ecosystems, load_manifest
 from ..state import get_state
 from ..utils import get_ecosystem_from_branch, get_ecosystem_from_path, get_git_toplevel
@@ -679,6 +680,7 @@ def _build_safe_evidence_refs(result: dict[str, Any]) -> dict[str, Optional[str]
         "plan_path": _optional_text(result.get("plan_path")),
         "checkpoint_path": _optional_text(result.get("checkpoint_path")),
         "event_log_path": _optional_text(result.get("event_log_path")),
+        "runtime_log_path": _optional_text(result.get("runtime_log_path")),
         "journal_path": _optional_text(result.get("journal_path")),
     }
 
@@ -688,6 +690,89 @@ def _final_status_from_result(result: dict[str, Any]) -> str:
     if status in {"completed", "blocked", "failed"}:
         return status
     return "failed"
+
+
+def _runner_registry_dir() -> Path:
+    return get_app_paths().data_root / "runners" / "registry"
+
+
+def _load_runner_record(runner_id: str) -> dict[str, Any]:
+    record_path = _runner_registry_dir() / f"{runner_id}.json"
+    if not record_path.is_file():
+        raise ValueError(f"selected runner not found: {runner_id}")
+    try:
+        payload = json.loads(record_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"selected runner record is invalid JSON: {runner_id}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"selected runner record is invalid: {runner_id}")
+    return payload
+
+
+def _selected_runner_id(args: Any) -> str | None:
+    value = _optional_text(getattr(args, "runner_id", None))
+    return value
+
+
+def _explicit_builtin_runner_selected(runner_id: str | None) -> bool:
+    return runner_id in {"code", "built-in", "builtin", "amof-built-in-code"}
+
+
+def _capability_approvals(args: Any) -> list[str]:
+    return [
+        item.strip()
+        for item in _string_list(getattr(args, "approve_capabilities", None))
+        if item.strip()
+    ]
+
+
+def _writable_root_approvals(args: Any) -> list[str]:
+    return [
+        item.strip()
+        for item in _string_list(getattr(args, "approve_writable_roots", None))
+        if item.strip()
+    ]
+
+
+def _dispatch_hermes_handoff(
+    *,
+    args: Any,
+    packet: PreparedHandoffPacket,
+    manifest: dict[str, Any],
+    runner_record: dict[str, Any],
+    request_payload: dict[str, Any],
+) -> dict[str, Any]:
+    runner_id = str(runner_record.get("runner_id") or "").strip()
+    if not runner_id:
+        raise ValueError("selected runner record is missing runner_id")
+    execution = runner_record.get("execution") if isinstance(runner_record.get("execution"), dict) else {}
+    timeout_seconds = int(
+        getattr(args, "runner_timeout_seconds", None)
+        or execution.get("max_runtime_seconds")
+        or 900
+    )
+    manifest_repos = manifest.get("repos")
+    readable_root = None
+    if isinstance(manifest_repos, list) and manifest_repos:
+        first = manifest_repos[0]
+        if isinstance(first, dict):
+            readable_root = str(first.get("path") or "").strip() or None
+    selection = hermes_opensandbox.build_selection(
+        runner_id=runner_id,
+        requested_capabilities=_capability_approvals(args),
+        approve_writable_roots=_writable_root_approvals(args),
+        timeout_seconds=timeout_seconds,
+        readable_root=readable_root,
+    )
+    return hermes_opensandbox.run(
+        manifest=manifest,
+        goal=str(request_payload.get("goal") or packet.payload.text),
+        request_id=str(request_payload.get("request_id") or packet.handoff_id),
+        studio_session_id=packet.studio_session_id,
+        selection=selection,
+        provider=_optional_text(request_payload.get("provider")),
+        model=_optional_text(request_payload.get("model")),
+    )
 
 
 def _execute_agent_from_handoff(
@@ -723,27 +808,73 @@ def _execute_agent_from_handoff(
     )
 
     try:
-        response = agent_cmd.run_external_agent_plan_execute_envelope(
-            manifest,
-            request_payload,
-            studio_session_id=packet.studio_session_id,
-        )
-        result_payload = dict(response.result)
-    except Exception:
+        runner_id = _selected_runner_id(args)
+        if runner_id is None or _explicit_builtin_runner_selected(runner_id):
+            response = agent_cmd.run_external_agent_plan_execute_envelope(
+                manifest,
+                request_payload,
+                studio_session_id=packet.studio_session_id,
+            )
+            result_payload = dict(response.result)
+            if runner_id is not None:
+                result_payload.setdefault("runner_id", runner_id)
+                result_payload.setdefault("backend", "amof_builtin_code")
+        else:
+            runner_record = _load_runner_record(runner_id)
+            backend = hermes_opensandbox.runner_backend_type(runner_record)
+            if backend != hermes_opensandbox.BACKEND_TYPE:
+                raise ValueError(
+                    f"selected runner {runner_id!r} does not provide dispatch backend {hermes_opensandbox.BACKEND_TYPE}"
+                )
+            result_payload = _dispatch_hermes_handoff(
+                args=args,
+                packet=packet,
+                manifest=manifest,
+                runner_record=runner_record,
+                request_payload=request_payload,
+            )
+    except Exception as exc:
         completed_at = _now_iso()
         receipt_path = _handoff_receipts_dir() / f"{handoff_id}.json"
+        runner_id = _selected_runner_id(args)
+        diagnostic_result = {
+            "result_kind": "agent_run_result",
+            "contract_version": "agent-run-v1",
+            "schema_version": 1,
+            "status": "failed",
+            "session_id": "",
+            "exit_code": 1,
+            "stop_reason": "handoff_dispatch_failed" if runner_id is None else "selected_runner_dispatch_failed",
+            "final_text": str(exc),
+            "runner_id": runner_id,
+            "backend": None,
+            "studio_session_id": packet.studio_session_id,
+            "plan_path": None,
+            "checkpoint_path": None,
+            "event_log_path": None,
+            "runtime_log_path": None,
+            "journal_path": None,
+            "changed_paths": [],
+            "validation_summary": {"status": "not_run", "reason": str(exc)},
+            "approved_capabilities": _capability_approvals(args),
+            "effective_capabilities": [],
+            "evidence_refs": {},
+            "budget_summary": {"limit": None, "spent": 0.0, "remaining": None},
+        }
+        result_path = _write_execution_result(handoff_id, diagnostic_result)
+        result_sha256 = _file_sha256(result_path)
         receipt = HandoffExecutionReceipt(
             schema_version=HANDOFF_RECEIPT_SCHEMA_VERSION,
             handoff_id=handoff_id,
             request_id=handoff_id,
             status="failed",
             exit_code=1,
-            stop_reason="handoff_dispatch_failed",
+            stop_reason="handoff_dispatch_failed" if runner_id is None else "selected_runner_dispatch_failed",
             session_id="",
-            studio_session_id=None,
-            result_path=None,
-            result_sha256=None,
-            evidence={},
+            studio_session_id=packet.studio_session_id,
+            result_path=str(result_path),
+            result_sha256=result_sha256,
+            evidence=_build_safe_evidence_refs(diagnostic_result),
             receipt_path=str(receipt_path),
             started_at=started_at,
             completed_at=completed_at,
@@ -759,6 +890,7 @@ def _execute_agent_from_handoff(
                 started_at=started_at,
                 completed_at=completed_at,
                 receipt_path=str(receipt_path),
+                result_path=str(result_path),
             )
         )
         return receipt

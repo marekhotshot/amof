@@ -16,6 +16,7 @@ import yaml
 
 from ..app_config import load_contexts, resolve_active_context_name
 from ..app_paths import get_app_paths, runs_dir
+from ..execution_backends import hermes_opensandbox
 from ..orchestrator.events import EventLog
 from .intake import IntakeCliError, _is_read_only_intake, _validate_packet
 
@@ -48,10 +49,29 @@ RUNNER_STATUS_ALLOWED = {
 }
 
 RUNNER_ELIGIBLE_STATUSES = {"available", "registered", "ready"}
-ALLOWED_MUTATION_MODES = {"read_only"}
+ALLOWED_MUTATION_MODES = {"read_only", "bounded_worktree"}
 REQUIRED_MATCH_CAPABILITIES = {"intake.validate", "intake.plan"}
-SUPPORTED_TEMPLATE_KINDS = ("local-planning",)
+SUPPORTED_TEMPLATE_KINDS = ("local-planning", "hermes-opensandbox")
 LOCAL_FORENSIC_TIMEOUT_SECONDS = 15.0
+SUPPORTED_BACKENDS = {"planning_only", hermes_opensandbox.BACKEND_TYPE}
+HERMES_ALLOWED_EXECUTION_CAPABILITIES = {"read", "bounded_write", "shell_limited", "focused_tests"}
+HERMES_DENIED_CAPABILITIES = {
+    "kubernetes",
+    "kubernetes_mutation",
+    "deploy",
+    "deployment",
+    "secrets",
+    "secret_access",
+    "unrestricted_network",
+    "network_unrestricted",
+    "push",
+    "promote",
+    "promotion",
+    "tag",
+    "tags",
+    "release",
+    "releases",
+}
 
 SENSITIVE_KEY_PATTERN = re.compile(
     r"(secret|token|password|api[_-]?key|access[_-]?key|private[_-]?key|bearer|credential)",
@@ -224,6 +244,48 @@ def _validate_endpoint_ref(value: str) -> str:
     return normalized
 
 
+def _backend_type_for_payload(payload: dict[str, Any]) -> str:
+    backend = str(payload.get("backend") or payload.get("backend_type") or "").strip()
+    if backend:
+        return backend
+    if str(payload.get("driver") or "").strip().lower() == "hermes":
+        return hermes_opensandbox.BACKEND_TYPE
+    return "planning_only"
+
+
+def _validate_backend_payload(payload: dict[str, Any], *, mutation_modes: list[str], capabilities: list[str]) -> None:
+    backend = _backend_type_for_payload(payload)
+    if backend not in SUPPORTED_BACKENDS:
+        raise RunnerCliError(f"unsupported runner backend: {backend}")
+    if backend == "planning_only":
+        unsupported_modes = [item for item in mutation_modes if item != "read_only"]
+        if unsupported_modes:
+            raise RunnerCliError(
+                f"planning-only runners may include read_only mutation mode only; found: {', '.join(sorted(set(unsupported_modes)))}"
+            )
+        return
+    if backend == hermes_opensandbox.BACKEND_TYPE:
+        dangerous = sorted({item for item in capabilities if item in HERMES_DENIED_CAPABILITIES})
+        if dangerous:
+            raise RunnerCliError(f"Hermes backend does not support dangerous capabilities: {', '.join(dangerous)}")
+        declared_execution_caps = [
+            item.removeprefix("capability.")
+            for item in capabilities
+            if item in HERMES_ALLOWED_EXECUTION_CAPABILITIES or item.startswith("capability.")
+        ]
+        unknown_execution_caps = sorted(
+            {item for item in declared_execution_caps if item not in HERMES_ALLOWED_EXECUTION_CAPABILITIES}
+        )
+        if unknown_execution_caps:
+            raise RunnerCliError(
+                f"Hermes backend supports only: {', '.join(sorted(HERMES_ALLOWED_EXECUTION_CAPABILITIES))}; found: {', '.join(unknown_execution_caps)}"
+            )
+        if "bounded_worktree" in mutation_modes:
+            authority = payload.get("authority")
+            if not isinstance(authority, dict) or authority.get("writable_roots_required") is not True:
+                raise RunnerCliError("Hermes bounded_worktree runners must set authority.writable_roots_required: true")
+
+
 def _validate_context(name: str) -> str:
     contexts = load_contexts().get("contexts", {})
     if name not in contexts:
@@ -253,8 +315,9 @@ def _validate_runner(payload: dict[str, Any]) -> ValidatedRunner:
     unknown_modes = [item for item in mutation_modes if item not in ALLOWED_MUTATION_MODES]
     if unknown_modes:
         raise RunnerCliError(
-            f"allowed_mutation_modes may include planning-only values only ({', '.join(sorted(ALLOWED_MUTATION_MODES))}); found: {', '.join(sorted(set(unknown_modes)))}"
+            f"allowed_mutation_modes may include only ({', '.join(sorted(ALLOWED_MUTATION_MODES))}); found: {', '.join(sorted(set(unknown_modes)))}"
         )
+    _validate_backend_payload(payload, mutation_modes=mutation_modes, capabilities=capabilities)
     max_concurrency_raw = payload.get("max_concurrency")
     if not isinstance(max_concurrency_raw, int) or max_concurrency_raw < 1:
         raise RunnerCliError("max_concurrency must be an integer >= 1")
@@ -285,6 +348,57 @@ def _validate_runner(payload: dict[str, Any]) -> ValidatedRunner:
 
 
 def _template_payload(kind: str) -> dict[str, Any]:
+    if kind == "hermes-opensandbox":
+        return {
+            "version": "1.0.0",
+            "runner_id": "hermes-local-ticket-write",
+            "name": "Hermes Local Ticket Write",
+            "context": "local",
+            "status": "available",
+            "backend": hermes_opensandbox.BACKEND_TYPE,
+            "capabilities": [
+                "intake.validate",
+                "intake.plan",
+                "execution.scan_report",
+                "read",
+                "bounded_write",
+                "shell_limited",
+                "focused_tests",
+            ],
+            "supported_task_kinds": [
+                "other",
+                "documentation",
+            ],
+            "allowed_mutation_modes": [
+                "read_only",
+                "bounded_worktree",
+            ],
+            "max_concurrency": 1,
+            "labels": [
+                "local",
+                "hermes",
+                "opensandbox",
+            ],
+            "trust_level": "local",
+            "registration_source": "amof.runner.template.hermes-opensandbox",
+            "endpoint_ref": "hermes-local",
+            "execution": {
+                "mode": "ticket_write",
+                "max_runtime_seconds": 2700,
+            },
+            "authority": {
+                "mutation": "bounded_worktree",
+                "writable_roots_required": True,
+                "commit": "denied",
+                "push": "denied",
+                "promote": "denied",
+                "deploy": "denied",
+            },
+            "evidence": {
+                "canonical_result_required": True,
+                "event_log_required": True,
+            },
+        }
     if kind != "local-planning":
         supported = ", ".join(SUPPORTED_TEMPLATE_KINDS)
         raise RunnerCliError(f"unsupported runner template kind: {kind} (supported: {supported})")
@@ -342,6 +456,7 @@ def _runner_summary(record: dict[str, Any]) -> dict[str, str]:
         "runner_id": str(record.get("runner_id") or ""),
         "context": str(record.get("context") or ""),
         "status": str(record.get("status") or ""),
+        "backend": hermes_opensandbox.runner_backend_type(record),
         "capabilities": capability_summary or "-",
         "allowed_mutation_modes": mutation_summary or "-",
         "max_concurrency": str(record.get("max_concurrency") or ""),
@@ -396,15 +511,24 @@ def _cmd_register(args: argparse.Namespace) -> int:
         except json.JSONDecodeError:
             registered_at = now
     record = validated.to_record(registered_at=registered_at, updated_at=now, source_path=str(file_path))
+    for key in ("backend", "backend_type", "kind", "driver", "execution_profile", "execution", "authority", "tools", "evidence"):
+        if key in payload:
+            record[key] = payload[key]
+    record.setdefault("backend", _backend_type_for_payload(payload))
     existing_path.parent.mkdir(parents=True, exist_ok=True)
     existing_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     _emit_event("runner_registered", runner_id=validated.runner_id, context=validated.context, status=validated.status)
     if bool(getattr(args, "json", False)):
         print(json.dumps(record, indent=2))
     else:
-        print(
-            f"REGISTERED runner_id={validated.runner_id} context={validated.context} status={validated.status} planning_only=yes no_dispatch=yes"
+        backend = str(record.get("backend") or "planning_only")
+        dispatch = "yes" if backend == hermes_opensandbox.BACKEND_TYPE and hermes_opensandbox.runtime_health()["dispatch_available"] else "no"
+        suffix = (
+            "planning_only=yes no_dispatch=yes"
+            if backend == "planning_only"
+            else f"backend={backend} dispatch_available={dispatch}"
         )
+        print(f"REGISTERED runner_id={validated.runner_id} context={validated.context} status={validated.status} {suffix}")
     return 0
 
 
@@ -416,7 +540,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
     if not records:
         print("No registered runners found.")
         return 0
-    headers = ("runner_id", "context", "status", "capabilities", "allowed_mutation_modes", "max_concurrency", "updated_at")
+    headers = ("runner_id", "context", "status", "backend", "capabilities", "allowed_mutation_modes", "max_concurrency", "updated_at")
     print("\t".join(headers))
     for item in records:
         print("\t".join(item.get(key) or "-" for key in headers))
@@ -471,21 +595,65 @@ def _doctor_issues() -> list[str]:
     return issues
 
 
+def _doctor_backend_records() -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for record in _load_runners():
+        backend = hermes_opensandbox.runner_backend_type(record)
+        if backend == hermes_opensandbox.BACKEND_TYPE:
+            records.append(hermes_opensandbox.doctor_record(record))
+        else:
+            records.append(
+                {
+                    "runner_id": str(record.get("runner_id") or ""),
+                    "backend_type": "planning_only",
+                    "dispatch_available": False,
+                    "runtime_health": "not_applicable",
+                    "execution_endpoint": None,
+                    "process_identity": None,
+                    "supported_capabilities": [str(item) for item in record.get("capabilities", [])],
+                    "writable_root_required": False,
+                    "cancellation_support": "not_applicable",
+                    "log_event_support": "registry_events_only",
+                }
+            )
+    return records
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     _resolve_context_fail_closed()
     issues = _doctor_issues()
     ok = not issues
     _emit_event("runner_registry_doctor", ok=ok, issue_count=len(issues))
-    payload = {"ok": ok, "issues": issues, "planning_only": True, "dispatch": "none"}
+    backend_records = _doctor_backend_records()
+    dispatch_available = any(bool(item.get("dispatch_available")) for item in backend_records)
+    payload = {
+        "ok": ok,
+        "issues": issues,
+        "planning_only": not dispatch_available,
+        "dispatch": "available" if dispatch_available else "none",
+        "runners": backend_records,
+    }
     if bool(getattr(args, "json", False)):
         print(json.dumps(payload, indent=2))
     else:
         if ok:
-            print("RUNNER_REGISTRY_OK planning_only=yes no_dispatch=yes")
+            print(f"RUNNER_REGISTRY_OK dispatch={'available' if dispatch_available else 'none'}")
         else:
-            print("RUNNER_REGISTRY_FAIL planning_only=yes no_dispatch=yes")
+            print(f"RUNNER_REGISTRY_FAIL dispatch={'available' if dispatch_available else 'none'}")
             for item in issues:
                 print(f"- {item}")
+        for item in backend_records:
+            print(
+                "runner "
+                f"{item.get('runner_id') or '-'} "
+                f"backend={item.get('backend_type') or '-'} "
+                f"dispatch_available={'yes' if item.get('dispatch_available') else 'no'} "
+                f"runtime_health={item.get('runtime_health') or '-'} "
+                f"endpoint={item.get('execution_endpoint') or '-'} "
+                f"writable_root_required={'yes' if item.get('writable_root_required') else 'no'} "
+                f"cancellation={item.get('cancellation_support') or '-'} "
+                f"logs={item.get('log_event_support') or '-'}"
+            )
     return 0 if ok else 1
 
 
@@ -841,10 +1009,18 @@ def _cmd_match(args: argparse.Namespace) -> int:
             reasons[-1] = reason
             evidence = _authority_candidate_evidence(record, authority_gate=authority_gate, runner_reason=reason)
         if eligible:
+            backend = hermes_opensandbox.runner_backend_type(record)
+            dispatch_available = (
+                bool(hermes_opensandbox.runtime_health()["dispatch_available"])
+                if backend == hermes_opensandbox.BACKEND_TYPE
+                else False
+            )
             candidate = {
                 "runner_id": str(record.get("runner_id") or ""),
                 "context": str(record.get("context") or ""),
                 "status": str(record.get("status") or ""),
+                "backend": backend,
+                "dispatch_available": dispatch_available,
                 "supported_task_kinds": list(record.get("supported_task_kinds") or []),
                 "allowed_mutation_modes": list(record.get("allowed_mutation_modes") or []),
                 "capabilities": list(record.get("capabilities") or []),
@@ -858,7 +1034,7 @@ def _cmd_match(args: argparse.Namespace) -> int:
             ineligible_candidates.append(evidence)
     result = {
         "planning_only": True,
-        "dispatch": "none",
+        "dispatch": "available" if any(bool(item.get("dispatch_available")) for item in candidates) else "none",
         "intake_id": validated_intake.intake_id,
         "ticket_id": validated_intake.ticket_id,
         "packet_ref": packet_ref,
@@ -889,7 +1065,10 @@ def _cmd_match(args: argparse.Namespace) -> int:
             f"MATCH intake_id={validated_intake.intake_id} candidates={len(candidates)} planning_only=yes no_dispatch=yes no_remote_execution=yes"
         )
         for item in candidates:
-            print(f"- runner_id={item['runner_id']} context={item['context']} status={item['status']}")
+            print(
+                f"- runner_id={item['runner_id']} context={item['context']} status={item['status']} "
+                f"backend={item['backend']} dispatch_available={'yes' if item['dispatch_available'] else 'no'}"
+            )
     return 0
 
 
