@@ -130,7 +130,7 @@ _READ_ONLY_INSPECTION_RE = re.compile(
 )
 _ACTIVE_OPERATION_INTENT_RE = re.compile(
     r"\b(run|execute|use|call|trigger|apply|install|uninstall|upgrade|"
-    r"mutate|rotate|read\s+(?:a\s+)?(?:secret|token|credential|kubeconfig)|"
+    r"mutate|rotate|read\s+(?:a\s+)?(?:\w+\s+){0,3}(?:secret|token|credential|kubeconfig|\.env)|"
     r"fetch|download|write|edit|modify|patch|update)\b",
     re.IGNORECASE,
 )
@@ -595,6 +595,9 @@ def derive_tool_pack_requirements(goal: str, plan: ExecutionPlan) -> ToolPackReq
         req.command_policy["ops-helm-deploy"] = list(
             CORE_TOOL_PACKS["ops-helm-deploy"].command_policy
         )
+
+    if not read_only_inspection and _SECRET_INTENT_RE.search(text):
+        req.capabilities.add("secret")
 
     for st in plan.subtasks:
         runner = (st.runner or "code").strip().lower()

@@ -4041,7 +4041,9 @@ class AgentPlanExecuteEnvelopeTests(unittest.TestCase):
                 },
                 runner_agent=_FakeAgent,
             )
-            checkpoint_exists = Path(envelope.checkpoint_path).is_file()
+            checkpoint_path = Path(str(envelope.checkpoint_path))
+            checkpoint_exists = checkpoint_path.is_file()
+            checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
             event_exists = Path(envelope.event_log_path).is_file()
 
         self.assertEqual(envelope.status, "blocked")
@@ -4061,6 +4063,10 @@ class AgentPlanExecuteEnvelopeTests(unittest.TestCase):
             },
         )
         self.assertTrue(checkpoint_exists)
+        self.assertEqual(checkpoint_payload["failure_type"], envelope.stop_reason)
+        self.assertEqual(checkpoint_payload["completed_subtasks"], [])
+        self.assertEqual(checkpoint_payload["remaining_subtasks"], ["1"])
+        self.assertIn("--approve-capabilities secret", checkpoint_payload["resume_command"])
         self.assertTrue(event_exists)
         self.assertIsNone(envelope.journal_path)
 
