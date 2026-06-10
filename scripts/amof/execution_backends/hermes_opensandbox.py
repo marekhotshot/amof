@@ -5,19 +5,35 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from ..app_paths import runs_dir
 from ..commands.studio import attach_run_reference, require_active_studio_session
 
 BACKEND_TYPE = "hermes_opensandbox"
+REMOTE_IAL_PROVIDER = "remote-ial"
 DEFAULT_HERMES_RUNTIME_ROOT = Path.home() / ".local" / "share" / "amof" / "runners" / "hermes-agent" / "v2026.6.5"
 DEFAULT_OPENSANDBOX_RUNTIME_ROOT = Path.home() / ".local" / "share" / "amof" / "runners" / "opensandbox" / "0.1.14"
 SUPPORTED_CAPABILITIES = ("read", "bounded_write", "shell_limited", "focused_tests")
+DIRECT_PROVIDER_ENV_NAMES = (
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_TOKEN",
+)
 DANGEROUS_CAPABILITIES = {
     "kubernetes_mutation",
     "deployment",
@@ -36,6 +52,14 @@ DANGEROUS_CAPABILITIES = {
 
 class HermesBackendError(RuntimeError):
     """Raised when Hermes/OpenSandbox cannot be dispatched truthfully."""
+
+
+@dataclass(frozen=True)
+class RemoteIALConfig:
+    base_url: str
+    api_key: str
+    model: str
+    timeout_seconds: float
 
 
 @dataclass(frozen=True)
@@ -76,6 +100,71 @@ def opensandbox_executable() -> Path:
     return opensandbox_runtime_root() / "venv" / "bin" / "opensandbox"
 
 
+def _normalize_remote_ial_base_url(value: str) -> str:
+    normalized = str(value or "").strip().rstrip("/")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HermesBackendError("Remote IAL base URL is not configured as a valid http(s) URL")
+    return normalized
+
+
+def _remote_ial_timeout_seconds() -> float:
+    raw = str(os.environ.get("AMOF_REMOTE_IAL_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return 90.0
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise HermesBackendError("Remote IAL timeout must be a positive number") from exc
+    if value <= 0:
+        raise HermesBackendError("Remote IAL timeout must be a positive number")
+    return value
+
+
+def _remote_ial_config(model_override: str | None = None) -> RemoteIALConfig:
+    base_url = _normalize_remote_ial_base_url(str(os.environ.get("AMOF_REMOTE_IAL_BASE_URL") or ""))
+    api_key = str(os.environ.get("AMOF_REMOTE_IAL_API_KEY") or "").strip()
+    if not api_key:
+        raise HermesBackendError("Remote IAL API key is not configured")
+    model = str(model_override or os.environ.get("AMOF_REMOTE_IAL_MODEL") or "").strip()
+    if not model:
+        raise HermesBackendError("Remote IAL model is not configured")
+    return RemoteIALConfig(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        timeout_seconds=_remote_ial_timeout_seconds(),
+    )
+
+
+def _remote_ial_headers(config: RemoteIALConfig) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {config.api_key}",
+        "Content-Type": "application/json",
+    }
+
+
+def _remote_ial_health(config: RemoteIALConfig) -> dict[str, Any]:
+    request = Request(
+        f"{config.base_url}/v1/ial/healthz",
+        headers=_remote_ial_headers(config),
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=config.timeout_seconds) as response:
+            body = json.loads(response.read().decode("utf-8") or "{}")
+    except HTTPError as exc:
+        return {"inference_health": "blocked", "status_code": exc.code}
+    except (OSError, URLError, ValueError) as exc:
+        return {"inference_health": "blocked", "error_class": type(exc).__name__}
+    return {
+        "inference_health": "ready" if body.get("status") == "ok" else "blocked",
+        "selected_provider": body.get("selected_provider"),
+        "selected_model": body.get("selected_model"),
+        "provider_configured": bool(body.get("provider_configured")),
+    }
+
+
 def runner_backend_type(record: dict[str, Any]) -> str:
     explicit = str(record.get("backend") or record.get("backend_type") or "").strip()
     if explicit:
@@ -101,10 +190,19 @@ def runtime_health() -> dict[str, Any]:
                 receipt = parsed
         except json.JSONDecodeError:
             receipt = {}
-    return {
+    health = {
         "backend_type": BACKEND_TYPE,
         "dispatch_available": hermes.is_file() and os.access(hermes, os.X_OK) and opensandbox.is_file(),
         "runtime_health": "ready" if hermes.is_file() and opensandbox.is_file() else "unavailable",
+        "hermes_runtime": "ready" if hermes.is_file() and os.access(hermes, os.X_OK) else "unavailable",
+        "opensandbox": "ready" if opensandbox.is_file() else "unavailable",
+        "inference_transport": "remote_ial",
+        "inference_health": "blocked",
+        "requested_provider": REMOTE_IAL_PROVIDER,
+        "effective_provider": "unverified",
+        "requested_model": str(os.environ.get("AMOF_REMOTE_IAL_MODEL") or "") or "unconfigured",
+        "effective_model": "unverified",
+        "direct_provider_fallback": "disabled",
         "execution_endpoint": str(hermes),
         "process_identity": {
             "hermes_executable": str(hermes),
@@ -119,6 +217,24 @@ def runtime_health() -> dict[str, Any]:
         "cancellation_support": "timeout_process_termination",
         "log_event_support": "stdout_stderr_event_jsonl",
     }
+    try:
+        config = _remote_ial_config()
+        remote_health = _remote_ial_health(config)
+        health.update(
+            {
+                "inference_health": remote_health.get("inference_health", "blocked"),
+                "requested_model": config.model,
+                "effective_model": str(remote_health.get("selected_model") or "unverified"),
+                "effective_provider": REMOTE_IAL_PROVIDER
+                if remote_health.get("inference_health") == "ready"
+                else "unverified",
+                "upstream_provider": remote_health.get("selected_provider"),
+                "upstream_model": remote_health.get("selected_model"),
+            }
+        )
+    except HermesBackendError:
+        pass
+    return health
 
 
 def doctor_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -130,6 +246,16 @@ def doctor_record(record: dict[str, Any]) -> dict[str, Any]:
         "backend_type": runner_backend_type(record),
         "dispatch_available": bool(health["dispatch_available"]),
         "runtime_health": health["runtime_health"],
+        "dispatch": "available" if health["dispatch_available"] else "blocked",
+        "hermes_runtime": health.get("hermes_runtime", health["runtime_health"]),
+        "opensandbox": health.get("opensandbox", "unverified"),
+        "inference_transport": health.get("inference_transport", "remote_ial"),
+        "inference_health": health.get("inference_health", "blocked"),
+        "requested_provider": health.get("requested_provider", REMOTE_IAL_PROVIDER),
+        "effective_provider": health.get("effective_provider", "unverified"),
+        "requested_model": health.get("requested_model", "unconfigured"),
+        "effective_model": health.get("effective_model", "unverified"),
+        "direct_provider_fallback": health.get("direct_provider_fallback", "disabled"),
         "execution_endpoint": health["execution_endpoint"],
         "process_identity": health["process_identity"],
         "supported_capabilities": list(SUPPORTED_CAPABILITIES),
@@ -216,6 +342,214 @@ def _workspace_for(selection: HermesBackendSelection, manifest: dict[str, Any]) 
     return Path.cwd().resolve(strict=False)
 
 
+def _extract_remote_ial_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    system_parts: list[str] = []
+    remote_messages: list[dict[str, Any]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip()
+        if role == "system":
+            content = item.get("content")
+            if content:
+                system_parts.append(str(content))
+            continue
+        if role == "assistant":
+            message: dict[str, Any] = {"role": "assistant", "content": item.get("content")}
+            tool_calls = []
+            for tool_call in item.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+                name = str(function.get("name") or "").strip()
+                raw_args = function.get("arguments")
+                try:
+                    arguments = json.loads(raw_args) if isinstance(raw_args, str) else {}
+                except json.JSONDecodeError:
+                    arguments = {}
+                if name:
+                    tool_calls.append(
+                        {
+                            "id": str(tool_call.get("id") or ""),
+                            "name": name,
+                            "arguments": arguments if isinstance(arguments, dict) else {},
+                        }
+                    )
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+            remote_messages.append(message)
+            continue
+        if role == "tool":
+            remote_messages.append(
+                {
+                    "role": "tool",
+                    "results": [
+                        {
+                            "id": str(item.get("tool_call_id") or ""),
+                            "tool_call_id": str(item.get("tool_call_id") or ""),
+                            "content": item.get("content"),
+                        }
+                    ],
+                }
+            )
+            continue
+        remote_messages.append({"role": role or "user", "content": item.get("content")})
+    return "\n\n".join(system_parts), remote_messages
+
+
+def _remote_ial_tool_to_openai(item: dict[str, Any], index: int) -> dict[str, Any]:
+    arguments = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
+    return {
+        "id": str(item.get("id") or f"remote-tool-{index}"),
+        "type": "function",
+        "function": {
+            "name": str(item.get("name") or ""),
+            "arguments": json.dumps(arguments, sort_keys=True),
+        },
+    }
+
+
+def _finish_reason(stop_reason: Any, tool_calls: list[dict[str, Any]]) -> str:
+    if tool_calls:
+        return "tool_calls"
+    normalized = str(stop_reason or "").strip().lower()
+    if normalized in {"max_tokens", "length"}:
+        return "length"
+    return "stop"
+
+
+class _RemoteIALOpenAIAdapter:
+    def __init__(self, config: RemoteIALConfig) -> None:
+        self.config = config
+        self.server: ThreadingHTTPServer | None = None
+        self.thread: threading.Thread | None = None
+        self.base_url = ""
+
+    def __enter__(self) -> "_RemoteIALOpenAIAdapter":
+        adapter = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, _format: str, *_args: Any) -> None:
+                return
+
+            def _json(self, status: int, payload: dict[str, Any]) -> None:
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self) -> None:
+                if self.path == "/v1/models":
+                    self._json(200, {"object": "list", "data": [{"id": adapter.config.model, "object": "model"}]})
+                    return
+                self._json(404, {"error": {"message": "not found"}})
+
+            def do_POST(self) -> None:
+                if self.path != "/v1/chat/completions":
+                    self._json(404, {"error": {"message": "not found"}})
+                    return
+                length = int(self.headers.get("Content-Length") or "0")
+                try:
+                    body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                except json.JSONDecodeError:
+                    self._json(400, {"error": {"message": "invalid json"}})
+                    return
+                system, messages = _extract_remote_ial_messages(list(body.get("messages") or []))
+                payload = {
+                    "system": system,
+                    "messages": messages,
+                    "tools": body.get("tools") or [],
+                    "model": adapter.config.model,
+                    "max_tokens": int(body.get("max_tokens") or 8192),
+                    "temperature": float(body.get("temperature") or 0.0),
+                }
+                request = Request(
+                    f"{adapter.config.base_url}/v1/ial/chat",
+                    headers=_remote_ial_headers(adapter.config),
+                    data=json.dumps(payload).encode("utf-8"),
+                    method="POST",
+                )
+                try:
+                    with urlopen(request, timeout=adapter.config.timeout_seconds) as response:
+                        remote = json.loads(response.read().decode("utf-8") or "{}")
+                except HTTPError as exc:
+                    self._json(exc.code, {"error": {"message": "remote IAL request failed"}})
+                    return
+                except (OSError, URLError, ValueError):
+                    self._json(502, {"error": {"message": "remote IAL request failed"}})
+                    return
+                tool_calls = [
+                    _remote_ial_tool_to_openai(item, index)
+                    for index, item in enumerate(remote.get("tool_calls") or [], start=1)
+                    if isinstance(item, dict)
+                ]
+                message: dict[str, Any] = {"role": "assistant", "content": remote.get("text") or ""}
+                if tool_calls:
+                    message["tool_calls"] = tool_calls
+                choice = {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": _finish_reason(remote.get("stop_reason"), tool_calls),
+                }
+                response_payload = {
+                    "id": str(remote.get("request_id") or f"chatcmpl-{int(time.time())}"),
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": str(remote.get("model") or remote.get("upstream_model") or adapter.config.model),
+                    "choices": [choice],
+                    "usage": {
+                        "prompt_tokens": int((remote.get("tokens") or {}).get("input") or 0),
+                        "completion_tokens": int((remote.get("tokens") or {}).get("output") or 0),
+                        "total_tokens": int((remote.get("tokens") or {}).get("input") or 0)
+                        + int((remote.get("tokens") or {}).get("output") or 0),
+                    },
+                }
+                if body.get("stream"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    chunk = {
+                        "id": response_payload["id"],
+                        "object": "chat.completion.chunk",
+                        "created": response_payload["created"],
+                        "model": response_payload["model"],
+                        "choices": [{"index": 0, "delta": message, "finish_reason": None}],
+                    }
+                    final = {
+                        "id": response_payload["id"],
+                        "object": "chat.completion.chunk",
+                        "created": response_payload["created"],
+                        "model": response_payload["model"],
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": choice["finish_reason"]}],
+                    }
+                    self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+                    self.wfile.write(f"data: {json.dumps(final)}\n\n".encode("utf-8"))
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    return
+                self._json(200, response_payload)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            host, port = probe.getsockname()
+        self.server = ThreadingHTTPServer((host, port), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{port}/v1"
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=2)
+
+
 def _build_prompt(goal: str, selection: HermesBackendSelection, workspace: Path) -> str:
     lines = [
         "You are executing as Hermes under AMOF authority.",
@@ -256,14 +590,45 @@ def _changed_paths(workspace: Path) -> list[str]:
     return paths
 
 
-def _base_env() -> dict[str, str]:
+def _write_run_hermes_config(run_dir: Path, adapter: _RemoteIALOpenAIAdapter, model: str) -> Path:
+    hermes_home = run_dir / "hermes-home"
+    hermes_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "model:",
+                "  provider: custom",
+                f"  model: {model}",
+                f"  base_url: {adapter.base_url}",
+                "  api_key: amof-local-remote-ial-adapter",
+                "  api_mode: chat_completions",
+                "fallback_providers: []",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(config_path, 0o600)
+    env_path = hermes_home / ".env"
+    env_path.write_text("", encoding="utf-8")
+    os.chmod(env_path, 0o600)
+    return hermes_home
+
+
+def _base_env(adapter: _RemoteIALOpenAIAdapter | None = None, run_dir: Path | None = None) -> dict[str, str]:
     env = dict(os.environ)
     state_home = hermes_runtime_root() / "state" / "home"
     if state_home.is_dir():
         env["HOME"] = str(state_home)
-    env.setdefault("HERMES_HOME", str(state_home / ".hermes"))
+    if adapter is not None and run_dir is not None:
+        env["HERMES_HOME"] = str(_write_run_hermes_config(run_dir, adapter, adapter.config.model))
+    else:
+        env.setdefault("HERMES_HOME", str(state_home / ".hermes"))
     env["HERMES_QUIET"] = "1"
     env["HERMES_ACCEPT_HOOKS"] = "1"
+    for name in DIRECT_PROVIDER_ENV_NAMES:
+        env.pop(name, None)
     return env
 
 
@@ -309,6 +674,73 @@ def run(
     _append_event(event_log_path, "run_created", runner_id=selection.runner_id, backend=BACKEND_TYPE, studio_session_id=studio_session_id)
     opensandbox_probe = _probe_opensandbox()
     _append_event(event_log_path, "opensandbox_probe", **opensandbox_probe)
+    try:
+        remote_ial = _remote_ial_config(model)
+        remote_health = _remote_ial_health(remote_ial)
+    except HermesBackendError as exc:
+        final_text = "Remote IAL inference transport is unavailable."
+        result = _result_payload(
+            run_id=run_id,
+            status="blocked",
+            exit_code=1,
+            stop_reason="inference_transport_unavailable",
+            final_text=final_text,
+            studio_session_id=studio_session_id,
+            event_log_path=event_log_path,
+            runtime_log_path=runtime_log_path,
+            changed_paths=[],
+            selection=selection,
+            health=health,
+            opensandbox_probe=opensandbox_probe,
+            requested_model=str(model or os.environ.get("AMOF_REMOTE_IAL_MODEL") or "unconfigured"),
+            effective_model="unverified",
+        )
+        result["evidence_refs"]["inference_transport_error"] = type(exc).__name__
+        result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        _append_event(event_log_path, "run_blocked", reason="inference_transport_unavailable")
+        return result
+    if remote_health.get("inference_health") != "ready":
+        final_text = "Remote IAL inference transport is not ready."
+        result = _result_payload(
+            run_id=run_id,
+            status="blocked",
+            exit_code=1,
+            stop_reason="inference_transport_unavailable",
+            final_text=final_text,
+            studio_session_id=studio_session_id,
+            event_log_path=event_log_path,
+            runtime_log_path=runtime_log_path,
+            changed_paths=[],
+            selection=selection,
+            health=health,
+            opensandbox_probe=opensandbox_probe,
+            requested_model=remote_ial.model,
+            effective_model="unverified",
+        )
+        result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        _append_event(event_log_path, "run_blocked", reason="inference_transport_unavailable")
+        return result
+    if provider and provider != REMOTE_IAL_PROVIDER:
+        final_text = "Direct provider override is not allowed for the AMOF-managed Hermes runner."
+        result = _result_payload(
+            run_id=run_id,
+            status="blocked",
+            exit_code=1,
+            stop_reason="inference_transport_unavailable",
+            final_text=final_text,
+            studio_session_id=studio_session_id,
+            event_log_path=event_log_path,
+            runtime_log_path=runtime_log_path,
+            changed_paths=[],
+            selection=selection,
+            health=health,
+            opensandbox_probe=opensandbox_probe,
+            requested_model=remote_ial.model,
+            effective_model="unverified",
+        )
+        result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        _append_event(event_log_path, "run_blocked", reason="direct_provider_override_rejected")
+        return result
 
     if studio_session_id is not None:
         require_active_studio_session(studio_session_id)
@@ -345,11 +777,7 @@ def run(
         return result
 
     prompt = _build_prompt(goal, selection, workspace)
-    command = [str(hermes_executable()), "chat", "--cli", "--quiet"]
-    if provider:
-        command.extend(["--provider", provider])
-    if model:
-        command.extend(["--model", model])
+    command = [str(hermes_executable()), "chat", "--cli", "--quiet", "--model", remote_ial.model]
     command.extend(["--query", prompt])
     (run_dir / "request.json").write_text(
         json.dumps(
@@ -361,6 +789,10 @@ def run(
                 "capabilities": selection.capabilities,
                 "writable_roots": selection.writable_roots,
                 "workspace": str(workspace),
+                "requested_provider": REMOTE_IAL_PROVIDER,
+                "requested_model": remote_ial.model,
+                "transport": "remote_ial",
+                "fallback_used": False,
             },
             indent=2,
         )
@@ -371,15 +803,16 @@ def run(
     stop_reason = "completed"
     exit_code = 0
     try:
-        completed = subprocess.run(
-            command,
-            cwd=str(workspace),
-            env=_base_env(),
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=selection.timeout_seconds,
-        )
+        with _RemoteIALOpenAIAdapter(remote_ial) as adapter:
+            completed = subprocess.run(
+                command,
+                cwd=str(workspace),
+                env=_base_env(adapter, run_dir),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=selection.timeout_seconds,
+            )
         stdout_path.write_text(completed.stdout or "", encoding="utf-8")
         stderr_path.write_text(completed.stderr or "", encoding="utf-8")
         runtime_log_path.write_text((completed.stdout or "") + ("\n--- STDERR ---\n" + completed.stderr if completed.stderr else ""), encoding="utf-8")
@@ -423,6 +856,8 @@ def run(
         health=health,
         opensandbox_probe=opensandbox_probe,
         validation_status=validation_status,
+        requested_model=remote_ial.model,
+        effective_model=remote_ial.model,
     )
     result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     _append_event(event_log_path, "run_finished", status=status, exit_code=exit_code, stop_reason=stop_reason)
@@ -456,6 +891,8 @@ def _result_payload(
     health: dict[str, Any],
     opensandbox_probe: dict[str, Any],
     validation_status: str = "not_run",
+    requested_model: str = "unconfigured",
+    effective_model: str = "unverified",
 ) -> dict[str, Any]:
     return {
         "result_kind": "agent_run_result",
@@ -468,6 +905,12 @@ def _result_payload(
         "final_text": final_text,
         "runner_id": selection.runner_id,
         "backend": BACKEND_TYPE,
+        "requested_provider": REMOTE_IAL_PROVIDER,
+        "effective_provider": REMOTE_IAL_PROVIDER if effective_model != "unverified" else "unverified",
+        "requested_model": requested_model,
+        "effective_model": effective_model,
+        "transport": "remote_ial",
+        "fallback_used": False,
         "studio_session_id": studio_session_id,
         "plan_path": None,
         "checkpoint_path": None,
@@ -486,6 +929,15 @@ def _result_payload(
             "runtime_log_path": str(runtime_log_path),
             "process_identity": health.get("process_identity"),
             "opensandbox_probe": dict(opensandbox_probe),
+            "inference": {
+                "requested_provider": REMOTE_IAL_PROVIDER,
+                "effective_provider": REMOTE_IAL_PROVIDER if effective_model != "unverified" else "unverified",
+                "requested_model": requested_model,
+                "effective_model": effective_model,
+                "transport": "remote_ial",
+                "fallback_used": False,
+                "direct_provider_fallback": "disabled",
+            },
         },
         "budget_summary": {"limit": None, "spent": 0.0, "remaining": None},
     }

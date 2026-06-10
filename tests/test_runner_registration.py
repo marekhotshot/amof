@@ -216,6 +216,8 @@ class RunnerRegistrationTests(unittest.TestCase):
             self.assertEqual(doctor["dispatch"], "available")
             self.assertTrue(doctor["runners"][0]["dispatch_available"])
             self.assertEqual(doctor["runners"][0]["backend_type"], "hermes_opensandbox")
+            self.assertEqual(doctor["runners"][0]["inference_transport"], "remote_ial")
+            self.assertEqual(doctor["runners"][0]["direct_provider_fallback"], "disabled")
 
     def test_hermes_doctor_reports_unavailable_runtime_truthfully(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-runner-hermes-unavailable-") as td:
@@ -248,6 +250,7 @@ class RunnerRegistrationTests(unittest.TestCase):
             self.assertEqual(doctor["dispatch"], "none")
             self.assertFalse(doctor["runners"][0]["dispatch_available"])
             self.assertEqual(doctor["runners"][0]["runtime_health"], "unavailable")
+            self.assertEqual(doctor["runners"][0]["inference_health"], "blocked")
 
     def test_generated_intake_and_runner_template_match_and_scan(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-runner-template-dogfood-") as td:

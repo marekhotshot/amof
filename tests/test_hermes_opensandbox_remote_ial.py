@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from amof.execution_backends import hermes_opensandbox
+
+
+def _selection() -> hermes_opensandbox.HermesBackendSelection:
+    return hermes_opensandbox.HermesBackendSelection(
+        runner_id="hermes-local-ticket-write",
+        capabilities=["read"],
+        writable_roots=[],
+        timeout_seconds=30,
+        readable_root=None,
+    )
+
+
+def _health() -> dict[str, object]:
+    return {
+        "dispatch_available": True,
+        "runtime_health": "ready",
+        "hermes_runtime": "ready",
+        "opensandbox": "ready",
+        "inference_transport": "remote_ial",
+        "inference_health": "ready",
+        "requested_provider": "remote-ial",
+        "effective_provider": "remote-ial",
+        "requested_model": "remote-ial/test-worker",
+        "effective_model": "remote-ial/test-worker",
+        "direct_provider_fallback": "disabled",
+        "execution_endpoint": "/tmp/hermes",
+        "process_identity": {"hermes_executable": "/tmp/hermes"},
+        "supported_capabilities": ["read"],
+        "writable_root_required": True,
+        "cancellation_support": "timeout_process_termination",
+        "log_event_support": "stdout_stderr_event_jsonl",
+    }
+
+
+class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
+    def test_missing_remote_ial_config_blocks_before_hermes_process(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-missing-ial-") as td:
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "AMOF_HOME": td,
+                        "AMOF_REMOTE_IAL_BASE_URL": "",
+                        "AMOF_REMOTE_IAL_API_KEY": "",
+                        "AMOF_REMOTE_IAL_MODEL": "",
+                    },
+                    clear=False,
+                ),
+                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
+                patch.object(hermes_opensandbox, "_probe_opensandbox", return_value={"status": "ready", "exit_code": 0}),
+                patch("subprocess.run") as run_process,
+            ):
+                result = hermes_opensandbox.run(
+                    manifest={"repos": [{"path": td}]},
+                    goal="inspect only",
+                    request_id="missing-ial",
+                    studio_session_id=None,
+                    selection=_selection(),
+                )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["stop_reason"], "inference_transport_unavailable")
+        self.assertEqual(result["transport"], "remote_ial")
+        self.assertFalse(result["fallback_used"])
+        run_process.assert_not_called()
+
+    def test_direct_provider_override_is_rejected_for_managed_runner(self) -> None:
+        config = hermes_opensandbox.RemoteIALConfig(
+            base_url="https://ial.example.test",
+            api_key="unit-test-token",
+            model="remote-ial/test-worker",
+            timeout_seconds=30,
+        )
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-direct-provider-") as td:
+            with (
+                patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
+                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
+                patch.object(hermes_opensandbox, "_probe_opensandbox", return_value={"status": "ready", "exit_code": 0}),
+                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
+                patch.object(hermes_opensandbox, "_remote_ial_health", return_value={"inference_health": "ready"}),
+                patch("subprocess.run") as run_process,
+            ):
+                result = hermes_opensandbox.run(
+                    manifest={"repos": [{"path": td}]},
+                    goal="inspect only",
+                    request_id="direct-provider",
+                    studio_session_id=None,
+                    selection=_selection(),
+                    provider="openrouter",
+                    model="remote-ial/test-worker",
+                )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["stop_reason"], "inference_transport_unavailable")
+        self.assertIn("Direct provider override", result["final_text"])
+        self.assertEqual(result["requested_provider"], "remote-ial")
+        self.assertEqual(result["effective_provider"], "unverified")
+        run_process.assert_not_called()
+
+    def test_base_env_strips_direct_provider_variables(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "OPENROUTER_API_KEY": "unit-test",
+                "OPENAI_API_KEY": "unit-test",
+                "ANTHROPIC_API_KEY": "unit-test",
+            },
+            clear=False,
+        ):
+            env = hermes_opensandbox._base_env()
+
+        self.assertNotIn("OPENROUTER_API_KEY", env)
+        self.assertNotIn("OPENAI_API_KEY", env)
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+
+    def test_run_scoped_hermes_config_uses_local_adapter_not_env_key(self) -> None:
+        config = hermes_opensandbox.RemoteIALConfig(
+            base_url="https://ial.example.test",
+            api_key="unit-test-token",
+            model="remote-ial/test-worker",
+            timeout_seconds=30,
+        )
+        adapter = type("Adapter", (), {"base_url": "http://127.0.0.1:1/v1", "config": config})()
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-config-") as td:
+            run_dir = Path(td)
+            env = hermes_opensandbox._base_env(adapter, run_dir)
+            hermes_home = Path(env["HERMES_HOME"])
+            config_exists = (hermes_home / "config.yaml").is_file()
+            env_exists = (hermes_home / ".env").is_file()
+
+        self.assertNotIn("OPENAI_API_KEY", env)
+        self.assertTrue(config_exists)
+        self.assertTrue(env_exists)
+
+
+if __name__ == "__main__":
+    unittest.main()
