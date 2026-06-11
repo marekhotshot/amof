@@ -45,7 +45,15 @@
       "type": "string"
     },
     "exit_code": {
-      "type": "integer"
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
     },
     "studio_session_id": {
       "type": ["string", "null"],
@@ -60,13 +68,36 @@
       "type": ["string", "null"],
       "description": "Optional execution backend type, for example hermes_opensandbox."
     },
+    "requested_provider": {
+      "type": ["string", "null"]
+    },
+    "effective_provider": {
+      "type": ["string", "null"]
+    },
+    "requested_model": {
+      "type": ["string", "null"]
+    },
+    "effective_model": {
+      "type": ["string", "null"]
+    },
+    "transport": {
+      "type": ["string", "null"]
+    },
+    "fallback_used": {
+      "type": ["boolean", "null"]
+    },
     "stop_reason": {
       "type": "string",
       "minLength": 1
     },
     "final_text": {
       "type": "string",
+      "description": "AMOF-authored runtime summary. Agent-observed task findings belong in task_findings and must not override runtime envelope fields.",
       "minLength": 1
+    },
+    "task_findings": {
+      "type": ["string", "null"],
+      "description": "Agent-observed task findings captured from the runner output. This field is not authoritative for AMOF runtime envelope metadata."
     },
     "plan_path": {
       "type": ["string", "null"]
@@ -81,6 +112,21 @@
       "type": ["string", "null"]
     },
     "runtime_log_path": {
+      "type": ["string", "null"]
+    },
+    "result_path": {
+      "type": ["string", "null"]
+    },
+    "runtime_log_unavailable_reason": {
+      "type": ["string", "null"]
+    },
+    "started_at": {
+      "type": ["string", "null"]
+    },
+    "completed_at": {
+      "type": ["string", "null"]
+    },
+    "failure_classification": {
       "type": ["string", "null"]
     },
     "changed_paths": {

@@ -68,6 +68,26 @@ class PlanBundleAgentRunContractTests(unittest.TestCase):
         self.assertEqual(result.studio_session_id, "studio-20260608-004150")
         self.assertEqual(result.to_dict()["studio_session_id"], "studio-20260608-004150")
 
+    def test_agent_run_result_round_trips_transport_fields(self) -> None:
+        payload = _load(AGENT_RUN_EXAMPLE_PATH)
+        payload["failure_classification"] = None
+
+        result = AgentRunResult(**payload)
+
+        self.assertEqual(result.transport, "remote_ial")
+        self.assertEqual(result.to_dict()["requested_provider"], "remote-ial")
+        self.assertEqual(result.to_dict()["result_path"], "/tmp/amof/result.json")
+
+    def test_agent_run_result_allows_unknown_exit_code_for_recovery_boundary(self) -> None:
+        payload = _load(AGENT_RUN_EXAMPLE_PATH)
+        payload["exit_code"] = "unknown"
+        payload["failure_classification"] = "result_missing"
+
+        result = AgentRunResult(**payload)
+
+        self.assertEqual(result.exit_code, "unknown")
+        self.assertEqual(result.to_dict()["failure_classification"], "result_missing")
+
     def test_contract_schemas_match_example_kinds(self) -> None:
         plan_schema = _load(PLAN_BUNDLE_SCHEMA_PATH)
         plan_example = _load(PLAN_BUNDLE_EXAMPLE_PATH)

@@ -1,6 +1,6 @@
 # AMOF Happy Path: Adopt a Repo and Run an Agent Plan
 
-Status: public v3.1.0 runbook
+Status: public v3.1.1 runbook
 
 This runbook is for a public user who wants to try AMOF on an existing Git
 repository without learning the workspace and maintainer machinery first.
@@ -23,10 +23,10 @@ keys into terminal transcripts, bug reports, or public docs.
 
 ## Install AMOF
 
-Install the public v3.1.0 release:
+Install the public v3.1.1 release:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.1.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.1.1"
 ```
 
 Verify the CLI through the pipx-installed shim:
@@ -40,7 +40,7 @@ pipx runpip amof show amof
 Expected version:
 
 ```text
-AMOF v3.1.0
+AMOF v3.1.1
 ```
 
 System `python -m amof` is not the public pipx contract. For source checkouts,
@@ -87,7 +87,7 @@ git status --short
 
 Expected: no output.
 
-AMOF v3.1.0 also resolves the adopted ecosystem through `amof context`; dotted
+AMOF v3.1.1 also resolves the adopted ecosystem through `amof context`; dotted
 repo names such as `hotshot.sk` are covered by the public dogfood fix.
 
 ## Configure A Provider Profile
@@ -135,7 +135,7 @@ Expected after activating the OpenRouter profile without exporting a key:
 ```
 
 The exact provider message depends on the provider you activate or select. The
-important v3.1.0 behavior is that the command reaches provider validation and
+important v3.1.1 behavior is that the command reaches provider validation and
 does not fail with:
 
 ```text

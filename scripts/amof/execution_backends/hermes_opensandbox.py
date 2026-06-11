@@ -274,9 +274,75 @@ def _run_dir(run_id: str) -> Path:
 
 
 def _append_event(path: Path, event: str, **payload: Any) -> None:
-    record = {"timestamp": _now_iso(), "event": event, **payload}
+    record = {"timestamp": _now_iso(), "event": event, "event_type": event, **payload}
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _write_runtime_log(path: Path, message: str) -> None:
+    path.write_text(message if message.endswith("\n") else f"{message}\n", encoding="utf-8")
+
+
+def _write_terminal_result(
+    *,
+    result_path: Path,
+    event_log_path: Path,
+    runtime_log_path: Path,
+    result: dict[str, Any],
+    reason: str,
+    started_at: str | None = None,
+) -> dict[str, Any]:
+    if started_at is not None:
+        result.setdefault("started_at", started_at)
+    result.setdefault("completed_at", _now_iso())
+    result.setdefault("result_path", str(result_path))
+    result.setdefault("runtime_log_unavailable_reason", None)
+    result.setdefault("failure_classification", reason if result.get("status") != "completed" else None)
+    if not runtime_log_path.exists():
+        _write_runtime_log(
+            runtime_log_path,
+            result.get("final_text") or result.get("stop_reason") or "terminal result written",
+        )
+    result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    _append_event(
+        event_log_path,
+        "run_finished",
+        run_id=str(result.get("session_id") or ""),
+        session_id=str(result.get("session_id") or ""),
+        studio_session_id=result.get("studio_session_id"),
+        status=str(result.get("status") or "failed"),
+        exit_code=result.get("exit_code"),
+        stop_reason=str(result.get("stop_reason") or reason),
+        failure_classification=reason,
+        result_path=str(result_path),
+        runtime_log_path=str(runtime_log_path),
+    )
+    return result
+
+
+def _attach_studio_run(
+    *,
+    studio_session_id: str | None,
+    run_id: str,
+    event_log_path: Path,
+    run_dir: Path,
+    result_path: Path,
+    status: str,
+) -> None:
+    if studio_session_id is None:
+        return
+    require_active_studio_session(studio_session_id)
+    attach_run_reference(
+        studio_session_id=studio_session_id,
+        run_id=run_id,
+        session_id=run_id,
+        surface="agent",
+        mode="execute",
+        status=status,
+        events_path=str(event_log_path),
+        session_path=str(run_dir),
+        output_path=str(result_path),
+    )
 
 
 def _resolve_roots(values: list[str]) -> list[Path]:
@@ -558,6 +624,13 @@ def _build_prompt(goal: str, selection: HermesBackendSelection, workspace: Path)
         f"Workspace root: {workspace}",
         f"Approved capabilities: {', '.join(selection.capabilities)}",
         "Denied: Kubernetes mutation, deployment, secrets, unrestricted network, push, promotion, tags, releases.",
+        "",
+        "Truth domains:",
+        "- Agent-observed task findings: report only facts you inspect in the workspace through approved commands/tools.",
+        "- AMOF runtime envelope: handoff ID, run ID, Studio Session ID, runner/backend, provider/model/transport, fallback, capabilities, changed paths, status, stop reason, and evidence paths are supplied by AMOF outside your answer.",
+        "Do not search the repository for AMOF runtime-envelope field names such as runner_id, backend, transport, studio_session_id, result_path, runtime_log_path, or event_log_path.",
+        "If asked for AMOF runtime-envelope fields, state that AMOF will provide them in the runtime envelope; do not treat absent metadata files as blockers.",
+        "Use explicit commands when the mission asks for command-derived repository facts, and include command exit codes in your task findings.",
     ]
     if selection.writable_roots:
         roots = ", ".join(selection.writable_roots)
@@ -671,7 +744,23 @@ def run(
     result_path = run_dir / "result.json"
     started_at = _now_iso()
     workspace = _workspace_for(selection, manifest)
-    _append_event(event_log_path, "run_created", runner_id=selection.runner_id, backend=BACKEND_TYPE, studio_session_id=studio_session_id)
+    _append_event(
+        event_log_path,
+        "run_created",
+        run_id=run_id,
+        session_id=run_id,
+        runner_id=selection.runner_id,
+        backend=BACKEND_TYPE,
+        studio_session_id=studio_session_id,
+    )
+    _attach_studio_run(
+        studio_session_id=studio_session_id,
+        run_id=run_id,
+        event_log_path=event_log_path,
+        run_dir=run_dir,
+        result_path=result_path,
+        status="running",
+    )
     opensandbox_probe = _probe_opensandbox()
     _append_event(event_log_path, "opensandbox_probe", **opensandbox_probe)
     try:
@@ -696,9 +785,15 @@ def run(
             effective_model="unverified",
         )
         result["evidence_refs"]["inference_transport_error"] = type(exc).__name__
-        result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         _append_event(event_log_path, "run_blocked", reason="inference_transport_unavailable")
-        return result
+        return _write_terminal_result(
+            result_path=result_path,
+            event_log_path=event_log_path,
+            runtime_log_path=runtime_log_path,
+            result=result,
+            reason="inference_transport_unavailable",
+            started_at=started_at,
+        )
     if remote_health.get("inference_health") != "ready":
         final_text = "Remote IAL inference transport is not ready."
         result = _result_payload(
@@ -717,9 +812,15 @@ def run(
             requested_model=remote_ial.model,
             effective_model="unverified",
         )
-        result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         _append_event(event_log_path, "run_blocked", reason="inference_transport_unavailable")
-        return result
+        return _write_terminal_result(
+            result_path=result_path,
+            event_log_path=event_log_path,
+            runtime_log_path=runtime_log_path,
+            result=result,
+            reason="inference_transport_unavailable",
+            started_at=started_at,
+        )
     if provider and provider != REMOTE_IAL_PROVIDER:
         final_text = "Direct provider override is not allowed for the AMOF-managed Hermes runner."
         result = _result_payload(
@@ -738,22 +839,14 @@ def run(
             requested_model=remote_ial.model,
             effective_model="unverified",
         )
-        result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         _append_event(event_log_path, "run_blocked", reason="direct_provider_override_rejected")
-        return result
-
-    if studio_session_id is not None:
-        require_active_studio_session(studio_session_id)
-        attach_run_reference(
-            studio_session_id=studio_session_id,
-            run_id=run_id,
-            session_id=run_id,
-            surface="agent",
-            mode="execute",
-            status="running",
-            events_path=str(event_log_path),
-            session_path=str(run_dir),
-            output_path=str(result_path),
+        return _write_terminal_result(
+            result_path=result_path,
+            event_log_path=event_log_path,
+            runtime_log_path=runtime_log_path,
+            result=result,
+            reason="direct_provider_override_rejected",
+            started_at=started_at,
         )
 
     if not bool(health["dispatch_available"]):
@@ -772,9 +865,15 @@ def run(
             health=health,
             opensandbox_probe=opensandbox_probe,
         )
-        result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         _append_event(event_log_path, "run_blocked", reason="dispatch_unavailable")
-        return result
+        return _write_terminal_result(
+            result_path=result_path,
+            event_log_path=event_log_path,
+            runtime_log_path=runtime_log_path,
+            result=result,
+            reason="dispatch_unavailable",
+            started_at=started_at,
+        )
 
     prompt = _build_prompt(goal, selection, workspace)
     command = [str(hermes_executable()), "chat", "--cli", "--quiet", "--model", remote_ial.model]
@@ -826,12 +925,18 @@ def run(
         exit_code = 124
         stdout_path.write_text(exc.stdout or "", encoding="utf-8")
         stderr_path.write_text(exc.stderr or "", encoding="utf-8")
-        runtime_log_path.write_text("Hermes process timed out.\n", encoding="utf-8")
+        _write_runtime_log(runtime_log_path, "Hermes process timed out.")
+    except Exception as exc:
+        status = "failed"
+        stop_reason = "hermes_runtime_exception"
+        exit_code = 1
+        stdout_path.write_text("", encoding="utf-8")
+        stderr_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+        _write_runtime_log(runtime_log_path, f"{type(exc).__name__}: {exc}")
 
-    final_text = stdout_path.read_text(encoding="utf-8").strip()
-    if not final_text:
-        final_text = stderr_path.read_text(encoding="utf-8").strip() or stop_reason
-    validation_status = _infer_validation_status(final_text)
+    task_findings = stdout_path.read_text(encoding="utf-8").strip()
+    runtime_detail = stderr_path.read_text(encoding="utf-8").strip()
+    validation_status = _infer_validation_status(task_findings or runtime_detail)
     if status == "completed" and validation_status == "failed":
         status = "failed"
         stop_reason = "validation_failed"
@@ -841,6 +946,14 @@ def run(
         status = "failed"
         stop_reason = "read_only_mutation_detected"
         exit_code = 1
+    final_text = _runtime_summary_text(
+        status=status,
+        stop_reason=stop_reason,
+        run_id=run_id,
+        task_findings_available=bool(task_findings),
+    )
+    if not task_findings and runtime_detail:
+        task_findings = runtime_detail
 
     result = _result_payload(
         run_id=run_id,
@@ -848,6 +961,7 @@ def run(
         exit_code=exit_code,
         stop_reason=stop_reason,
         final_text=final_text,
+        task_findings=task_findings or None,
         studio_session_id=studio_session_id,
         event_log_path=event_log_path,
         runtime_log_path=runtime_log_path,
@@ -859,20 +973,22 @@ def run(
         requested_model=remote_ial.model,
         effective_model=remote_ial.model,
     )
-    result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    _append_event(event_log_path, "run_finished", status=status, exit_code=exit_code, stop_reason=stop_reason)
-    if studio_session_id is not None:
-        attach_run_reference(
-            studio_session_id=studio_session_id,
-            run_id=run_id,
-            session_id=run_id,
-            surface="agent",
-            mode="execute",
-            status=status,
-            events_path=str(event_log_path),
-            session_path=str(run_dir),
-            output_path=str(result_path),
-        )
+    _write_terminal_result(
+        result_path=result_path,
+        event_log_path=event_log_path,
+        runtime_log_path=runtime_log_path,
+        result=result,
+        reason=stop_reason,
+        started_at=started_at,
+    )
+    _attach_studio_run(
+        studio_session_id=studio_session_id,
+        run_id=run_id,
+        event_log_path=event_log_path,
+        run_dir=run_dir,
+        result_path=result_path,
+        status=status,
+    )
     return result
 
 
@@ -893,6 +1009,7 @@ def _result_payload(
     validation_status: str = "not_run",
     requested_model: str = "unconfigured",
     effective_model: str = "unverified",
+    task_findings: str | None = None,
 ) -> dict[str, Any]:
     return {
         "result_kind": "agent_run_result",
@@ -903,6 +1020,7 @@ def _result_payload(
         "exit_code": exit_code,
         "stop_reason": stop_reason,
         "final_text": final_text,
+        "task_findings": task_findings,
         "runner_id": selection.runner_id,
         "backend": BACKEND_TYPE,
         "requested_provider": REMOTE_IAL_PROVIDER,
@@ -941,6 +1059,21 @@ def _result_payload(
         },
         "budget_summary": {"limit": None, "spent": 0.0, "remaining": None},
     }
+
+
+def _runtime_summary_text(
+    *,
+    status: str,
+    stop_reason: str,
+    run_id: str,
+    task_findings_available: bool,
+) -> str:
+    findings_state = "task findings captured" if task_findings_available else "no task findings captured"
+    return (
+        f"AMOF Hermes run {run_id} finished with status={status}, "
+        f"stop_reason={stop_reason}; {findings_state}. "
+        "Authoritative runtime metadata is recorded in this AgentRunResult envelope."
+    )
 
 
 def _infer_validation_status(final_text: str) -> str:

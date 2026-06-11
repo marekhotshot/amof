@@ -76,17 +76,17 @@ end-user installs do not pull in pytest.
 Use this path if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.1.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.1.1"
 amof --version
 ```
 
 Expected version:
 
 ```text
-AMOF v3.1.0
+AMOF v3.1.1
 ```
 
-`v3.1.0` packages the post-`v3.0.2` local-planning runner template/readiness
+`v3.1.1` packages the post-`v3.0.2` local-planning runner template/readiness
 path and the standalone smoke version-text cleanup without introducing
 execution dispatch or mutation behavior.
 

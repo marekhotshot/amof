@@ -7,6 +7,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -27,7 +28,17 @@ PAYLOAD_KIND_MAP = {
 }
 ALLOWED_PAYLOAD_KINDS = frozenset(PAYLOAD_KIND_MAP.values())
 HANDOFF_EXECUTION_STATUSES = frozenset(
-    {"execution_started", "completed", "blocked", "failed"}
+    {
+        "accepted",
+        "queued",
+        "execution_started",
+        "completed",
+        "blocked",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "result_missing",
+    }
 )
 METADATA_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,63})$")
 HANDOFF_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
@@ -530,6 +541,99 @@ def _write_execution_receipt(receipt: HandoffExecutionReceipt) -> Path:
     )
 
 
+def _read_optional_json(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _load_execution_result_payload(handoff_id: str) -> dict[str, Any] | None:
+    return _read_optional_json(_handoff_results_dir() / f"{handoff_id}.json")
+
+
+def _load_execution_receipt_payload(handoff_id: str) -> dict[str, Any] | None:
+    return _read_optional_json(_handoff_receipts_dir() / f"{handoff_id}.json")
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _hermes_runs_dir() -> Path:
+    return get_app_paths().data_root / "runs" / "hermes-opensandbox"
+
+
+def _find_hermes_run_dir(handoff_id: str, result: dict[str, Any] | None) -> Path | None:
+    expected_run_id = str((result or {}).get("session_id") or "").strip()
+    runs_root = _hermes_runs_dir()
+    if expected_run_id:
+        candidate = runs_root / expected_run_id
+        if candidate.is_dir():
+            return candidate
+    if not runs_root.is_dir():
+        return None
+    for candidate in sorted(runs_root.iterdir(), reverse=True):
+        if not candidate.is_dir():
+            continue
+        if handoff_id in candidate.name:
+            return candidate
+        request_payload = _read_optional_json(candidate / "request.json") or {}
+        if str(request_payload.get("request_id") or "").strip() == handoff_id:
+            return candidate
+    return None
+
+
+def _load_latest_event(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.is_file():
+        return None
+    latest: dict[str, Any] | None = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            latest = payload
+    return latest
+
+
+def _load_run_info(handoff_id: str, result: dict[str, Any] | None) -> dict[str, Any]:
+    run_dir = _find_hermes_run_dir(handoff_id, result)
+    if run_dir is None:
+        return {"available": False}
+    event_log_path = run_dir / "events.jsonl"
+    runtime_log_path = run_dir / "runtime.log"
+    runtime_log_has_content = runtime_log_path.is_file() and bool(
+        runtime_log_path.read_text(encoding="utf-8").strip()
+    )
+    return {
+        "available": True,
+        "run_id": run_dir.name,
+        "run_dir": str(run_dir),
+        "event_log_path": str(event_log_path) if event_log_path.is_file() else None,
+        "runtime_log_path": str(runtime_log_path) if runtime_log_path.exists() else None,
+        "runtime_log_has_content": runtime_log_has_content,
+        "latest_event": _load_latest_event(event_log_path),
+    }
+
+
 def _optional_text(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -685,11 +789,114 @@ def _build_safe_evidence_refs(result: dict[str, Any]) -> dict[str, Optional[str]
     }
 
 
-def _final_status_from_result(result: dict[str, Any]) -> str:
+def _lifecycle_status_from_result(result: dict[str, Any]) -> str:
     status = str(result.get("status") or "").strip().lower()
-    if status in {"completed", "blocked", "failed"}:
+    stop_reason = str(result.get("stop_reason") or "").strip().lower()
+    exit_code = result.get("exit_code")
+    if stop_reason in {"cancelled", "canceled"}:
+        return "cancelled"
+    if stop_reason == "timeout" or exit_code == 124:
+        return "timed_out"
+    if status in {"completed", "blocked", "failed", "timed_out", "cancelled", "result_missing"}:
         return status
     return "failed"
+
+
+def _project_inflight_lifecycle(
+    state: HandoffExecutionState | None, run_info: dict[str, Any]
+) -> str:
+    raw_status = str(state.status if state is not None else "").strip().lower()
+    if raw_status in {"accepted", "queued"}:
+        return raw_status
+    if raw_status != "execution_started":
+        return raw_status or "prepared"
+    if not bool(run_info.get("available")):
+        return "queued"
+    if bool(run_info.get("runtime_log_has_content")):
+        return "executing"
+    last_seen = _parse_timestamp(
+        ((run_info.get("latest_event") or {}) if isinstance(run_info, dict) else {}).get("timestamp")
+        or (state.updated_at if state is not None else None)
+    )
+    if last_seen is not None and (datetime.now(timezone.utc) - last_seen).total_seconds() > 5:
+        return "waiting"
+    return "planning"
+
+
+def _handoff_status_payload(
+    handoff_id: str,
+    *,
+    packet: PreparedHandoffPacket | None = None,
+    state: HandoffExecutionState | None = None,
+) -> dict[str, Any]:
+    loaded_packet = packet
+    if loaded_packet is None:
+        _packet_path, loaded_packet = _load_prepared_packet(handoff_id)
+    loaded_state = state if state is not None else _load_execution_state(handoff_id)
+    result = _load_execution_result_payload(handoff_id)
+    receipt = _load_execution_receipt_payload(handoff_id)
+    run_info = _load_run_info(handoff_id, result)
+    raw_status = (
+        str(loaded_state.status or "").strip().lower()
+        if loaded_state is not None
+        else str(loaded_packet.state or "prepared").strip().lower()
+    )
+    if result is not None:
+        lifecycle_state = _lifecycle_status_from_result(result)
+    elif raw_status in {"completed", "blocked", "failed", "timed_out", "cancelled", "result_missing"}:
+        lifecycle_state = "result_missing"
+    else:
+        lifecycle_state = _project_inflight_lifecycle(loaded_state, run_info)
+    return {
+        "handoff_id": handoff_id,
+        "tracking_ref": handoff_id,
+        "status": lifecycle_state,
+        "state_status": raw_status,
+        "accepted": lifecycle_state != "prepared",
+        "source": loaded_packet.source,
+        "target": loaded_packet.target,
+        "payload_kind": loaded_packet.payload_kind,
+        "studio_session_id": loaded_packet.studio_session_id,
+        "request_id": handoff_id,
+        "run_id": str((result or {}).get("session_id") or run_info.get("run_id") or "").strip() or None,
+        "runner_id": _optional_text((result or {}).get("runner_id")),
+        "backend": _optional_text((result or {}).get("backend")),
+        "stop_reason": _optional_text((result or {}).get("stop_reason")),
+        "failure_classification": _optional_text((result or {}).get("failure_classification"))
+        or ("result_missing" if lifecycle_state == "result_missing" else None),
+        "final_text": _optional_text((result or {}).get("final_text")),
+        "task_findings": _optional_text((result or {}).get("task_findings")),
+        "exit_code": (result or {}).get("exit_code", "unknown"),
+        "started_at": _optional_text((result or {}).get("started_at"))
+        or (loaded_state.started_at if loaded_state is not None else None),
+        "completed_at": _optional_text((result or {}).get("completed_at"))
+        or (loaded_state.completed_at if loaded_state is not None else None),
+        "result_path": _optional_text((result or {}).get("result_path"))
+        or (loaded_state.result_path if loaded_state is not None else None),
+        "receipt_path": _optional_text((receipt or {}).get("receipt_path"))
+        or (loaded_state.receipt_path if loaded_state is not None else None),
+        "event_log_path": _optional_text((result or {}).get("event_log_path"))
+        or _optional_text(run_info.get("event_log_path")),
+        "runtime_log_path": _optional_text((result or {}).get("runtime_log_path"))
+        or _optional_text(run_info.get("runtime_log_path")),
+        "requested_provider": _optional_text((result or {}).get("requested_provider")),
+        "effective_provider": _optional_text((result or {}).get("effective_provider")),
+        "requested_model": _optional_text((result or {}).get("requested_model")),
+        "effective_model": _optional_text((result or {}).get("effective_model")),
+        "transport": _optional_text((result or {}).get("transport")),
+        "fallback_used": (result or {}).get("fallback_used"),
+        "approved_capabilities": list((result or {}).get("approved_capabilities") or []),
+        "effective_capabilities": list((result or {}).get("effective_capabilities") or []),
+        "changed_paths": list((result or {}).get("changed_paths") or []),
+        "latest_event": run_info.get("latest_event"),
+        "recovery_boundary": (
+            "result_missing"
+            if lifecycle_state == "result_missing"
+            else "poll"
+            if lifecycle_state in {"accepted", "queued", "planning", "executing", "waiting"}
+            else "complete"
+        ),
+    }
 
 
 def _runner_registry_dir() -> Path:
@@ -781,7 +988,7 @@ def _execute_agent_from_handoff(
     handoff_id = _validate_handoff_id(str(getattr(args, "handoff_id", "")))
     packet_path, packet = _load_prepared_packet(handoff_id)
     existing_state = _load_execution_state(handoff_id)
-    if existing_state is not None:
+    if existing_state is not None and existing_state.status not in {"accepted", "queued"}:
         raise ValueError(
             f"handoff packet is not eligible for re-execution; current state is {existing_state.status}."
         )
@@ -800,7 +1007,7 @@ def _execute_agent_from_handoff(
         HandoffExecutionState(
             schema_version=HANDOFF_RECEIPT_SCHEMA_VERSION,
             handoff_id=handoff_id,
-            status="execution_started",
+            status="queued",
             request_id=handoff_id,
             updated_at=started_at,
             started_at=started_at,
@@ -809,6 +1016,17 @@ def _execute_agent_from_handoff(
 
     try:
         runner_id = _selected_runner_id(args)
+        execution_started_at = _now_iso()
+        _write_execution_state(
+            HandoffExecutionState(
+                schema_version=HANDOFF_RECEIPT_SCHEMA_VERSION,
+                handoff_id=handoff_id,
+                status="execution_started",
+                request_id=handoff_id,
+                updated_at=execution_started_at,
+                started_at=started_at,
+            )
+        )
         if runner_id is None or _explicit_builtin_runner_selected(runner_id):
             response = agent_cmd.run_external_agent_plan_execute_envelope(
                 manifest,
@@ -853,6 +1071,9 @@ def _execute_agent_from_handoff(
             "checkpoint_path": None,
             "event_log_path": None,
             "runtime_log_path": None,
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "failure_classification": "handoff_dispatch_failed" if runner_id is None else "selected_runner_dispatch_failed",
             "journal_path": None,
             "changed_paths": [],
             "validation_summary": {"status": "not_run", "reason": str(exc)},
@@ -867,7 +1088,7 @@ def _execute_agent_from_handoff(
             schema_version=HANDOFF_RECEIPT_SCHEMA_VERSION,
             handoff_id=handoff_id,
             request_id=handoff_id,
-            status="failed",
+            status=_lifecycle_status_from_result(diagnostic_result),
             exit_code=1,
             stop_reason="handoff_dispatch_failed" if runner_id is None else "selected_runner_dispatch_failed",
             session_id="",
@@ -884,7 +1105,7 @@ def _execute_agent_from_handoff(
             HandoffExecutionState(
                 schema_version=HANDOFF_RECEIPT_SCHEMA_VERSION,
                 handoff_id=handoff_id,
-                status="failed",
+                status=receipt.status,
                 request_id=handoff_id,
                 updated_at=completed_at,
                 started_at=started_at,
@@ -903,7 +1124,7 @@ def _execute_agent_from_handoff(
         schema_version=HANDOFF_RECEIPT_SCHEMA_VERSION,
         handoff_id=handoff_id,
         request_id=handoff_id,
-        status=_final_status_from_result(result_payload),
+        status=_lifecycle_status_from_result(result_payload),
         exit_code=int(result_payload.get("exit_code") or 0),
         stop_reason=str(result_payload.get("stop_reason") or ""),
         session_id=str(result_payload.get("session_id") or ""),
@@ -930,6 +1151,38 @@ def _execute_agent_from_handoff(
         )
     )
     return receipt
+
+
+def cmd_handoff_accept_agent(args: Any) -> int:
+    try:
+        handoff_id = _validate_handoff_id(str(getattr(args, "handoff_id", "")))
+        _packet_path, packet = _load_prepared_packet(handoff_id)
+        if packet.target != HANDOFF_TARGET_AMOF_AGENT:
+            raise ValueError(
+                f"handoff packet target must be {HANDOFF_TARGET_AMOF_AGENT!r}; received {packet.target!r}."
+            )
+        current_state = _load_execution_state(handoff_id)
+        if not bool(getattr(args, "confirm", False)):
+            _stderr(
+                "[handoff] Preview only; no acceptance occurred. Re-run with --confirm to persist accepted state."
+            )
+            return 0
+        if current_state is None:
+            current_state = HandoffExecutionState(
+                schema_version=HANDOFF_RECEIPT_SCHEMA_VERSION,
+                handoff_id=handoff_id,
+                status="accepted",
+                request_id=handoff_id,
+                updated_at=_now_iso(),
+            )
+            _write_execution_state(current_state)
+        payload = _handoff_status_payload(handoff_id, packet=packet, state=current_state)
+        payload["operation"] = "handoff.accept"
+    except (FileNotFoundError, ValueError) as exc:
+        _stderr(f"[handoff] {exc}")
+        return 1
+    _emit_json_stdout(payload)
+    return 0
 
 
 def cmd_handoff_prepare(args: Any) -> int:
@@ -984,13 +1237,24 @@ def cmd_handoff_prepare(args: Any) -> int:
     return 0
 
 
+def cmd_handoff_status(args: Any) -> int:
+    try:
+        handoff_id = _validate_handoff_id(str(getattr(args, "handoff_id", "")))
+        payload = _handoff_status_payload(handoff_id)
+    except (FileNotFoundError, ValueError) as exc:
+        _stderr(f"[handoff] {exc}")
+        return 1
+    _emit_json_stdout(payload)
+    return 0
+
+
 def cmd_handoff_execute_agent(args: Any) -> int:
     handoff_id = None
     try:
         handoff_id = _validate_handoff_id(str(getattr(args, "handoff_id", "")))
         _load_prepared_packet(handoff_id)
         current_state = _load_execution_state(handoff_id)
-        if current_state is not None:
+        if current_state is not None and current_state.status not in {"accepted", "queued"}:
             raise ValueError(
                 f"handoff packet is not eligible for re-execution; current state is {current_state.status}."
             )
@@ -1008,14 +1272,18 @@ def cmd_handoff_execute_agent(args: Any) -> int:
         return 1
 
     _emit_json_stdout(receipt.to_dict())
-    return int(receipt.exit_code)
+    return int(receipt.exit_code) if isinstance(receipt.exit_code, int) else 1
 
 
 def cmd_handoff(args: Any) -> int:
     action = str(getattr(args, "handoff_cmd", "") or "").strip()
     if action == "prepare":
         return cmd_handoff_prepare(args)
+    if action == "accept-agent":
+        return cmd_handoff_accept_agent(args)
     if action == "execute-agent":
         return cmd_handoff_execute_agent(args)
-    _stderr("Usage: amof handoff <prepare|execute-agent> [options]")
+    if action == "status":
+        return cmd_handoff_status(args)
+    _stderr("Usage: amof handoff <prepare|accept-agent|execute-agent|status> [options]")
     return 1

@@ -57,6 +57,45 @@ def _run_execute(args: SimpleNamespace, amof_home: Path) -> tuple[int, str, str]
     return code, stdout.getvalue(), stderr.getvalue()
 
 
+def _accept_args(**overrides: object) -> SimpleNamespace:
+    payload: dict[str, object] = {
+        "command": "handoff",
+        "handoff_cmd": "accept-agent",
+        "handoff_id": "handoff-test-001",
+        "confirm": True,
+    }
+    payload.update(overrides)
+    return SimpleNamespace(**payload)
+
+
+def _run_accept(args: SimpleNamespace, amof_home: Path) -> tuple[int, str, str]:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = handoff.cmd_handoff_accept_agent(args)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+def _status_args(**overrides: object) -> SimpleNamespace:
+    payload: dict[str, object] = {
+        "command": "handoff",
+        "handoff_cmd": "status",
+        "handoff_id": "handoff-test-001",
+    }
+    payload.update(overrides)
+    return SimpleNamespace(**payload)
+
+
+def _run_status(args: SimpleNamespace, amof_home: Path) -> tuple[int, str, str]:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = handoff.cmd_handoff_status(args)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
 @contextmanager
 def _cwd(path: Path):
     previous = Path.cwd()
@@ -486,6 +525,131 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(receipt["studio_session_id"], studio_session_id)
             self.assertEqual(result["studio_session_id"], studio_session_id)
+
+    def test_accept_agent_writes_accepted_state_and_tracking_ref(self) -> None:
+        with TemporaryDirectory(prefix="amof-handoff-accept-") as td:
+            amof_home = Path(td)
+            _write_packet(amof_home)
+            code, stdout, stderr = _run_accept(_accept_args(confirm=True), amof_home)
+            state = json.loads(
+                (
+                    amof_home / "share" / "handoff" / "state" / "handoff-test-001.json"
+                ).read_text(encoding="utf-8")
+            )
+
+        payload = json.loads(stdout)
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(payload["status"], "accepted")
+        self.assertEqual(payload["tracking_ref"], "handoff-test-001")
+        self.assertEqual(state["status"], "accepted")
+
+    def test_status_projects_planning_waiting_executing_and_result_missing(self) -> None:
+        with TemporaryDirectory(prefix="amof-handoff-status-projection-") as td:
+            amof_home = Path(td)
+            _write_packet(amof_home)
+            run_id = "hermes-20260611-000001-handoff-test-001"
+            run_dir = amof_home / "share" / "runs" / "hermes-opensandbox" / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "request.json").write_text(
+                json.dumps({"request_id": "handoff-test-001"}) + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "event": "run_created",
+                        "timestamp": "2099-06-11T00:00:00Z",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
+                handoff._write_execution_state(
+                    handoff.HandoffExecutionState(
+                        schema_version=1,
+                        handoff_id="handoff-test-001",
+                        status="execution_started",
+                        request_id="handoff-test-001",
+                        updated_at="2099-06-11T00:00:00Z",
+                    )
+                )
+
+            code, stdout, _stderr = _run_status(_status_args(), amof_home)
+            planning = json.loads(stdout)
+
+            (run_dir / "events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "event": "run_created",
+                        "timestamp": "2020-06-11T00:00:00Z",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            code_waiting, stdout_waiting, _stderr_waiting = _run_status(
+                _status_args(), amof_home
+            )
+            waiting = json.loads(stdout_waiting)
+
+            (run_dir / "runtime.log").write_text("runtime output\n", encoding="utf-8")
+            code_executing, stdout_executing, _stderr_executing = _run_status(
+                _status_args(), amof_home
+            )
+            executing = json.loads(stdout_executing)
+
+            with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
+                handoff._write_execution_state(
+                    handoff.HandoffExecutionState(
+                        schema_version=1,
+                        handoff_id="handoff-test-001",
+                        status="failed",
+                        request_id="handoff-test-001",
+                        updated_at="2026-06-11T00:01:00Z",
+                    )
+                )
+            code_missing, stdout_missing, _stderr_missing = _run_status(
+                _status_args(), amof_home
+            )
+            missing = json.loads(stdout_missing)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(planning["status"], "planning")
+        self.assertEqual(code_waiting, 0)
+        self.assertEqual(waiting["status"], "waiting")
+        self.assertEqual(code_executing, 0)
+        self.assertEqual(executing["status"], "executing")
+        self.assertEqual(code_missing, 0)
+        self.assertEqual(missing["status"], "result_missing")
+        self.assertEqual(missing["failure_classification"], "result_missing")
+
+    def test_execute_agent_after_accept_agent_is_allowed(self) -> None:
+        with TemporaryDirectory(prefix="amof-handoff-accept-then-execute-") as td:
+            amof_home = Path(td)
+            _write_packet(amof_home)
+            accept_code, _accept_stdout, _accept_stderr = _run_accept(
+                _accept_args(confirm=True), amof_home
+            )
+            with (
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope",
+                    return_value=_correlation_envelope(),
+                ),
+            ):
+                execute_code, execute_stdout, _execute_stderr = _run_execute(
+                    _execute_args(confirm=True), amof_home
+                )
+
+        receipt = json.loads(execute_stdout)
+        self.assertEqual(accept_code, 0)
+        self.assertEqual(execute_code, 0)
+        self.assertEqual(receipt["status"], "completed")
 
     def test_preview_without_confirmation_invokes_nothing(self) -> None:
         with TemporaryDirectory(prefix="amof-handoff-dispatch-preview-") as td:

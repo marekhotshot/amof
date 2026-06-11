@@ -102,7 +102,7 @@ class AgentRunResult:
 
     status: str
     session_id: str
-    exit_code: int
+    exit_code: int | str
     stop_reason: str
     final_text: str
     plan_path: str | None
@@ -110,10 +110,22 @@ class AgentRunResult:
     event_log_path: str | None
     journal_path: str | None
     budget_summary: dict[str, Any]
+    task_findings: str | None = None
     studio_session_id: str | None = None
     runner_id: str | None = None
     backend: str | None = None
+    requested_provider: str | None = None
+    effective_provider: str | None = None
+    requested_model: str | None = None
+    effective_model: str | None = None
+    transport: str | None = None
+    fallback_used: bool | None = None
     runtime_log_path: str | None = None
+    result_path: str | None = None
+    runtime_log_unavailable_reason: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    failure_classification: str | None = None
     changed_paths: list[str] | None = None
     validation_summary: dict[str, Any] | None = None
     approved_capabilities: list[str] | None = None
@@ -146,6 +158,7 @@ class AgentRunResult:
             "event_log_path": self.event_log_path,
             "journal_path": self.journal_path,
             "budget_summary": dict(self.budget_summary),
+            **({"task_findings": self.task_findings} if self.task_findings is not None else {}),
             **(
                 {"studio_session_id": self.studio_session_id}
                 if self.studio_session_id is not None
@@ -153,7 +166,46 @@ class AgentRunResult:
             ),
             **({"runner_id": self.runner_id} if self.runner_id is not None else {}),
             **({"backend": self.backend} if self.backend is not None else {}),
+            **(
+                {"requested_provider": self.requested_provider}
+                if self.requested_provider is not None
+                else {}
+            ),
+            **(
+                {"effective_provider": self.effective_provider}
+                if self.effective_provider is not None
+                else {}
+            ),
+            **(
+                {"requested_model": self.requested_model}
+                if self.requested_model is not None
+                else {}
+            ),
+            **(
+                {"effective_model": self.effective_model}
+                if self.effective_model is not None
+                else {}
+            ),
+            **({"transport": self.transport} if self.transport is not None else {}),
+            **(
+                {"fallback_used": self.fallback_used}
+                if self.fallback_used is not None
+                else {}
+            ),
             **({"runtime_log_path": self.runtime_log_path} if self.runtime_log_path is not None else {}),
+            **({"result_path": self.result_path} if self.result_path is not None else {}),
+            **(
+                {"runtime_log_unavailable_reason": self.runtime_log_unavailable_reason}
+                if self.runtime_log_unavailable_reason is not None
+                else {}
+            ),
+            **({"started_at": self.started_at} if self.started_at is not None else {}),
+            **({"completed_at": self.completed_at} if self.completed_at is not None else {}),
+            **(
+                {"failure_classification": self.failure_classification}
+                if self.failure_classification is not None
+                else {}
+            ),
             **({"changed_paths": list(self.changed_paths)} if self.changed_paths is not None else {}),
             **({"validation_summary": dict(self.validation_summary)} if self.validation_summary is not None else {}),
             **({"approved_capabilities": list(self.approved_capabilities)} if self.approved_capabilities is not None else {}),

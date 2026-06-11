@@ -224,6 +224,21 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Explicitly confirm writing one prepared packet to the local AMOF outbox",
     )
+    handoff_accept_agent = handoff_sub.add_parser(
+        "accept-agent",
+        help="Idempotently accept one prepared AMOF-Agent-targeted packet for asynchronous governed execution",
+    )
+    handoff_accept_agent.add_argument(
+        "--handoff-id",
+        required=True,
+        help="Prepared handoff identifier to accept from the canonical AMOF outbox",
+    )
+    handoff_accept_agent.add_argument(
+        "--confirm",
+        action="store_true",
+        default=False,
+        help="Explicitly confirm persisting the accepted handoff state",
+    )
     handoff_execute_agent = handoff_sub.add_parser(
         "execute-agent",
         help="Preview and explicitly dispatch one prepared AMOF-Agent-targeted packet through governed plan-execute",
@@ -315,6 +330,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="PATH",
         help="Optional canonical writable-root approvals for the governed external request surface",
+    )
+    handoff_status = handoff_sub.add_parser(
+        "status",
+        help="Read canonical AMOF lifecycle truth for one prepared handoff packet",
+    )
+    handoff_status.add_argument(
+        "--handoff-id",
+        required=True,
+        help="Prepared handoff identifier to inspect from the canonical AMOF outbox/state/results",
     )
 
     # Repo management command

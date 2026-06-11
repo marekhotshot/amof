@@ -8,6 +8,28 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## v3.1.1 - Async Handoff Closeout and Canonical Terminal Results
+
+- Patch release after `v3.1.0`.
+- Keeps the public runtime authority surface governed while closing the operator/runtime gap for long-running Hermes handoffs.
+
+### Added
+
+- `amof handoff accept-agent` for idempotent asynchronous acceptance of prepared AMOF-agent packets.
+- `amof handoff status` for canonical lifecycle projection across accepted, planning, waiting, executing, completed, blocked, cancelled, timed-out, and result-missing states.
+- Richer `AgentRunResult` provenance for provider, model, transport, fallback, timestamps, result paths, and failure classification.
+
+### Changed
+
+- Hermes terminal results now materialize authoritative runtime envelopes even on blocked, failed, cancelled, timed-out, and missing-result boundaries.
+- Runtime summaries and task findings are separated so operator surfaces can show truthful repository observations without overwriting AMOF-owned execution metadata.
+- Public install/update/docs truth now points to `v3.1.1` as the current release.
+
+### Validation
+
+- `PYTHONPATH=scripts python3 -m unittest tests.test_handoff_agent_dispatch tests.test_plan_bundle_agent_run_contracts` passed.
+- Live smoke passed for ChatGPT -> AMOF handoff accept/poll -> Hermes -> Remote IAL -> canonical result materialization with matching Operator Console and Studio truth.
+
 ## v3.1.0 - Governed Execution Contracts and Studio Correlation
 
 - Release after `v3.0.3`.
