@@ -663,6 +663,12 @@ def _changed_paths(workspace: Path) -> list[str]:
     return paths
 
 
+def _changed_paths_delta(before: list[str], after: list[str]) -> list[str]:
+    before_set = {item for item in before if item}
+    after_set = {item for item in after if item}
+    return sorted(after_set - before_set)
+
+
 def _write_run_hermes_config(run_dir: Path, adapter: _RemoteIALOpenAIAdapter, model: str) -> Path:
     hermes_home = run_dir / "hermes-home"
     hermes_home.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -744,6 +750,7 @@ def run(
     result_path = run_dir / "result.json"
     started_at = _now_iso()
     workspace = _workspace_for(selection, manifest)
+    preexisting_changed_paths = _changed_paths(workspace)
     _append_event(
         event_log_path,
         "run_created",
@@ -875,6 +882,40 @@ def run(
             started_at=started_at,
         )
 
+    if not selection.writable_roots and preexisting_changed_paths:
+        final_text = "Read-only run blocked before execution because workspace has pre-existing tracked changes."
+        result = _result_payload(
+            run_id=run_id,
+            status="blocked",
+            exit_code=1,
+            stop_reason="read_only_workspace_not_clean",
+            final_text=final_text,
+            studio_session_id=studio_session_id,
+            event_log_path=event_log_path,
+            runtime_log_path=runtime_log_path,
+            changed_paths=[],
+            selection=selection,
+            health=health,
+            opensandbox_probe=opensandbox_probe,
+            requested_model=remote_ial.model,
+            effective_model="unverified",
+        )
+        result["evidence_refs"]["preexisting_changed_paths"] = list(preexisting_changed_paths)
+        _append_event(
+            event_log_path,
+            "run_blocked",
+            reason="read_only_workspace_not_clean",
+            preexisting_changed_paths=list(preexisting_changed_paths),
+        )
+        return _write_terminal_result(
+            result_path=result_path,
+            event_log_path=event_log_path,
+            runtime_log_path=runtime_log_path,
+            result=result,
+            reason="read_only_workspace_not_clean",
+            started_at=started_at,
+        )
+
     prompt = _build_prompt(goal, selection, workspace)
     command = [str(hermes_executable()), "chat", "--cli", "--quiet", "--model", remote_ial.model]
     command.extend(["--query", prompt])
@@ -941,7 +982,7 @@ def run(
         status = "failed"
         stop_reason = "validation_failed"
         exit_code = 1
-    changed = _changed_paths(workspace)
+    changed = _changed_paths_delta(preexisting_changed_paths, _changed_paths(workspace))
     if status == "completed" and not selection.writable_roots and changed:
         status = "failed"
         stop_reason = "read_only_mutation_detected"

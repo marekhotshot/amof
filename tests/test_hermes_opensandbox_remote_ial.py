@@ -42,6 +42,56 @@ def _health() -> dict[str, object]:
 
 
 class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
+    def test_changed_paths_delta_ignores_preexisting_dirtiness(self) -> None:
+        before = ["src/components/CookieConsent.tsx", "src/components/PodcastPage.tsx"]
+        after = [
+            "src/components/CookieConsent.tsx",
+            "src/components/PodcastPage.tsx",
+            "src/contexts/PodcastPlayerContext.tsx",
+        ]
+        self.assertEqual(
+            hermes_opensandbox._changed_paths_delta(before, after),
+            ["src/contexts/PodcastPlayerContext.tsx"],
+        )
+
+    def test_read_only_dirty_workspace_blocks_before_subprocess(self) -> None:
+        config = hermes_opensandbox.RemoteIALConfig(
+            base_url="https://ial.example.test",
+            api_key="unit-test-token",
+            model="remote-ial/test-worker",
+            timeout_seconds=30,
+        )
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-readonly-dirty-") as td:
+            with (
+                patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
+                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
+                patch.object(hermes_opensandbox, "_probe_opensandbox", return_value={"status": "ready", "exit_code": 0}),
+                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
+                patch.object(hermes_opensandbox, "_remote_ial_health", return_value={"inference_health": "ready"}),
+                patch.object(
+                    hermes_opensandbox,
+                    "_changed_paths",
+                    side_effect=[["src/components/CookieConsent.tsx"]],
+                ),
+                patch("subprocess.run") as run_process,
+            ):
+                result = hermes_opensandbox.run(
+                    manifest={"repos": [{"path": td}]},
+                    goal="inspect only",
+                    request_id="readonly-dirty",
+                    studio_session_id=None,
+                    selection=_selection(),
+                )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["stop_reason"], "read_only_workspace_not_clean")
+        self.assertEqual(result["changed_paths"], [])
+        self.assertEqual(
+            (result.get("evidence_refs") or {}).get("preexisting_changed_paths"),
+            ["src/components/CookieConsent.tsx"],
+        )
+        run_process.assert_not_called()
+
     def test_missing_remote_ial_config_blocks_before_hermes_process(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-hermes-missing-ial-") as td:
             with (
