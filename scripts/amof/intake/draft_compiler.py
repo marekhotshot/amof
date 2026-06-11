@@ -42,6 +42,31 @@ _BLOCKER_HINT = re.compile(r"\b(blocked|blocking|waiting|missing|need|cannot|can
 _PATH_HINT = re.compile(r"\b([A-Za-z0-9._-]+/[A-Za-z0-9._/-]*|[A-Za-z0-9._/-]+\.[A-Za-z0-9]+)\b")
 _TICKET_HINT = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
 
+# Semantic adoption classification
+# (AMOF-INTAKE-ADOPTION-SEMANTIC-CLASSIFICATION-001): adoption missions are
+# first-class, and lane verbs only count when they target the intake itself,
+# never when they appear inside instructions ("ignore the legacy folder",
+# "do not discard anything").
+_ADOPTION_HINT = re.compile(
+    r"\b(adopt|adoption|onboard|onboarding|take over|bring under (?:amof|governance|management))\b",
+    re.IGNORECASE,
+)
+_ADOPTION_SUBJECT_HINT = re.compile(
+    r"\b(repo|repos|repository|repositories|runtime|runtimes|site|website|domain|project|codebase|service)\b",
+    re.IGNORECASE,
+)
+_NEGATION_BEFORE = re.compile(r"\b(do(?:es)?\s*n[o']t|don't|never|no|without|avoid|must\s+not|should\s+not)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
+_LANE_SELF_TARGET = re.compile(r"\b(this|the)\s+(ticket|task|mission|intake|request|draft|item)\b", re.IGNORECASE)
+
+# Repository identity extraction: Git URLs, owner/name pairs, bare domains.
+_REPO_URL_HINT = re.compile(r"\b(?:https?://|git@)[A-Za-z0-9._/:@-]+", re.IGNORECASE)
+_DOMAIN_HINT = re.compile(
+    r"\b((?:[A-Za-z0-9-]+\.)+(?:com|org|net|dev|io|sk|cz|eu|app|ai|cloud))\b",
+    re.IGNORECASE,
+)
+_RUNTIME_ID_HINT = re.compile(r"\b([a-z0-9][a-z0-9-]*runtime[a-z0-9-]*|[a-z0-9-]+-operator-host-\d+)\b", re.IGNORECASE)
+_FILE_PATH_HINT = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)+/?$")
+
 
 @dataclass(frozen=True)
 class IntakeDraftResult:
@@ -84,19 +109,79 @@ def _derive_title(text: str) -> str:
     return first.rstrip(".:;!?")[:90]
 
 
-def _derive_lane(text: str) -> str:
+def _is_adoption(text: str) -> bool:
+    for match in _ADOPTION_HINT.finditer(text):
+        window = text[max(0, match.start() - 80): match.end() + 80]
+        if _ADOPTION_SUBJECT_HINT.search(window) or _DOMAIN_HINT.search(window) or _REPO_URL_HINT.search(window):
+            return True
+    return False
+
+
+def _lane_match_counts(text: str, pattern: re.Pattern[str], adoption: bool) -> bool:
+    """A lane verb counts only when it is not negated and, for terminal verbs
+    on adoption intakes, when it targets the intake itself."""
+    for match in pattern.finditer(text):
+        prefix = text[max(0, match.start() - 40): match.start()]
+        if _NEGATION_BEFORE.search(prefix):
+            continue
+        if adoption:
+            suffix = text[match.end(): match.end() + 60]
+            if not (_LANE_SELF_TARGET.search(suffix) or _LANE_SELF_TARGET.search(prefix)):
+                continue
+        return True
+    return False
+
+
+def _derive_lane(text: str, adoption: bool = False) -> str:
     for lane, patterns in _LANE_HINTS:
-        if any(pattern.search(text) for pattern in patterns):
+        terminal = lane in ("kill", "defer")
+        if any(_lane_match_counts(text, pattern, adoption and terminal) for pattern in patterns):
             return lane
     return "replay_now"
 
 
-def _derive_scope(text: str) -> list[str]:
-    matches = [_clean_line(match.group(1)) for match in _PATH_HINT.finditer(text)]
+def _extract_repositories(text: str) -> list[str]:
+    found: list[str] = []
+    for pattern in (_REPO_URL_HINT, _DOMAIN_HINT):
+        for match in pattern.finditer(text):
+            value = match.group(0).rstrip(".,;:")
+            if value not in found:
+                found.append(value)
+            if len(found) >= 8:
+                return found
+    return found
+
+
+def _extract_runtimes(text: str) -> list[str]:
+    found: list[str] = []
+    for match in _RUNTIME_ID_HINT.finditer(text):
+        value = match.group(1)
+        if value.lower() in ("runtime", "runtimes"):
+            continue
+        if value not in found:
+            found.append(value)
+        if len(found) >= 8:
+            break
+    return found
+
+
+def _derive_scope(text: str, repositories: list[str] | None = None) -> list[str]:
+    # Extraction fidelity: repository identities (domains, URLs) are not
+    # filesystem paths; only genuine path-shaped tokens enter the scope.
+    repo_tokens = set(repositories or [])
     deduped: list[str] = []
-    for item in matches:
-        if item and item not in deduped:
-            deduped.append(item)
+    for match in _PATH_HINT.finditer(text):
+        item = _clean_line(match.group(1))
+        if not item or item in deduped:
+            continue
+        if item in repo_tokens or _DOMAIN_HINT.fullmatch(item):
+            continue
+        if "/" not in item and not _FILE_PATH_HINT.match(item):
+            # bare dotted token (version, abbreviation, file name without
+            # directory): keep only when it looks like a real file
+            if not re.search(r"\.(ts|tsx|js|mjs|py|go|rs|java|json|yaml|yml|md|css|html|sh|toml)$", item, re.IGNORECASE):
+                continue
+        deduped.append(item)
         if len(deduped) >= 8:
             break
     return deduped or ["."]
@@ -129,7 +214,9 @@ def _derive_summary(text: str) -> str:
     return f"{normalized[:217]}..."
 
 
-def _task_kind_for_lane(lane: str) -> str:
+def _task_kind_for_lane(lane: str, adoption: bool = False) -> str:
+    if adoption and lane not in ("kill",):
+        return "adoption"
     if lane == "kill":
         return "discard"
     if lane == "defer":
@@ -163,8 +250,11 @@ def compile_intake_draft(raw_text: str) -> IntakeDraftResult:
         raise ValueError("raw_text is required")
 
     title = _derive_title(source)
-    lane = _derive_lane(source)
-    scope = _derive_scope(source)
+    adoption = _is_adoption(source)
+    lane = _derive_lane(source, adoption)
+    repositories = _extract_repositories(source)
+    runtimes = _extract_runtimes(source)
+    scope = _derive_scope(source, repositories)
     blockers = _derive_blockers(source)
     ticket_id = _derive_ticket_id(source)
     bounded_goal = _derive_summary(source)
@@ -176,9 +266,11 @@ def compile_intake_draft(raw_text: str) -> IntakeDraftResult:
         "ticket_id": ticket_id,
         "rough_intent": source,
         "bounded_goal": bounded_goal,
-        "task_kind": _task_kind_for_lane(lane),
+        "task_kind": _task_kind_for_lane(lane, adoption),
         "repo_scope": scope,
         "paths_to_inspect": scope,
+        "extracted_repositories": repositories,
+        "extracted_runtimes": runtimes,
         "profile_ref": "amof-intake-draft-compiler-v1",
         "mutations": {
             "allowed": [],
@@ -204,6 +296,9 @@ def compile_intake_draft(raw_text: str) -> IntakeDraftResult:
             "replay_lane": lane,
             "bounded_scope": scope,
             "blockers": blockers,
+            "adoption": adoption,
+            "extracted_repositories": repositories,
+            "extracted_runtimes": runtimes,
         },
     }
 
