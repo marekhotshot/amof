@@ -55,7 +55,11 @@ _ADOPTION_SUBJECT_HINT = re.compile(
     r"\b(repo|repos|repository|repositories|runtime|runtimes|site|website|domain|project|codebase|service)\b",
     re.IGNORECASE,
 )
-_NEGATION_BEFORE = re.compile(r"\b(do(?:es)?\s*n[o']t|don't|never|no|without|avoid|must\s+not|should\s+not)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
+_NEGATION_BEFORE = re.compile(
+    r"\b(do(?:es)?\s*n[o']t|don't|never|no|without|avoid|must\s+not|should\s+not"
+    r"|if|would|could|might|unless|in\s+case|were\s+to|whether\s+to)\s+(?:\w+\s+){0,2}$",
+    re.IGNORECASE,
+)
 _LANE_SELF_TARGET = re.compile(r"\b(this|the)\s+(ticket|task|mission|intake|request|draft|item)\b", re.IGNORECASE)
 
 # Repository identity extraction: Git URLs, owner/name pairs, bare domains.
@@ -215,8 +219,12 @@ def _derive_summary(text: str) -> str:
 
 
 def _task_kind_for_lane(lane: str, adoption: bool = False) -> str:
+    # Canonical adoption task kind
+    # (AMOF-PREDATOR-DELIVERY-COCKPIT-CONVERGENCE-001 §E): repo/runtime
+    # adoption missions classify as repo_runtime_adoption, decoupled from the
+    # replay/kill lane verbs, and remain read-only by packet construction.
     if adoption and lane not in ("kill",):
-        return "adoption"
+        return "repo_runtime_adoption"
     if lane == "kill":
         return "discard"
     if lane == "defer":

@@ -52,7 +52,7 @@ class IntakeDraftCompilerTests(unittest.TestCase):
         draft = compile_intake_draft(raw_text)
         packet = json.loads(draft.packet_text)
 
-        self.assertEqual(packet["task_kind"], "adoption")
+        self.assertEqual(packet["task_kind"], "repo_runtime_adoption")
         self.assertNotEqual(draft.classification, "kill")
         self.assertIn("IgorMraz.com", packet["extracted_repositories"])
         self.assertNotIn("IgorMraz.com", packet["repo_scope"])
@@ -80,7 +80,7 @@ class IntakeDraftCompilerTests(unittest.TestCase):
         self.assertIn("hotshot-operator-host-01", packet["extracted_runtimes"])
         self.assertIn("amof-cloud-runtime", packet["extracted_runtimes"])
         self.assertIn("https://github.com/marekhotshot/amof.git", packet["extracted_repositories"])
-        self.assertEqual(packet["task_kind"], "adoption")
+        self.assertEqual(packet["task_kind"], "repo_runtime_adoption")
 
     def test_adoption_packet_remains_validate_ready(self) -> None:
         raw_text = "Adopt repository igormraz.com into the hotshot.sk ecosystem."
@@ -89,6 +89,23 @@ class IntakeDraftCompilerTests(unittest.TestCase):
         validated = _validate_packet(packet)
         self.assertEqual(validated.kind, "bounded_intake_task")
         self.assertEqual(validated.mutations_allowed, [])
+
+    def test_adoption_expected_shape_repo_runtime_adoption_replay_now_read_only(self) -> None:
+        raw_text = "Adopt the IgorMraz.com repository and the hotshot runtime under AMOF governance."
+        draft = compile_intake_draft(raw_text)
+        packet = json.loads(draft.packet_text)
+        self.assertEqual(packet["task_kind"], "repo_runtime_adoption")
+        self.assertEqual(packet["uc_classification"]["replay_lane"], "replay_now")
+        self.assertEqual(packet["mutations"]["allowed"], [], "adoption packets stay read-only")
+
+    def test_hypothetical_language_does_not_classify_kill(self) -> None:
+        raw_text = (
+            "AMOF-808 now: review session handling. "
+            "If we were to cancel a stale session, the queue should terminalize it. "
+            "Decide whether to drop expired leases automatically."
+        )
+        draft = compile_intake_draft(raw_text)
+        self.assertNotEqual(draft.classification, "kill")
 
     def test_bare_domain_does_not_pollute_paths(self) -> None:
         raw_text = "AMOF-777 today: inspect amof.dev availability and fix services/operator-console/src/app/page.tsx"
