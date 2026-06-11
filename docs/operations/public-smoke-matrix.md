@@ -24,7 +24,8 @@ smoke.
 - Requires network: yes
 - Requires provider key: no
 - Mutates target repo: disposable checkout only
-- Pass/fail criteria: pass if installer and doctor succeed without private topology or provider keys
+- Pass/fail criteria: pass if installer and doctor succeed without non-public
+  deployment details or provider auth material
 
 ## 3. Standalone Artifact Smoke
 
@@ -46,7 +47,9 @@ smoke.
 
 ## 5. No-Key Adoption Smoke
 
-- Command: in a disposable Git repo, unset provider keys, set `AMOF_HOME`, run `amof init --adopt .`, then inspect `git status --short` and source-pollution directories
+- Command: in a disposable Git repo, unset provider auth env vars, set
+  `AMOF_HOME`, run `amof init --adopt .`, then inspect `git status --short`
+  and source-pollution directories
 - Expected result: adoption stores AMOF metadata in app-data and leaves target repo clean
 - Requires network: no
 - Requires provider key: no
@@ -64,7 +67,8 @@ smoke.
 
 ## 7. Bounded Worker No-Key Failure Smoke
 
-- Command: with provider keys unset, `amof agent --plan "Inspect this repo" --no-follow-up`
+- Command: with provider auth env vars unset,
+  `amof agent --plan "Inspect this repo" --no-follow-up`
 - Expected result: agent reaches provider validation without ecosystem-resolution failure
 - Requires network: no
 - Requires provider key: no
@@ -88,12 +92,14 @@ smoke.
 - Requires network: no
 - Requires provider key: no
 - Mutates target repo: no
-- Pass/fail criteria: pass if all hits are allowlisted; fail on current runbook/README stale or private topology references
+- Pass/fail criteria: pass if all hits are allowlisted; fail on current
+  runbook/README stale references or non-public deployment references
 
 ## 10. Secret Grep Gate
 
 - Command: `rg -n "BEGIN .*PRIVATE|ssh-rsa|AKIA[0-9A-Z]{16}|ghp_|github_pat_|sk-[A-Za-z0-9_-]{20,}|OPENROUTER_API_KEY=|ANTHROPIC_API_KEY=|OPENAI_API_KEY=" scripts docs README.md`
-- Expected result: no raw secrets, private keys, token literals, or unredacted provider keys
+- Expected result: no raw secrets, private-key blocks, token literals, or
+  unredacted provider auth material
 - Requires network: no
 - Requires provider key: no
 - Mutates target repo: no

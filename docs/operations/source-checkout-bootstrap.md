@@ -33,9 +33,9 @@ System `python -m amof` after a pipx install is not a public contract.
 - Python 3.11 or newer with `venv`
 - network access to GitHub and Python package indexes
 
-GitHub write credentials are not required for the default source-checkout
-bootstrap. Promotion or release auth checks are maintainer-only and must be
-requested explicitly.
+GitHub write auth is not required for the default source-checkout bootstrap.
+Promotion or release auth checks are maintainer-only and must be requested
+explicitly.
 
 ## Clone
 
@@ -69,8 +69,8 @@ Maintainers who intentionally need promotion-auth evidence can opt in:
 ./scripts/install-amof.sh --check-promote-auth
 ```
 
-That check may require non-interactive GitHub credentials. It is not required
-for public install, source-checkout install, or CLI validation.
+That check may require non-interactive GitHub auth. It is not required for
+public install, source-checkout install, or CLI validation.
 
 ## Validation
 
@@ -119,6 +119,7 @@ The checkout is source-bootstrap-ready when all of the following are true:
 - `./.venv/bin/amof --help` works
 - `./.venv/bin/python -m amof --help` works inside the source virtualenv
 - `./.venv/bin/amof doctor` is `PASS` or an understood `WARN`
-- bootstrap evidence commands run without private topology or provider keys
+- bootstrap evidence commands run without non-public deployment details or
+  provider auth material
 - app-data roots resolve outside the source checkout
 - `git status --short` is clean

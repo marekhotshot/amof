@@ -57,8 +57,9 @@ Examples:
 - a hosted provider can inspect bounded context
 - a remote IAL gateway can route inference behind a public client contract
 
-The public AMOF contract treats those workers as replaceable. Provider routing,
-model ladders, and private gateway policy are not public runtime truth.
+The public AMOF contract treats those workers as replaceable. Internal
+provider-selection rules, non-public model-selection policy, and private
+gateway policy are not public runtime truth.
 
 ## Receipts And Runtime Truth
 

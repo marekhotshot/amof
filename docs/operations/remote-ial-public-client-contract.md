@@ -8,8 +8,8 @@ Status: `PUBLIC_CLIENT_CONTRACT_ONLY`, updated for `v3.1.1`
 
 Public `amof` may expose only the local client-side contract needed to call a
 private IAL gateway. Public `amof` must remain installable and trustworthy
-without embedding hosted gateway behavior, provider routing policy, receipt
-storage internals, or control-plane/private deployment assumptions.
+without embedding hosted gateway behavior, internal provider-selection rules,
+receipt-storage internals, or control-plane/non-public deployment assumptions.
 
 The promotion-ready public surface is limited to client/profile/evidence
 semantics that were proven through the private gateway split, compatibility
@@ -69,8 +69,8 @@ Public `amof` may send:
 - `max_tokens`
 - `temperature`
 
-Public `amof` must not add hosted provider routing or model ladder semantics to
-this contract.
+Public `amof` must not add hosted provider-selection or non-public
+model-selection semantics to this contract.
 
 ### Response payload
 
@@ -134,14 +134,14 @@ The following must not live in public `amof`:
 - hosted `/v1/ial` FastAPI routers
 - `services/ial-gateway`
 - `ial_service.py` hosted gateway implementation
-- provider routing implementation
+- internal provider-selection implementation
 - provider/model auto-selection policy
 - OpenRouter/Bedrock/RunPod routing internals
 - hosted receipt filesystem paths
 - private redaction policy internals
 - tenant/workspace policy
 - private gateway deployment logic
-- private model ladder policy owned by the gateway
+- private model-selection policy owned by the gateway
 
 ## Validation Baseline
 

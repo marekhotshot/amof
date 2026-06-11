@@ -8,8 +8,8 @@ governance loop: repository scope, receipts, evidence modes, approval
 boundaries, and fail-closed error reporting.
 
 The public repo contains the client contract only. It does not ship a gateway,
-provider routing policy, model ladder, credentials, hosted receipt storage, or
-deployment topology.
+internal provider-selection rules, non-public model-selection policy, external
+credential material, hosted receipt backends, or deployment-specific details.
 
 ## Verified Capability
 
@@ -25,7 +25,7 @@ The `v3.1.1` release receipts verify:
 - upstream auth, network, and provider failures keep stable provider error
   classification
 - receipts preserve transport/upstream attribution without storing provider
-  credentials
+  auth material
 - provider cost truth stays explicit: unknown cost remains unknown/null and is
   never rewritten as `0.0`
 
@@ -82,9 +82,9 @@ Public AMOF must not include:
 
 - hosted `/v1/ial` routers
 - gateway service implementation
-- provider routing or fallback policy
-- model ladder behavior
-- provider credentials or auth internals
+- internal provider-selection or failover policy
+- non-public model-selection behavior
+- provider credential material or auth internals
 - deployment manifests or kubeconfig assumptions
 - private evaluation, scoring, or routing methodology
 
