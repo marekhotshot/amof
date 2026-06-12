@@ -29,8 +29,17 @@ from .model_router import ModelRouter
 from .prompt_loader import load_prompt
 from .session import Session
 from .telemetry import SessionTelemetry
-from .plan_execute_control import FATAL_STOP_REASONS, normalize_subtask_failure
+from .plan_execute_control import (
+    FATAL_STOP_REASONS,
+    is_read_only_repository_inspection,
+    normalize_subtask_failure,
+)
 from .tools.base import Guardrails, Tool, ToolRegistry
+from .tool_failure_semantics import (
+    analyze_tool_call_events,
+    repo_inspection_runner_tools,
+    repo_inspection_task_guidance,
+)
 
 logger = logging.getLogger(__name__)
 PACKAGED_CODE_RUNNER_PROMPT = (
@@ -104,6 +113,10 @@ class RunnerResult:
     checkpoint_count: int = 0  # for code runner
     failed_tool_calls: int = 0
     failed_write_tool_calls: int = 0
+    runner_event_log_path: str | None = None
+    tool_failures: List[Dict[str, Any]] = field(default_factory=list)
+    diagnostic_warnings: List[str] = field(default_factory=list)
+    primary_failure: Dict[str, Any] | None = None
 
 
 class RunnerFactory:
@@ -256,6 +269,11 @@ class RunnerFactory:
             )
 
         config = self._runners[name]
+        task_scope_text = task if not context else f"{task}\n\n{context}"
+        repo_inspection_mode = (
+            name == "code"
+            and is_read_only_repository_inspection(task_scope_text)
+        )
 
         # 1. Load runner system prompt
         if config.prompt_path == "__packaged__/runners/code.md":
@@ -271,10 +289,15 @@ class RunnerFactory:
             except Exception as e:
                 logger.warning("Failed to load runner prompt %s: %s", prompt_name, e)
                 system_prompt = f"You are the {name} runner agent. Execute the task given to you."
+        if repo_inspection_mode:
+            system_prompt = f"{system_prompt}\n\n{repo_inspection_task_guidance()}"
 
         # 2. Build filtered tool registry
+        tool_names = config.tool_names
+        if repo_inspection_mode:
+            tool_names = repo_inspection_runner_tools(tool_names)
         filtered_registry = self._build_filtered_registry(
-            config.tool_names,
+            tool_names,
             policy_source=f"runner:{name}",
         )
 
@@ -374,6 +397,19 @@ class RunnerFactory:
             logger.error("Runner %s failed: %s", name, e)
             response = f"Runner execution failed: {type(e).__name__}: {e}"
 
+        tool_events = events.query(event_type="tool_call")
+        tool_failure_analysis = analyze_tool_call_events(
+            tool_events,
+            task_text=task_scope_text,
+            final_response=response,
+        )
+        self._mirror_tool_events_to_parent(
+            runner_name=name,
+            runner_session_id=session.id,
+            tool_events=tool_events,
+            analysis=tool_failure_analysis,
+        )
+
         # 8. Roll up telemetry to parent
         if parent_telemetry is not None:
             self._rollup_telemetry(parent_telemetry, telemetry, name)
@@ -391,14 +427,26 @@ class RunnerFactory:
             for tool_name, metrics in telemetry.tool_metrics.items()
             if tool_name in {"Write", "StrReplace", "Delete"}
         )
+        fatal_tool_failures = tool_failure_analysis["fatal_failures"]
+        repo_validation = tool_failure_analysis["repo_validation"]
         stop_reason = agent.stop_reason or "tool_failed"
         if stop_reason in FATAL_STOP_REASONS:
             runner_success = False
-        elif stop_reason == "completed" and failed_tool_calls:
-            stop_reason = normalize_subtask_failure("tool_failed", events=events)
-            runner_success = False
         else:
-            runner_success = stop_reason == "completed" and failed_tool_calls == 0
+            if repo_inspection_mode:
+                if stop_reason == "completed" and fatal_tool_failures:
+                    stop_reason = normalize_subtask_failure("tool_failed", events=events)
+                    runner_success = False
+                elif stop_reason == "completed" and not repo_validation.ok:
+                    stop_reason = "incomplete_findings"
+                    runner_success = False
+                else:
+                    runner_success = stop_reason == "completed"
+            elif stop_reason == "completed" and failed_tool_calls:
+                stop_reason = normalize_subtask_failure("tool_failed", events=events)
+                runner_success = False
+            else:
+                runner_success = stop_reason == "completed" and failed_tool_calls == 0
 
         return RunnerResult(
             runner_name=name,
@@ -409,6 +457,14 @@ class RunnerFactory:
             checkpoint_count=checkpoint_count,
             failed_tool_calls=failed_tool_calls,
             failed_write_tool_calls=failed_write_tool_calls,
+            runner_event_log_path=str(events.log_path),
+            tool_failures=[failure.to_failure_dict() for failure in tool_failure_analysis["failures"]],
+            diagnostic_warnings=list(tool_failure_analysis["diagnostic_warnings"]),
+            primary_failure=(
+                tool_failure_analysis["fatal_failures"][0].to_failure_dict()
+                if tool_failure_analysis["fatal_failures"]
+                else None
+            ),
         )
 
     def _build_filtered_registry(
@@ -442,6 +498,49 @@ class RunnerFactory:
                 )
 
         return registry
+
+    def _mirror_tool_events_to_parent(
+        self,
+        *,
+        runner_name: str,
+        runner_session_id: str,
+        tool_events: List[Dict[str, Any]],
+        analysis: Dict[str, Any],
+    ) -> None:
+        parent_events = getattr(self._parent_tools, "events", None)
+        if parent_events is None:
+            return
+        failures_by_event_id = {
+            failure.tool_id: failure
+            for failure in analysis.get("failures", [])
+        }
+        for call_index, event in enumerate(tool_events, start=1):
+            tool_id = str(event.get("tool_id") or event.get("event_id") or f"{runner_session_id}:{call_index}")
+            failure = failures_by_event_id.get(tool_id) or failures_by_event_id.get(
+                str(event.get("event_id") or "")
+            )
+            metadata = dict(event.get("metadata") or {})
+            metadata["runner_session_id"] = runner_session_id
+            parent_events.tool_call(
+                tool_name=str(event.get("tool") or ""),
+                arguments=dict(event.get("args") or {}),
+                success=bool(event.get("success")),
+                duration_ms=int(event.get("duration_ms") or 0),
+                output_preview=event.get("output_preview"),
+                error=event.get("error"),
+                metadata=metadata,
+                tool_id=tool_id,
+                call_index=call_index,
+                required_or_optional=(
+                    failure.required_or_optional if failure is not None else "required"
+                ),
+                failure_class=(failure.failure_class if failure is not None else None),
+                safe_next_action=(
+                    failure.safe_next_action if failure is not None else None
+                ),
+                runner_name=runner_name,
+                runner_session_id=runner_session_id,
+            )
 
     @staticmethod
     def _rollup_telemetry(

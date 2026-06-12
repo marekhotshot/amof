@@ -107,6 +107,10 @@ class SubtaskExecutor:
 
             subtask.status = "completed" if result.success else "failed"
             subtask.result = result.response
+            setattr(subtask, "runner_event_log_path", result.runner_event_log_path)
+            setattr(subtask, "tool_failures", list(result.tool_failures))
+            setattr(subtask, "diagnostic_warnings", list(result.diagnostic_warnings))
+            setattr(subtask, "failure_detail", result.primary_failure)
             if not result.success:
                 subtask.error = result.stop_reason
 

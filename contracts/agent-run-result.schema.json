@@ -143,6 +143,15 @@
         "missing_tool": { "type": ["string", "null"] },
         "required_by": { "type": ["string", "null"] },
         "required_for": { "type": ["string", "null"] },
+        "failing_tool_id": { "type": ["string", "null"] },
+        "failing_tool_name": { "type": ["string", "null"] },
+        "failing_tool_call_index": { "type": ["integer", "null"] },
+        "tool_failure_class": { "type": ["string", "null"] },
+        "tool_failure_summary": { "type": ["string", "null"] },
+        "tool_failure_required": { "type": ["boolean", "null"] },
+        "tool_failure_evidence_ref": { "type": ["string", "null"] },
+        "required_or_optional": { "type": ["string", "null"] },
+        "subtask_id": { "type": ["string", "null"] },
         "available_alternatives": {
           "type": "array",
           "items": { "type": "string" }

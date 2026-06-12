@@ -147,6 +147,7 @@ class EventLog:
         output_preview: Optional[str] = None,
         error: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        **extra: Any,
     ) -> Dict[str, Any]:
         """Log a tool execution."""
         event_data: Dict[str, Any] = {
@@ -161,6 +162,8 @@ class EventLog:
             event_data["error"] = error[:500]
         if metadata:
             event_data["metadata"] = metadata
+        if extra:
+            event_data.update(extra)
         return self.log("tool_call", **event_data)
 
     def capability_elevation(

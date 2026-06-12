@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 
 from ..app_paths import get_app_paths, runs_dir, vector_store_dir
 from ..contracts_runtime import AgentRunResult
+from ..orchestrator.tool_failure_semantics import analyze_tool_call_events
 from .studio import (
     StudioCliError,
     attach_run_reference,
@@ -386,6 +387,7 @@ def _build_plan_execute_envelope(
     studio_session_id: Optional[str] = None,
     failure_classification: Optional[str] = None,
     failure: Optional[Dict[str, Any]] = None,
+    task_findings: Optional[str] = None,
     changed_paths: Optional[List[str]] = None,
     validation_summary: Optional[Dict[str, Any]] = None,
     approved_capabilities: Optional[List[str]] = None,
@@ -413,6 +415,7 @@ def _build_plan_execute_envelope(
         studio_session_id=resolved_studio_session_id,
         failure_classification=failure_classification,
         failure=failure,
+        task_findings=task_findings,
         changed_paths=changed_paths,
         validation_summary=validation_summary,
         approved_capabilities=approved_capabilities,
@@ -798,6 +801,11 @@ def _agent_journal_dir(manifest: Dict[str, Any], workspace_root: Path) -> Path:
     ecosystem_name = str(manifest.get("ecosystem") or "default").strip() or "default"
     if _is_appdata_adopted_manifest(manifest):
         return get_app_paths().data_root / "journals" / ecosystem_name
+    manifest_root = _resolved_manifest_artifact_root(manifest, workspace_root)
+    if manifest_root is not None:
+        from ..manifest import get_journal_dir
+
+        return get_journal_dir(ecosystem_name, base=str(manifest_root))
     from ..manifest import get_journal_dir
 
     return get_journal_dir(ecosystem_name, base=str(workspace_root))
@@ -807,7 +815,30 @@ def _agent_plans_dir(manifest: Dict[str, Any], workspace_root: Path) -> Path:
     ecosystem_name = str(manifest.get("ecosystem") or "default").strip() or "default"
     if _is_appdata_adopted_manifest(manifest):
         return get_app_paths().data_root / "plans" / ecosystem_name
+    manifest_root = _resolved_manifest_artifact_root(manifest, workspace_root)
+    if manifest_root is not None:
+        return manifest_root / "ecosystems" / ecosystem_name / "plans"
     return workspace_root / "ecosystems" / ecosystem_name / "plans"
+
+
+def _resolved_manifest_artifact_root(
+    manifest: Dict[str, Any], workspace_root: Path
+) -> Path | None:
+    ecosystem_name = str(manifest.get("ecosystem") or "").strip()
+    alt_root_raw = os.environ.get("AMOF_WORKSPACE_ROOT", "").strip()
+    if not ecosystem_name or not alt_root_raw:
+        return None
+    alt_root = Path(alt_root_raw).resolve()
+    manifest_path = alt_root / "ecosystems" / ecosystem_name / "ecosystem.yaml"
+    if not manifest_path.exists():
+        return None
+    try:
+        if alt_root.samefile(workspace_root):
+            return None
+    except FileNotFoundError:
+        if alt_root == workspace_root.resolve():
+            return None
+    return alt_root
 
 
 def _configure_guardrails(guardrails: Any, workspace_root: Path) -> None:
@@ -2141,6 +2172,7 @@ def _handle_plan_execute_fatal_stop(
     stop: Any,
     no_follow_up: bool,
     continue_budget: float,
+    git_before: Optional[Dict[str, Any]] = None,
     json_envelope: bool = False,
 ) -> int | AgentPlanExecuteEnvelope:
     from ..orchestrator.plan_execute_control import (
@@ -2188,6 +2220,10 @@ def _handle_plan_execute_fatal_stop(
         skipped_count=skipped_count,
         checkpoint_path=checkpoint_path,
     )
+    task_findings = _collect_task_findings(plan)
+    failure_detail = _first_plan_failure_detail(plan)
+    git_after = _git_probe(workspace_root)
+    changed_paths = _git_changed_paths(git_before or git_after, git_after)
     print(summary_text)
     print(f"\nResume later:\n  {checkpoint.resume_command}")
 
@@ -2203,6 +2239,10 @@ def _handle_plan_execute_fatal_stop(
             checkpoint_path=checkpoint_path,
             event_log_path=events.log_path,
             journal_path=journal_path,
+            failure_classification=stop.failure_type,
+            failure=failure_detail,
+            task_findings=task_findings,
+            changed_paths=changed_paths,
         )
 
     if no_follow_up or not sys.stdin.isatty():
@@ -2257,11 +2297,67 @@ def _git_probe(workspace_root: Path) -> dict[str, str]:
             return (result.stdout + result.stderr).strip()
         return result.stdout.strip()
 
+    status = _run(["git", "status", "--short", "--untracked-files=all"])
     return {
-        "status": _run(["git", "status", "--short"]),
+        "status": status,
+        "status_entries": json.dumps(_git_status_entries(status)),
         "diff": _run(["git", "diff", "--"]),
         "numstat": _run(["git", "diff", "--numstat", "--"]),
     }
+
+
+def _git_status_entries(status_text: str) -> list[list[str]]:
+    entries: list[list[str]] = []
+    for line in (status_text or "").splitlines():
+        if not line.strip():
+            continue
+        status = line[:2].strip() or line[:2]
+        path = line[3:].strip() if len(line) > 3 else ""
+        if path:
+            entries.append([status, path])
+    return entries
+
+
+def _git_changed_paths(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    before_entries = {
+        (str(status), str(path))
+        for status, path in json.loads(str(before.get("status_entries") or "[]"))
+    }
+    after_entries = {
+        (str(status), str(path))
+        for status, path in json.loads(str(after.get("status_entries") or "[]"))
+    }
+    return sorted({path for _status, path in after_entries - before_entries})
+
+
+def _collect_task_findings(plan: Any) -> str | None:
+    findings = [
+        str(getattr(subtask, "result", "") or "").strip()
+        for subtask in getattr(plan, "subtasks", []) or []
+        if str(getattr(subtask, "result", "") or "").strip()
+    ]
+    if not findings:
+        return None
+    return "\n\n".join(findings)
+
+
+def _collect_plan_diagnostic_warnings(plan: Any) -> list[str]:
+    warnings: list[str] = []
+    for subtask in getattr(plan, "subtasks", []) or []:
+        warnings.extend(
+            str(item).strip()
+            for item in getattr(subtask, "diagnostic_warnings", []) or []
+            if str(item).strip()
+        )
+    return warnings
+
+
+def _first_plan_failure_detail(plan: Any) -> Dict[str, Any] | None:
+    for subtask in getattr(plan, "subtasks", []) or []:
+        failure = getattr(subtask, "failure_detail", None)
+        if isinstance(failure, dict) and failure:
+            return dict(failure)
+    return None
 
 
 def _extract_requested_paths(text: str) -> list[str]:
@@ -4282,6 +4378,7 @@ def cmd_agent(
                 no_follow_up=bool(no_follow_up),
                 continue_budget=continue_budget,
                 json_envelope=_json_envelope,
+                git_before=git_before,
             )
         git_after = _git_probe(workspace_root)
         diff_changed = git_before.get("diff") != git_after.get("diff")
@@ -4302,15 +4399,35 @@ def cmd_agent(
         if mutation_intent and has_after_diff:
             diff_guard = _evaluate_diff_guard(goal, workspace_root, git_after)
         py_compile_guard = _verify_changed_python_files(workspace_root, git_after)
+        task_findings = _collect_task_findings(plan)
+        diagnostic_warnings = _collect_plan_diagnostic_warnings(plan)
+        tool_failure_analysis = analyze_tool_call_events(
+            events.query(event_type="tool_call"),
+            task_text=goal,
+            final_response=task_findings or "",
+            subtask_id=str(getattr(plan.subtasks[0], "id", "")) if getattr(plan, "subtasks", None) else None,
+        )
+        fatal_tool_failures = tool_failure_analysis["fatal_failures"]
+        repo_validation = tool_failure_analysis["repo_validation"]
+        changed_paths = _git_changed_paths(git_before, git_after)
 
         verifier_failed = False
         verifier_reasons: list[str] = []
-        if failed_tool_calls:
+        if fatal_tool_failures:
             verifier_failed = True
-            verifier_reasons.append(f"failed_tool_calls:{failed_tool_calls}")
+            verifier_reasons.append(f"fatal_tool_failures:{len(fatal_tool_failures)}")
             _mark_plan_failed_for_verifier(
                 plan,
-                f"Verifier failed: {failed_tool_calls} tool call(s) failed.",
+                f"Verifier failed: {len(fatal_tool_failures)} required tool call(s) failed.",
+            )
+        if getattr(repo_validation, "missing", []):
+            verifier_failed = True
+            verifier_reasons.append(
+                "missing_repo_findings:" + ",".join(getattr(repo_validation, "missing", []))
+            )
+            _mark_plan_failed_for_verifier(
+                plan,
+                "Verifier failed: repository inspection findings are incomplete.",
             )
         if mutation_intent and not write_action_observed:
             verifier_failed = True
@@ -4411,16 +4528,30 @@ def cmd_agent(
                 f"Execution complete: {completed}/{len(plan.subtasks)} completed, "
                 f"{failed} failed, {skipped} skipped"
             )
+            final_failure_detail = _first_plan_failure_detail(plan)
+            if final_failure_detail is None and fatal_tool_failures:
+                final_failure_detail = fatal_tool_failures[0].to_failure_dict()
+            final_validation_summary = {
+                "status": "failed" if verifier_failed else "passed",
+                "reason": "; ".join(verifier_reasons) if verifier_reasons else None,
+                "diagnostic_warnings": diagnostic_warnings,
+                "missing_repo_findings": list(getattr(repo_validation, "missing", [])),
+                "fatal_tool_failures": [failure.to_failure_dict() for failure in fatal_tool_failures],
+                "nonfatal_tool_failures": [
+                    failure.to_failure_dict()
+                    for failure in tool_failure_analysis["nonfatal_failures"]
+                ],
+            }
             return _build_plan_execute_envelope(
-                status="completed" if not plan.has_failures else "failed",
+                status="completed" if not plan.has_failures and not verifier_failed else "failed",
                 session_id=session.id,
-                exit_code=0 if not plan.has_failures else 1,
+                exit_code=0 if not plan.has_failures and not verifier_failed else 1,
                 stop_reason=(
                     "completed"
                     if not getattr(agent, "stop_reason", None)
                     or getattr(agent, "stop_reason", None) == "pending"
                     else getattr(agent, "stop_reason", None)
-                    if not plan.has_failures
+                    if not plan.has_failures and not verifier_failed
                     else getattr(agent, "stop_reason", None) or "plan_has_failures"
                 ),
                 final_text=completed_line,
@@ -4429,6 +4560,13 @@ def cmd_agent(
                 checkpoint_path=None,
                 event_log_path=events.log_path,
                 journal_path=journal_path,
+                failure_classification=(
+                    "tool_failed" if final_failure_detail is not None else None
+                ),
+                failure=final_failure_detail,
+                task_findings=task_findings,
+                changed_paths=changed_paths,
+                validation_summary=final_validation_summary,
             )
 
         # Post-run follow-up menu
@@ -4445,7 +4583,7 @@ def cmd_agent(
                 goal=goal,
             )
 
-        return 0 if not plan.has_failures else 1
+        return 0 if not plan.has_failures and not verifier_failed else 1
 
     if goal:
         # Single-shot mode
