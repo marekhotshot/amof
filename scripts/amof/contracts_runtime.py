@@ -126,6 +126,7 @@ class AgentRunResult:
     started_at: str | None = None
     completed_at: str | None = None
     failure_classification: str | None = None
+    failure: dict[str, Any] | None = None
     changed_paths: list[str] | None = None
     validation_summary: dict[str, Any] | None = None
     approved_capabilities: list[str] | None = None
@@ -206,6 +207,7 @@ class AgentRunResult:
                 if self.failure_classification is not None
                 else {}
             ),
+            **({"failure": dict(self.failure)} if self.failure is not None else {}),
             **({"changed_paths": list(self.changed_paths)} if self.changed_paths is not None else {}),
             **({"validation_summary": dict(self.validation_summary)} if self.validation_summary is not None else {}),
             **({"approved_capabilities": list(self.approved_capabilities)} if self.approved_capabilities is not None else {}),

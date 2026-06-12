@@ -134,6 +134,22 @@ _ACTIVE_OPERATION_INTENT_RE = re.compile(
     r"fetch|download|write|edit|modify|patch|update)\b",
     re.IGNORECASE,
 )
+_NEGATED_OPERATION_RE = re.compile(
+    r"\b(?:do\s+not|don't|never|without)\s+"
+    r"(?:run|execute|use|call|trigger|apply|install|uninstall|upgrade|"
+    r"mutate|rotate|fetch|download|write|edit|modify|patch|update)\b",
+    re.IGNORECASE,
+)
+_READ_ONLY_REPO_INSPECTION_RE = re.compile(
+    r"\b(repository path|branch|detached(?:\s+head)?|head sha|origin/main|"
+    r"git\s+status|git\s+(?:branch|symbolic-ref|rev-parse|ls-remote)|"
+    r"clean(?:liness)?|dirty|contract tests?|mission-revision|hermes)\b",
+    re.IGNORECASE,
+)
+_SHELLISH_RUNNER_RE = re.compile(
+    r"^(shell|bash|sh|terminal|git|repo(?:-inspect|-inspection)?|inspection-shell)$",
+    re.IGNORECASE,
+)
 
 _TRUST_BOUNDARY_TO_FATAL = {
     "capability_not_authorized_by_trusted_intent": "capability_not_authorized_by_trusted_intent",
@@ -363,7 +379,7 @@ def _normalize_write_root(path: str) -> str:
 
 def _report_write_roots(text: str) -> Set[str]:
     roots: Set[str] = set()
-    blob = text or ""
+    blob = _strip_negated_operations(text or "")
     for match in _REPORT_GLOB_RE.finditer(blob):
         roots.add(_normalize_write_root(match.group(1)))
     for match in _REPORT_FILE_RE.finditer(blob):
@@ -560,7 +576,8 @@ def resolve_controlled_execution(
 def derive_tool_pack_requirements(goal: str, plan: ExecutionPlan) -> ToolPackRequirements:
     """Derive plan-execute readiness requirements as tool packs."""
     text = _plan_text(plan, goal)
-    lowered = text.lower()
+    sanitized_text = _strip_negated_operations(text)
+    lowered = sanitized_text.lower()
     req = ToolPackRequirements(packs={"core-read"})
     read_only_inspection = _is_read_only_inspection(text)
 
@@ -569,39 +586,41 @@ def derive_tool_pack_requirements(goal: str, plan: ExecutionPlan) -> ToolPackReq
         req.packs.add("reports")
         req.writable_roots.update(report_roots)
 
-    if _CODE_EDIT_INTENT_RE.search(text):
+    if _CODE_EDIT_INTENT_RE.search(sanitized_text):
         req.packs.add("code-edit")
 
-    if not read_only_inspection and _JENKINS_INTENT_RE.search(text):
+    if not read_only_inspection and _JENKINS_INTENT_RE.search(sanitized_text):
         req.packs.add("ops-jenkins")
         req.controlled_execution_packs.add("ops-jenkins")
-        req.executable_paths.update(_jenkins_executables(text))
+        req.executable_paths.update(_jenkins_executables(sanitized_text))
 
-    if not read_only_inspection and _K8S_INTENT_RE.search(text):
+    if not read_only_inspection and _K8S_INTENT_RE.search(sanitized_text):
         req.packs.add("ops-k8s")
         req.controlled_execution_packs.add("ops-k8s")
         req.command_policy["ops-k8s"] = list(CORE_TOOL_PACKS["ops-k8s"].command_policy)
 
-    if not read_only_inspection and _HELM_RENDER_INTENT_RE.search(text):
+    if not read_only_inspection and _HELM_RENDER_INTENT_RE.search(sanitized_text):
         req.packs.add("ops-helm-render")
         req.controlled_execution_packs.add("ops-helm-render")
         req.command_policy["ops-helm-render"] = list(
             CORE_TOOL_PACKS["ops-helm-render"].command_policy
         )
 
-    if not read_only_inspection and _HELM_DEPLOY_INTENT_RE.search(text):
+    if not read_only_inspection and _HELM_DEPLOY_INTENT_RE.search(sanitized_text):
         req.packs.add("ops-helm-deploy")
         req.controlled_execution_packs.add("ops-helm-deploy")
         req.command_policy["ops-helm-deploy"] = list(
             CORE_TOOL_PACKS["ops-helm-deploy"].command_policy
         )
 
-    if not read_only_inspection and _SECRET_INTENT_RE.search(text):
+    if not read_only_inspection and _SECRET_INTENT_RE.search(sanitized_text):
         req.capabilities.add("secret")
 
     for st in plan.subtasks:
         runner = (st.runner or "code").strip().lower()
-        if runner == "code" and _CODE_EDIT_INTENT_RE.search(f"{st.title}\n{st.description}"):
+        if runner == "code" and _CODE_EDIT_INTENT_RE.search(
+            _strip_negated_operations(f"{st.title}\n{st.description}")
+        ):
             req.packs.add("code-edit")
 
     for pack_name in req.packs:
@@ -616,11 +635,159 @@ def extract_report_paths(text: str) -> List[str]:
 
 def _is_read_only_inspection(text: str) -> bool:
     """Treat dangerous-domain words as data when the task is only source inspection."""
-    if not _READ_ONLY_INSPECTION_RE.search(text or ""):
+    sanitized = _strip_negated_operations(text or "")
+    if not _READ_ONLY_INSPECTION_RE.search(sanitized):
         return False
-    if _ACTIVE_OPERATION_INTENT_RE.search(text or ""):
+    if _ACTIVE_OPERATION_INTENT_RE.search(sanitized):
         return False
     return True
+
+
+def _strip_negated_operations(text: str) -> str:
+    """Remove 'do not modify/run/...' phrases before intent classification."""
+    return _NEGATED_OPERATION_RE.sub("", text or "")
+
+
+def is_read_only_repository_inspection(text: str) -> bool:
+    sanitized = _strip_negated_operations(text or "")
+    return _is_read_only_inspection(sanitized) and bool(
+        _READ_ONLY_REPO_INSPECTION_RE.search(sanitized)
+    )
+
+
+def normalize_read_only_repository_plan(
+    goal: str,
+    plan: ExecutionPlan,
+    *,
+    runner_factory: Any,
+) -> List[Dict[str, str]]:
+    """Repair planner-invented shell-ish runners for read-only repo inspection.
+
+    Read-only repository inspection is executed by the public `code` runner.
+    The `code` runner already exposes read-only tools plus `ToolProposal` for
+    bounded git metadata collection, so shell-like or unavailable runners are
+    semantic drift rather than a real requirement.
+    """
+    if not is_read_only_repository_inspection(goal):
+        return []
+    available = set(getattr(runner_factory, "runner_names", []) or [])
+    if "code" not in available:
+        return []
+    repairs: List[Dict[str, str]] = []
+    for subtask in plan.subtasks:
+        runner = str(subtask.runner or "code").strip()
+        normalized = runner.lower()
+        if normalized == "code":
+            continue
+        if normalized in available and not _SHELLISH_RUNNER_RE.match(normalized):
+            continue
+        repairs.append(
+            {
+                "task_id": subtask.id,
+                "from_runner": runner or "code",
+                "to_runner": "code",
+                "reason": "read_only_repository_inspection_uses_code_runner_with_toolproposal",
+            }
+        )
+        subtask.runner = "code"
+        guidance = (
+            "Use the public code runner only. For git metadata such as branch, HEAD, "
+            "origin/main, or cleanliness, use ToolProposal with bounded read-only git "
+            "commands inside the workspace instead of requesting shell or another runner."
+        )
+        if guidance not in subtask.description:
+            subtask.description = f"{subtask.description.rstrip()}\n\n{guidance}".strip()
+    return repairs
+
+
+def available_read_only_repo_alternatives(runner_factory: Any) -> List[str]:
+    alternatives: List[str] = []
+    available = set(getattr(runner_factory, "runner_names", []) or [])
+    if "code" in available:
+        tools = sorted(_runner_tool_names(runner_factory, "code"))
+        if "ToolProposal" in tools:
+            alternatives.append("runner:code via ToolProposal")
+        if tools:
+            alternatives.append(
+                "runner:code tools=" + ",".join(tool for tool in tools if tool in {
+                    "Read", "InspectFiles", "Glob", "Grep", "LS", "ReadLints", "ToolProposal"
+                })
+            )
+    return [item for item in alternatives if item]
+
+
+def build_readiness_failure_detail(
+    result: ExecutionReadinessResult,
+    *,
+    goal: str,
+    plan: ExecutionPlan,
+    runner_factory: Any,
+    checkpoint_path: str | None = None,
+) -> Dict[str, Any]:
+    repo_inspection = is_read_only_repository_inspection(goal)
+    issue = next(
+        (
+            candidate
+            for candidate in result.issues
+            if candidate.kind in {"missing_tool_pack", "missing_controlled_execution", "missing_runner"}
+        ),
+        None,
+    )
+    missing_tool = ""
+    required_by = "policy"
+    required_for = "execution readiness"
+    if issue is not None:
+        if issue.kind == "missing_runner":
+            runner_name = str(issue.detail.get("runner") or issue.message or "").strip()
+            missing_tool = f"runner:{runner_name}" if runner_name else "runner:unknown"
+            required_by = "planner"
+            subtask = next(
+                (st for st in plan.subtasks if str(st.runner or "").strip().lower() == runner_name.lower()),
+                None,
+            )
+            required_for = subtask.description if subtask is not None else issue.message
+        elif issue.kind == "missing_controlled_execution":
+            pack = str(issue.detail.get("pack") or "").strip() or "controlled_execution"
+            missing_tool = "ShellRestricted"
+            required_by = "policy"
+            required_for = f"tool pack {pack}"
+        elif issue.kind == "missing_tool_pack":
+            pack = str(issue.detail.get("pack") or "").strip() or "unknown_tool_pack"
+            missing_tool = pack
+            required_by = "policy"
+            required_for = f"tool pack {pack}"
+    alternatives = (
+        available_read_only_repo_alternatives(runner_factory)
+        if repo_inspection
+        else []
+    )
+    failure_reason = format_readiness_failure(result)
+    safe_next_action = (
+        "Re-plan this task on the public code runner and use ToolProposal for bounded "
+        "read-only git inspection."
+        if repo_inspection and alternatives
+        else "Approve the required runtime tool pack or register the required runner, then retry."
+    )
+    inventory_ref = "runner:code"
+    code_tools = sorted(_runner_tool_names(runner_factory, "code"))
+    if code_tools:
+        inventory_ref = "runner:code[" + ",".join(code_tools) + "]"
+    return {
+        "failure_phase": "runtime_capability",
+        "failure_class": "runtime_capability_missing",
+        "failure_type": result.failure_type,
+        "failure_reason": failure_reason,
+        "retry_eligible": True,
+        "safe_next_action": safe_next_action,
+        "evidence_ref": checkpoint_path or "",
+        "raw_error_excerpt": failure_reason[:1000],
+        "missing_tool": missing_tool,
+        "required_by": required_by,
+        "required_for": required_for,
+        "available_alternatives": alternatives,
+        "runner_id": "code" if "code" in set(getattr(runner_factory, "runner_names", []) or []) else None,
+        "tool_inventory_ref": inventory_ref,
+    }
 
 
 def parse_tool_pack_names(names: Optional[List[str]]) -> Set[str]:

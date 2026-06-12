@@ -384,6 +384,13 @@ def _build_plan_execute_envelope(
     event_log_path: Any = None,
     journal_path: Any = None,
     studio_session_id: Optional[str] = None,
+    failure_classification: Optional[str] = None,
+    failure: Optional[Dict[str, Any]] = None,
+    changed_paths: Optional[List[str]] = None,
+    validation_summary: Optional[Dict[str, Any]] = None,
+    approved_capabilities: Optional[List[str]] = None,
+    effective_capabilities: Optional[List[str]] = None,
+    evidence_refs: Optional[Dict[str, Any]] = None,
 ) -> AgentPlanExecuteEnvelope:
     resolved_studio_session_id = studio_session_id
     event_log_artifact = _artifact_path_text(event_log_path)
@@ -404,6 +411,13 @@ def _build_plan_execute_envelope(
         journal_path=_artifact_path_text(journal_path),
         budget_summary=_budget_summary_payload(telemetry),
         studio_session_id=resolved_studio_session_id,
+        failure_classification=failure_classification,
+        failure=failure,
+        changed_paths=changed_paths,
+        validation_summary=validation_summary,
+        approved_capabilities=approved_capabilities,
+        effective_capabilities=effective_capabilities,
+        evidence_refs=evidence_refs,
     )
 
 
@@ -1732,6 +1746,7 @@ def _gate_plan_execute_readiness(
         apply_tool_pack_approval,
         apply_writable_root_elevation,
         assess_execution_readiness,
+        build_readiness_failure_detail,
         build_plan_capability_elevation,
         format_capability_elevation_prompt,
         format_elevation_scope,
@@ -1899,14 +1914,46 @@ def _gate_plan_execute_readiness(
                 telemetry=telemetry,
             )
             print(f"Checkpoint saved: {checkpoint_path}")
+            capability_summary = next(
+                (item.detail for item in readiness.issues if item.kind == "capability_summary"),
+                {},
+            )
+            failure_detail = build_readiness_failure_detail(
+                readiness,
+                goal=goal,
+                plan=plan,
+                runner_factory=runner_factory,
+                checkpoint_path=str(checkpoint_path),
+            )
             return (
                 readiness,
                 1,
                 {
                     "status": "blocked",
                     "stop_reason": readiness.failure_type,
+                    "failure_classification": readiness.failure_type,
                     "final_text": format_readiness_failure(readiness),
                     "checkpoint_path": checkpoint_path,
+                    "validation_summary": {
+                        "status": "not_run",
+                        "reason": "execution_readiness_failed",
+                        "readiness_issues": [
+                            {
+                                "kind": issue.kind,
+                                "message": issue.message,
+                                "detail": dict(issue.detail),
+                            }
+                            for issue in readiness.issues
+                        ],
+                    },
+                    "approved_capabilities": list(
+                        capability_summary.get("approved_capabilities", [])
+                    ),
+                    "effective_capabilities": list(
+                        capability_summary.get("effective_ceiling", [])
+                    ),
+                    "evidence_refs": {"checkpoint_path": str(checkpoint_path)},
+                    "failure": failure_detail,
                 },
             )
 
@@ -3925,6 +3972,21 @@ def cmd_agent(
                         # skip: proceed with current plan
 
                 # Save plan to ecosystem plans folder
+                from ..orchestrator.plan_execute_control import (
+                    normalize_read_only_repository_plan,
+                )
+
+                plan_repairs = normalize_read_only_repository_plan(
+                    goal,
+                    plan,
+                    runner_factory=runner_factory,
+                )
+                for repair in plan_repairs:
+                    sys.stderr.write(
+                        "[plan-execute] Repaired read-only repo inspection plan: "
+                        f"task {repair['task_id']} runner {repair['from_runner']} -> {repair['to_runner']} "
+                        f"({repair['reason']})\n"
+                    )
                 slug = "-".join(goal.lower().split()[:6])
                 slug = "".join(c for c in slug if c.isalnum() or c == "-")[:50]
                 plan_path = plans_dir / f"{time.strftime('%Y-%m-%d')}-{slug}.md"
@@ -4019,6 +4081,22 @@ def cmd_agent(
                 else:
                     print(f"Unknown choice: {choice}")
                     continue
+
+        from ..orchestrator.plan_execute_control import (
+            normalize_read_only_repository_plan,
+        )
+
+        plan_repairs = normalize_read_only_repository_plan(
+            goal,
+            plan,
+            runner_factory=runner_factory,
+        )
+        for repair in plan_repairs:
+            sys.stderr.write(
+                "[plan-execute] Repaired read-only repo inspection plan: "
+                f"task {repair['task_id']} runner {repair['from_runner']} -> {repair['to_runner']} "
+                f"({repair['reason']})\n"
+            )
 
         runner_error = _validate_runner_factory_for_plan(runner_factory, plan)
         if runner_error:
@@ -4128,6 +4206,32 @@ def cmd_agent(
                     plan_path=getattr(plan, "file_path", None),
                     checkpoint_path=readiness_meta.get("checkpoint_path"),
                     event_log_path=events.log_path,
+                    failure_classification=str(
+                        readiness_meta.get("failure_classification") or ""
+                    )
+                    or None,
+                    failure=(
+                        dict(readiness_meta.get("failure"))
+                        if isinstance(readiness_meta.get("failure"), dict)
+                        else None
+                    ),
+                    changed_paths=list(readiness_meta.get("changed_paths") or []),
+                    validation_summary=(
+                        dict(readiness_meta.get("validation_summary"))
+                        if isinstance(readiness_meta.get("validation_summary"), dict)
+                        else None
+                    ),
+                    approved_capabilities=list(
+                        readiness_meta.get("approved_capabilities") or []
+                    ),
+                    effective_capabilities=list(
+                        readiness_meta.get("effective_capabilities") or []
+                    ),
+                    evidence_refs=(
+                        dict(readiness_meta.get("evidence_refs"))
+                        if isinstance(readiness_meta.get("evidence_refs"), dict)
+                        else None
+                    ),
                 )
             return readiness_exit
 

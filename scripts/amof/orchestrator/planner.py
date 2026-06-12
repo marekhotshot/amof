@@ -32,6 +32,9 @@ MAX_STRUCTURED_RETRIES = 3
 PACKAGED_PLANNER_PROMPT = (
     "You are the AMOF planner. Create a concise, executable JSON plan for the user's task. "
     "Use runner 'code' for repository code changes unless another configured runner is clearly required. "
+    "For read-only repository inspection (for example branch/HEAD/origin/main/cleanliness/test presence), "
+    "keep runner 'code'; do not invent shell-specific or nonexistent runners. The code runner can use "
+    "bounded read-only ToolProposal execution for git metadata collection when needed. "
     "For mutation tasks, include subtasks that make concrete file edits and verification guidance. "
     "For bounded edits, additions, or docs-only changes, plan targeted insertions/replacements "
     "that preserve existing content. Exact user-provided text must be inserted as-is unless "

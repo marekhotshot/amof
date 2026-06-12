@@ -3533,6 +3533,108 @@ class PlanExecuteFatalStopTests(unittest.TestCase):
             any(i.kind in {"missing_tool", "missing_runner"} for i in result.issues)
         )
 
+    def test_read_only_inspection_ignores_negated_modify_language(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            _is_read_only_inspection,
+            derive_tool_pack_requirements,
+        )
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = (
+            "Inspect the repository and report branch, HEAD, origin/main, and cleanliness. "
+            "Do not modify files."
+        )
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Inspect", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+
+        self.assertTrue(_is_read_only_inspection(goal))
+        req = derive_tool_pack_requirements(goal, plan)
+        self.assertNotIn("code-edit", req.packs)
+
+    def test_read_only_repo_inspection_repairs_shell_runner_to_code(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            normalize_read_only_repository_plan,
+        )
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+
+        goal = (
+            "Inspect the canonical repository. Report branch, HEAD, origin/main, "
+            "cleanliness, and presence of contract tests. Read only; do not modify files."
+        )
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[
+                Subtask(
+                    id="1",
+                    title="Inspect git state",
+                    description="Run git status, git symbolic-ref, and git rev-parse.",
+                    runner="shell",
+                )
+            ],
+            execution_order=["1"],
+        )
+
+        repairs = normalize_read_only_repository_plan(
+            goal,
+            plan,
+            runner_factory=_StubRunnerFactory(
+                {"code": ["Read", "InspectFiles", "Glob", "LS", "ToolProposal"]}
+            ),
+        )
+
+        self.assertEqual(plan.subtasks[0].runner, "code")
+        self.assertEqual(len(repairs), 1)
+        self.assertEqual(repairs[0]["from_runner"], "shell")
+        self.assertIn("ToolProposal", plan.subtasks[0].description)
+
+    def test_missing_runner_detail_lists_read_only_alternatives(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            assess_execution_readiness,
+            build_readiness_failure_detail,
+        )
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = (
+            "Inspect the canonical repository. Report branch, HEAD, origin/main, "
+            "cleanliness, and presence of contract tests. Read only; do not modify files."
+        )
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[
+                Subtask(id="1", title="Inspect", description=goal, runner="shell")
+            ],
+            execution_order=["1"],
+        )
+        trust = create_trust_state(goal)
+        runner_factory = _StubRunnerFactory(
+            {"code": ["Read", "InspectFiles", "Glob", "LS", "ToolProposal"]}
+        )
+        result = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=trust,
+            runner_factory=runner_factory,
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+            parent_tool_names={"Read", "InspectFiles", "Glob", "LS", "ToolProposal"},
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_type, "missing_required_tool")
+        detail = build_readiness_failure_detail(
+            result,
+            goal=goal,
+            plan=plan,
+            runner_factory=runner_factory,
+            checkpoint_path="/tmp/checkpoint.json",
+        )
+        self.assertEqual(detail["missing_tool"], "runner:shell")
+        self.assertEqual(detail["required_by"], "planner")
+        self.assertIn("runner:code via ToolProposal", detail["available_alternatives"])
+
     def test_writable_root_denied_is_preflight_failure(self) -> None:
         from amof.orchestrator.plan_execute_control import assess_execution_readiness
         from amof.orchestrator.planner import ExecutionPlan, Subtask

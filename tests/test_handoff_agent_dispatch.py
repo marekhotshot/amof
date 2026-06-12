@@ -625,6 +625,84 @@ class HandoffAgentDispatchTests(unittest.TestCase):
         self.assertEqual(missing["status"], "result_missing")
         self.assertEqual(missing["failure_classification"], "result_missing")
 
+    def test_blocked_result_preserves_structured_missing_tool_failure(self) -> None:
+        def _fake_runtime(
+            manifest: dict[str, object],
+            payload: dict[str, object],
+            *,
+            studio_session_id: str | None = None,
+        ):
+            del manifest, payload
+            return agent_cmd.AgentPlanExecuteCorrelationEnvelope(
+                schema_version=1,
+                request_id="handoff-test-001",
+                result={
+                    "schema_version": 1,
+                    "result_kind": "agent_run_result",
+                    "contract_version": "agent-run-v1",
+                    "status": "blocked",
+                    "session_id": "sess-ro-blocked",
+                    "exit_code": 1,
+                    "stop_reason": "missing_required_tool",
+                    "failure_classification": "missing_required_tool",
+                    "final_text": "Execution readiness failed: missing runner shell.",
+                    "plan_path": "/tmp/plan.md",
+                    "checkpoint_path": "/tmp/checkpoint.json",
+                    "event_log_path": "/tmp/events.jsonl",
+                    "journal_path": None,
+                    "budget_summary": {"limit": 1.0, "spent": 0.0, "remaining": 1.0},
+                    "studio_session_id": studio_session_id,
+                    "changed_paths": [],
+                    "validation_summary": {
+                        "status": "not_run",
+                        "reason": "execution_readiness_failed",
+                    },
+                    "approved_capabilities": ["read"],
+                    "effective_capabilities": ["read"],
+                    "failure": {
+                        "failure_phase": "runtime_capability",
+                        "failure_class": "runtime_capability_missing",
+                        "failure_type": "missing_required_tool",
+                        "missing_tool": "runner:shell",
+                        "required_by": "planner",
+                        "required_for": "Inspect the repository state.",
+                        "available_alternatives": ["runner:code via ToolProposal"],
+                        "tool_inventory_ref": "runner:code[Read,InspectFiles,ToolProposal]",
+                        "safe_next_action": "Re-plan on the code runner and use ToolProposal.",
+                        "retry_eligible": True,
+                        "evidence_ref": "/tmp/checkpoint.json",
+                        "failure_reason": "Read-only inspection does not require a shell runner.",
+                        "raw_error_excerpt": "Execution readiness failed.",
+                    },
+                },
+            )
+
+        with TemporaryDirectory(prefix="amof-handoff-structured-missing-tool-") as td:
+            amof_home = Path(td)
+            _write_packet(amof_home)
+            with (
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope",
+                    side_effect=_fake_runtime,
+                ),
+            ):
+                code, stdout, _stderr = _run_execute(
+                    _execute_args(confirm=True), amof_home
+                )
+
+            receipt = json.loads(stdout)
+            result = json.loads(Path(receipt["result_path"]).read_text(encoding="utf-8"))
+
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(result["failure"]["missing_tool"], "runner:shell")
+        self.assertEqual(result["failure"]["required_by"], "planner")
+        self.assertEqual(result["changed_paths"], [])
+
     def test_execute_agent_after_accept_agent_is_allowed(self) -> None:
         with TemporaryDirectory(prefix="amof-handoff-accept-then-execute-") as td:
             amof_home = Path(td)

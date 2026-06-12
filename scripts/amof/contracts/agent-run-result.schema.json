@@ -72,6 +72,10 @@
     "journal_path": {
       "type": ["string", "null"]
     },
+    "failure": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
     "budget_summary": {
       "type": "object",
       "required": ["limit", "spent", "remaining"],

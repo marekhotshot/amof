@@ -129,6 +129,29 @@
     "failure_classification": {
       "type": ["string", "null"]
     },
+    "failure": {
+      "type": ["object", "null"],
+      "properties": {
+        "failure_phase": { "type": ["string", "null"] },
+        "failure_class": { "type": ["string", "null"] },
+        "failure_type": { "type": ["string", "null"] },
+        "failure_reason": { "type": ["string", "null"] },
+        "retry_eligible": { "type": ["boolean", "null"] },
+        "safe_next_action": { "type": ["string", "null"] },
+        "evidence_ref": { "type": ["string", "null"] },
+        "raw_error_excerpt": { "type": ["string", "null"] },
+        "missing_tool": { "type": ["string", "null"] },
+        "required_by": { "type": ["string", "null"] },
+        "required_for": { "type": ["string", "null"] },
+        "available_alternatives": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "runner_id": { "type": ["string", "null"] },
+        "tool_inventory_ref": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
     "changed_paths": {
       "type": "array",
       "items": {
