@@ -84,6 +84,8 @@ def repo_inspection_task_guidance() -> str:
         "Repository-inspection mode:\n"
         "- Use ToolProposal for git metadata such as branch/detached state, HEAD SHA, "
         "origin/main SHA, and cleanliness.\n"
+        "- For branch state, treat `git rev-parse --abbrev-ref HEAD` returning `HEAD` as detached "
+        "and report the label `detached`.\n"
         "- Use Read, InspectFiles, Glob, and LS only for file presence or direct file contents.\n"
         "- Do not call ReadLints unless the task explicitly asks for lint diagnostics.\n"
         "- Do not guess pseudo-files like .git/status.\n"
@@ -193,6 +195,15 @@ def analyze_tool_call_events(
                 required_or_optional = "alternative_group"
                 required_for = "repository metadata fallback"
                 safe_next_action = "Use the completed repository findings already collected through alternate read-only evidence."
+        elif repo_mode and tool_name == "ToolProposal":
+            if _has_successful_tool_followup(tool_events, call_index, "ToolProposal"):
+                required_or_optional = "alternative_group"
+                required_for = "repository metadata helper fallback"
+                safe_next_action = "Use the later successful bounded ToolProposal result for repository metadata."
+            elif validation.ok:
+                required_or_optional = "alternative_group"
+                required_for = "repository metadata fallback"
+                safe_next_action = "Use the completed repository findings already collected through alternate read-only evidence."
 
         failures.append(
             ToolFailureDetail(
@@ -231,6 +242,8 @@ def classify_tool_failure(tool_name: str, error_summary: str) -> str:
     error = str(error_summary or "")
     if tool_name == "ReadLints" and _NO_PATHS_RE.search(error):
         return "invalid_tool_arguments"
+    if tool_name == "ToolProposal" and "allowed_paths" in error:
+        return "invalid_tool_arguments"
     if _FILE_NOT_FOUND_RE.search(error):
         return "missing_file"
     if _NOT_A_FILE_RE.search(error):
@@ -268,6 +281,19 @@ def _has_successful_followup(
         combined += " "
         combined += str(later_event.get("output_preview") or "")
         if basename in combined:
+            return True
+    return False
+
+
+def _has_successful_tool_followup(
+    tool_events: Sequence[Dict[str, Any]],
+    failed_call_index: int,
+    tool_name: str,
+) -> bool:
+    for later_event in tool_events[failed_call_index:]:
+        if later_event.get("tool") != tool_name:
+            continue
+        if later_event.get("success") is True:
             return True
     return False
 

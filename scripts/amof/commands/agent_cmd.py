@@ -826,19 +826,31 @@ def _resolved_manifest_artifact_root(
 ) -> Path | None:
     ecosystem_name = str(manifest.get("ecosystem") or "").strip()
     alt_root_raw = os.environ.get("AMOF_WORKSPACE_ROOT", "").strip()
-    if not ecosystem_name or not alt_root_raw:
-        return None
-    alt_root = Path(alt_root_raw).resolve()
-    manifest_path = alt_root / "ecosystems" / ecosystem_name / "ecosystem.yaml"
-    if not manifest_path.exists():
-        return None
-    try:
-        if alt_root.samefile(workspace_root):
-            return None
-    except FileNotFoundError:
-        if alt_root == workspace_root.resolve():
-            return None
-    return alt_root
+    if ecosystem_name and alt_root_raw:
+        alt_root = Path(alt_root_raw).resolve()
+        manifest_path = alt_root / "ecosystems" / ecosystem_name / "ecosystem.yaml"
+        if manifest_path.exists():
+            try:
+                if alt_root.samefile(workspace_root):
+                    return None
+            except FileNotFoundError:
+                if alt_root == workspace_root.resolve():
+                    return None
+            return alt_root
+    return _materialized_workspace_artifact_root(workspace_root)
+
+
+def _materialized_workspace_artifact_root(workspace_root: Path) -> Path | None:
+    resolved = workspace_root.resolve()
+    parts = resolved.parts
+    for idx, part in enumerate(parts):
+        if part != "workspaces" or idx + 2 >= len(parts):
+            continue
+        workspace_container = Path(*parts[: idx + 2])
+        repo_root = Path(*parts[: idx + 3])
+        if repo_root == resolved:
+            return workspace_container
+    return None
 
 
 def _configure_guardrails(guardrails: Any, workspace_root: Path) -> None:

@@ -12,7 +12,7 @@ SCRIPTS_ROOT = ROOT / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from amof.commands.agent_cmd import _agent_plans_dir
+from amof.commands.agent_cmd import _agent_plans_dir, _resolved_manifest_artifact_root
 from amof.contracts_runtime import AgentRunResult
 from amof.orchestrator.tool_failure_semantics import (
     analyze_tool_call_events,
@@ -132,6 +132,33 @@ class BuiltinCodeToolFailureSemanticsTests(unittest.TestCase):
         self.assertEqual(len(analysis["fatal_failures"]), 0)
         self.assertEqual(analysis["failures"][0].required_or_optional, "alternative_group")
 
+    def test_failed_toolproposal_can_be_recovered_by_later_success(self) -> None:
+        events = [
+            {
+                "event_id": "run:0001",
+                "tool": "ToolProposal",
+                "args": {"allowed_paths": ["."]},
+                "success": False,
+                "error": "invalid_tool_proposal_static_gate: broad or absolute allowed_paths are not allowed",
+            },
+            {
+                "event_id": "run:0002",
+                "tool": "ToolProposal",
+                "args": {"allowed_paths": [".git/"]},
+                "success": True,
+                "output_preview": "detached\n4c686d6d038607e925bc7ac18a10c52cceadbda5\n",
+            },
+        ]
+        analysis = analyze_tool_call_events(
+            events,
+            task_text=_repo_inspection_task(),
+            final_response=_valid_repo_inspection_response(),
+            subtask_id="1",
+        )
+        self.assertEqual(len(analysis["fatal_failures"]), 0)
+        self.assertEqual(analysis["failures"][0].failure_class, "invalid_tool_arguments")
+        self.assertEqual(analysis["failures"][0].required_or_optional, "alternative_group")
+
     def test_generated_dispatch_artifacts_live_outside_target_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
@@ -156,6 +183,14 @@ class BuiltinCodeToolFailureSemanticsTests(unittest.TestCase):
                 plans_dir,
                 alt_root / "ecosystems" / "dispatch-abc" / "plans",
             )
+
+    def test_materialized_workspace_falls_back_to_outer_artifact_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace_container = Path(tmpdir) / "share" / "workspaces" / "ws-123456"
+            workspace_root = workspace_container / "00-amof"
+            workspace_root.mkdir(parents=True)
+            artifact_root = _resolved_manifest_artifact_root({"ecosystem": "default"}, workspace_root)
+        self.assertEqual(artifact_root, workspace_container)
 
     def test_glob_ignores_cursor_style_ignore_globs_parameter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
