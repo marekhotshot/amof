@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .base import Tool, ToolResult
 
@@ -30,6 +30,11 @@ class GlobTool(Tool):
                 "type": "string",
                 "description": "Directory to search in. Defaults to workspace root.",
             },
+            "ignore_globs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional compatibility field accepted and ignored by the public runtime.",
+            },
         },
         "required": ["glob_pattern"],
     }
@@ -38,7 +43,9 @@ class GlobTool(Tool):
         self,
         glob_pattern: str,
         target_directory: Optional[str] = None,
+        ignore_globs: Optional[List[str]] = None,
     ) -> ToolResult:
+        _ = ignore_globs
         search_dir = Path(target_directory) if target_directory else Path(".")
 
         if not search_dir.is_dir():

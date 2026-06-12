@@ -19,6 +19,8 @@ from amof.orchestrator.tool_failure_semantics import (
     repo_inspection_runner_tools,
     repo_inspection_task_guidance,
 )
+from amof.orchestrator.tools.glob_tool import GlobTool
+from amof.orchestrator.tools.tool_proposal import ToolProposalTool
 AGENT_RUN_RESULT_SCHEMA_PATH = ROOT / "contracts" / "agent-run-result.schema.json"
 
 
@@ -154,6 +156,43 @@ class BuiltinCodeToolFailureSemanticsTests(unittest.TestCase):
                 plans_dir,
                 alt_root / "ecosystems" / "dispatch-abc" / "plans",
             )
+
+    def test_glob_ignores_cursor_style_ignore_globs_parameter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "tests").mkdir()
+            (root / "tests" / "test_runner_registration.py").write_text("pass\n", encoding="utf-8")
+            result = GlobTool().execute(
+                glob_pattern="**/test_runner_registration.py",
+                target_directory=str(root),
+                ignore_globs=[],
+            )
+        self.assertTrue(result.success)
+        self.assertIn("tests/test_runner_registration.py", result.output)
+
+    def test_toolproposal_executes_python_scripts_for_repo_inspection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            git_dir = root / ".git"
+            git_dir.mkdir()
+            cwd = os.getcwd()
+            os.chdir(root)
+            try:
+                result = ToolProposalTool().execute(
+                    purpose="Read repository metadata.",
+                    mutation_intent=False,
+                    allowed_paths=[".git/"],
+                    allow_network=False,
+                    timeout_seconds=30,
+                    inputs=[],
+                    outputs=["repository_path"],
+                    rollback="No rollback needed.",
+                    script="import os\nprint(os.path.abspath('.'))\n",
+                )
+            finally:
+                os.chdir(cwd)
+        self.assertTrue(result.success)
+        self.assertIn(str(root), result.output)
 
     def test_agent_run_result_schema_accepts_legacy_and_detailed_failures(self) -> None:
         legacy = AgentRunResult(

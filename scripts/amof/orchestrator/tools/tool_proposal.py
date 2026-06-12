@@ -24,7 +24,7 @@ class ToolProposalTool(Tool):
     name = "ToolProposal"
     description = (
         "Propose and execute a bounded read-only helper script when a capability is "
-        "missing. The script is statically checked, stored in AMOF app-data, and "
+        "missing. The shell or Python script is statically checked, stored in AMOF app-data, and "
         "executed with captured rc/stdout/stderr/hash evidence. Direct Shell remains unavailable."
     )
     parameters: Dict[str, Any] = {
@@ -90,12 +90,15 @@ class ToolProposalTool(Tool):
         script_hash = hashlib.sha256(script.encode("utf-8")).hexdigest()
         proposal_dir = evidence_dir() / "tool-proposals" / script_hash[:12]
         proposal_dir.mkdir(parents=True, exist_ok=True)
-        script_path = proposal_dir / "proposal.sh"
+        runtime = _script_runtime(script)
+        suffix = ".py" if runtime == "python" else ".sh"
+        script_path = proposal_dir / f"proposal{suffix}"
         script_path.write_text(script, encoding="utf-8")
+        command = ["python3", str(script_path)] if runtime == "python" else ["bash", str(script_path)]
 
         try:
             completed = subprocess.run(
-                ["bash", str(script_path)],
+                command,
                 cwd=Path.cwd(),
                 capture_output=True,
                 text=True,
@@ -114,6 +117,7 @@ class ToolProposalTool(Tool):
             **proposal,
             "script_hash": script_hash,
             "script_path": str(script_path),
+            "script_runtime": runtime,
             "rc": rc,
             "stdout": stdout[:4000],
             "stderr": stderr[:4000],
@@ -163,3 +167,12 @@ def _validate_static_gates(*, proposal: Dict[str, Any], script: str, workspace_r
     if _WRITE_RE.search(script):
         return "invalid_tool_proposal_static_gate: read-only proposals cannot contain write commands or redirection"
     return None
+
+
+def _script_runtime(script: str) -> str:
+    stripped = script.lstrip()
+    if stripped.startswith("#!/usr/bin/env python") or stripped.startswith("#!/usr/bin/python"):
+        return "python"
+    if stripped.startswith(("import ", "from ", "def ", "class ", "print(")):
+        return "python"
+    return "shell"
