@@ -16,8 +16,10 @@ from amof.commands.agent_cmd import _agent_plans_dir, _resolved_manifest_artifac
 from amof.contracts_runtime import AgentRunResult
 from amof.orchestrator.tool_failure_semantics import (
     analyze_tool_call_events,
+    enrich_repo_inspection_response,
     repo_inspection_runner_tools,
     repo_inspection_task_guidance,
+    validate_repo_inspection_response,
 )
 from amof.orchestrator.tools.glob_tool import GlobTool
 from amof.orchestrator.tools.tool_proposal import ToolProposalTool
@@ -191,6 +193,45 @@ class BuiltinCodeToolFailureSemanticsTests(unittest.TestCase):
             workspace_root.mkdir(parents=True)
             artifact_root = _resolved_manifest_artifact_root({"ecosystem": "default"}, workspace_root)
         self.assertEqual(artifact_root, workspace_container)
+
+    def test_repo_inspection_response_is_enriched_with_repo_path_and_detached_label(self) -> None:
+        enriched = enrich_repo_inspection_response(
+            "Repository Path: Not explicitly provided in the output.\n"
+            "Branch Or Detached State: `HEAD` (detached)\n"
+            "HEAD SHA: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n"
+            "origin/main SHA: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n"
+            "Cleanliness: clean\n"
+            "Contract Test Paths: mission-revision missing; Hermes missing\n"
+            "Evidence Paths: /tmp/events.jsonl\n",
+            workspace_root="/tmp/ws-123/00-amof",
+        )
+        self.assertIn("Repository Path: /tmp/ws-123/00-amof", enriched)
+        self.assertIn("Branch Or Detached State: detached", enriched)
+        self.assertTrue(validate_repo_inspection_response(enriched).ok)
+
+    def test_repo_inspection_response_without_workspace_root_stays_incomplete(self) -> None:
+        enriched = enrich_repo_inspection_response(
+            "Repository Path: Not explicitly provided in the output.\n"
+            "Branch Or Detached State: `HEAD` (detached)\n"
+            "HEAD SHA: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n"
+            "origin/main SHA: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n"
+            "Cleanliness: clean\n"
+            "Contract Test Paths: mission-revision missing; Hermes missing\n"
+            "Evidence Paths: /tmp/events.jsonl\n",
+        )
+        validation = validate_repo_inspection_response(enriched)
+        self.assertFalse(validation.ok)
+        self.assertIn("repository_path", validation.missing)
+
+    def test_repo_inspection_response_does_not_overwrite_explicit_conflicting_repo_path(self) -> None:
+        enriched = enrich_repo_inspection_response(
+            "Repository Path: /different/path\n"
+            "Branch Or Detached State: detached\n"
+            "HEAD SHA: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n",
+            workspace_root="/tmp/ws-123/00-amof",
+        )
+        self.assertIn("Repository Path: /different/path", enriched)
+        self.assertNotIn("Repository Path: /tmp/ws-123/00-amof", enriched)
 
     def test_glob_ignores_cursor_style_ignore_globs_parameter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

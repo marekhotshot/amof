@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
 from .plan_execute_control import is_read_only_repository_inspection
@@ -94,6 +95,29 @@ def repo_inspection_task_guidance() -> str:
     )
 
 
+def enrich_repo_inspection_response(final_response: str, *, workspace_root: str | Path | None = None) -> str:
+    text = str(final_response or "")
+    if not text.strip():
+        return text
+    if workspace_root:
+        repo_path = str(Path(workspace_root))
+        path_value = _field_value(text, ("Repository Path", "Repository path"))
+        if not path_value or "not explicitly provided" in path_value.lower():
+            replacement = f"Repository Path: {repo_path}"
+            if re.search(r"Repository Path\s*[:|-].+", text, re.IGNORECASE):
+                text = re.sub(r"Repository Path\s*[:|-].+", replacement, text, count=1, flags=re.IGNORECASE)
+            else:
+                text = f"{replacement}\n{text}"
+    text = re.sub(
+        r"(Branch Or Detached State\s*[:|-]\s*)(`?HEAD`?\s*(?:\(\s*detached\s*\))?)",
+        r"\1detached",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    return text
+
+
 def validate_repo_inspection_response(final_response: str) -> RepoInspectionValidation:
     text = str(final_response or "")
     missing: List[str] = []
@@ -105,7 +129,11 @@ def validate_repo_inspection_response(final_response: str) -> RepoInspectionVali
             "Repository path",
         ),
     )
-    if not path_match or path_match.strip() in {".git", ""}:
+    if (
+        not path_match
+        or path_match.strip() in {".git", ""}
+        or "not explicitly provided" in path_match.lower()
+    ):
         missing.append("repository_path")
 
     branch_value = _field_value(

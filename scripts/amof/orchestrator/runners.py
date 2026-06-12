@@ -37,6 +37,7 @@ from .plan_execute_control import (
 from .tools.base import Guardrails, Tool, ToolRegistry
 from .tool_failure_semantics import (
     analyze_tool_call_events,
+    enrich_repo_inspection_response,
     repo_inspection_runner_tools,
     repo_inspection_task_guidance,
 )
@@ -396,6 +397,11 @@ class RunnerFactory:
         except Exception as e:
             logger.error("Runner %s failed: %s", name, e)
             response = f"Runner execution failed: {type(e).__name__}: {e}"
+        if repo_inspection_mode:
+            response = enrich_repo_inspection_response(
+                response,
+                workspace_root=self._workspace_root,
+            )
 
         tool_events = events.query(event_type="tool_call")
         tool_failure_analysis = analyze_tool_call_events(

@@ -29,7 +29,10 @@ from urllib.parse import urlparse
 
 from ..app_paths import get_app_paths, runs_dir, vector_store_dir
 from ..contracts_runtime import AgentRunResult
-from ..orchestrator.tool_failure_semantics import analyze_tool_call_events
+from ..orchestrator.tool_failure_semantics import (
+    analyze_tool_call_events,
+    enrich_repo_inspection_response,
+)
 from .studio import (
     StudioCliError,
     attach_run_reference,
@@ -2233,6 +2236,11 @@ def _handle_plan_execute_fatal_stop(
         checkpoint_path=checkpoint_path,
     )
     task_findings = _collect_task_findings(plan)
+    if task_findings:
+        task_findings = enrich_repo_inspection_response(
+            task_findings,
+            workspace_root=workspace_root,
+        )
     failure_detail = _first_plan_failure_detail(plan)
     git_after = _git_probe(workspace_root)
     changed_paths = _git_changed_paths(git_before or git_after, git_after)
@@ -4412,6 +4420,11 @@ def cmd_agent(
             diff_guard = _evaluate_diff_guard(goal, workspace_root, git_after)
         py_compile_guard = _verify_changed_python_files(workspace_root, git_after)
         task_findings = _collect_task_findings(plan)
+        if task_findings:
+            task_findings = enrich_repo_inspection_response(
+                task_findings,
+                workspace_root=workspace_root,
+            )
         diagnostic_warnings = _collect_plan_diagnostic_warnings(plan)
         tool_failure_analysis = analyze_tool_call_events(
             events.query(event_type="tool_call"),
