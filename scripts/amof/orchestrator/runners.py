@@ -443,6 +443,9 @@ class RunnerFactory:
                 if stop_reason == "completed" and fatal_tool_failures:
                     stop_reason = normalize_subtask_failure("tool_failed", events=events)
                     runner_success = False
+                elif stop_reason == "completed" and getattr(repo_validation, "conflict", None):
+                    stop_reason = "findings_conflict"
+                    runner_success = False
                 elif stop_reason == "completed" and not repo_validation.ok:
                     stop_reason = "incomplete_findings"
                     runner_success = False

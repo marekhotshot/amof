@@ -201,13 +201,56 @@ class BuiltinCodeToolFailureSemanticsTests(unittest.TestCase):
             "HEAD SHA: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n"
             "origin/main SHA: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n"
             "Cleanliness: clean\n"
-            "Contract Test Paths: mission-revision missing; Hermes missing\n"
+            "Mission-revision tests: none found\n"
+            "Hermes tests: none found\n"
             "Evidence Paths: /tmp/events.jsonl\n",
             workspace_root="/tmp/ws-123/00-amof",
         )
         self.assertIn("Repository Path: /tmp/ws-123/00-amof", enriched)
         self.assertIn("Branch Or Detached State: detached", enriched)
         self.assertTrue(validate_repo_inspection_response(enriched).ok)
+
+    def test_repo_inspection_markdown_bullets_normalize_successfully(self) -> None:
+        validation = validate_repo_inspection_response(
+            "- **Repository Path**: `/tmp/ws-1/00-amof`\n"
+            "- **Branch or Detached State**: detached\n"
+            "- **HEAD SHA**: `4c686d6d038607e925bc7ac18a10c52cceadbda5`\n"
+            "- **origin/main SHA**: `4c686d6d038607e925bc7ac18a10c52cceadbda5`\n"
+            "- **Cleanliness**: clean\n"
+            "- **Mission-revision tests**: none found\n"
+            "- **Hermes tests**: none found\n"
+            "- **Evidence Paths**: /tmp/events.jsonl\n"
+        )
+        self.assertTrue(validation.ok)
+        self.assertEqual(validation.normalized["checkout_state"], "detached")
+
+    def test_repo_inspection_mixed_format_matches_live_shape(self) -> None:
+        validation = validate_repo_inspection_response(
+            "Repository Path: /tmp/ws-1/00-amof\n"
+            "- **Branch or Detached State**: detached\n"
+            "- **HEAD SHA**: `4c686d6d038607e925bc7ac18a10c52cceadbda5`\n"
+            "- **origin/main SHA**: `4c686d6d038607e925bc7ac18a10c52cceadbda5`\n"
+            "- **Cleanliness**: clean\n"
+            "- **Mission-revision tests**: none found\n"
+            "- **Hermes tests**: none found\n"
+            "- **Evidence Paths**: /tmp/events.jsonl\n"
+        )
+        self.assertTrue(validation.ok)
+        self.assertEqual(validation.normalized["repository_path"], "/tmp/ws-1/00-amof")
+
+    def test_repo_inspection_supported_aliases_normalize_to_canonical_keys(self) -> None:
+        validation = validate_repo_inspection_response(
+            "- **Repository root**: /tmp/ws-1/00-amof\n"
+            "- **Checkout state**: detached\n"
+            "- **Head commit**: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n"
+            "- **Origin Main SHA**: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n"
+            "- **Working tree status**: clean\n"
+            "- **Mission-revision tests**: none found\n"
+            "- **Hermes tests**: none found\n"
+            "- **Evidence**: /tmp/events.jsonl\n"
+        )
+        self.assertTrue(validation.ok)
+        self.assertEqual(validation.normalized["origin_main_sha"], "4c686d6d038607e925bc7ac18a10c52cceadbda5")
 
     def test_repo_inspection_response_without_workspace_root_stays_incomplete(self) -> None:
         enriched = enrich_repo_inspection_response(
@@ -216,12 +259,28 @@ class BuiltinCodeToolFailureSemanticsTests(unittest.TestCase):
             "HEAD SHA: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n"
             "origin/main SHA: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n"
             "Cleanliness: clean\n"
-            "Contract Test Paths: mission-revision missing; Hermes missing\n"
+            "Mission-revision tests: none found\n"
+            "Hermes tests: none found\n"
             "Evidence Paths: /tmp/events.jsonl\n",
         )
         validation = validate_repo_inspection_response(enriched)
         self.assertFalse(validation.ok)
         self.assertIn("repository_path", validation.missing)
+
+    def test_repo_inspection_placeholder_values_remain_incomplete(self) -> None:
+        validation = validate_repo_inspection_response(
+            "Repository Path: unknown\n"
+            "Checkout State: not recorded\n"
+            "HEAD SHA: n/a\n"
+            "origin/main SHA: unknown\n"
+            "Cleanliness: not recorded\n"
+            "Mission-revision tests: none found\n"
+            "Hermes tests: none found\n"
+            "Evidence Paths: /tmp/events.jsonl\n"
+        )
+        self.assertFalse(validation.ok)
+        self.assertIn("repository_path", validation.missing)
+        self.assertIn("checkout_state", validation.missing)
 
     def test_repo_inspection_response_does_not_overwrite_explicit_conflicting_repo_path(self) -> None:
         enriched = enrich_repo_inspection_response(
@@ -232,6 +291,80 @@ class BuiltinCodeToolFailureSemanticsTests(unittest.TestCase):
         )
         self.assertIn("Repository Path: /different/path", enriched)
         self.assertNotIn("Repository Path: /tmp/ws-123/00-amof", enriched)
+
+    def test_repo_inspection_truthful_empty_test_matches_count_as_complete(self) -> None:
+        tool_events = [
+            {
+                "event_id": "run:0001",
+                "tool": "Glob",
+                "args": {"glob_pattern": "**/tests/mission-revision/**"},
+                "success": True,
+                "output_preview": "No files matched the pattern.",
+            },
+            {
+                "event_id": "run:0002",
+                "tool": "Glob",
+                "args": {"glob_pattern": "**/tests/hermes/**"},
+                "success": True,
+                "output_preview": "No files matched the pattern.",
+            },
+        ]
+        validation = validate_repo_inspection_response(
+            "Repository Path: /tmp/ws-1/00-amof\n"
+            "Checkout State: detached\n"
+            "HEAD SHA: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n"
+            "origin/main SHA: 4c686d6d038607e925bc7ac18a10c52cceadbda5\n"
+            "Cleanliness: clean\n"
+            "Evidence Paths: /tmp/events.jsonl\n",
+            tool_events=tool_events,
+        )
+        self.assertTrue(validation.ok)
+        self.assertEqual(validation.normalized["mission_revision_test_paths"], "none found")
+        self.assertEqual(validation.normalized["hermes_read_only_test_paths"], "none found")
+
+    def test_repo_inspection_conflicting_evidence_returns_conflict(self) -> None:
+        tool_events = [
+            {
+                "event_id": "run:0007",
+                "tool": "ToolProposal",
+                "success": True,
+                "metadata": {
+                    "stdout": (
+                        "repository_path=/tmp/ws-1/00-amof\n"
+                        "branch_or_detached_state=detached\n"
+                        "HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                        "origin/main_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                        "cleanliness=clean\n"
+                    ),
+                    "script_path": "/tmp/evidence/proposal.sh",
+                },
+            },
+            {
+                "event_id": "run:0008",
+                "tool": "Glob",
+                "args": {"glob_pattern": "**/tests/mission-revision/**"},
+                "success": True,
+                "output_preview": "No files matched the pattern.",
+            },
+            {
+                "event_id": "run:0009",
+                "tool": "Glob",
+                "args": {"glob_pattern": "**/tests/hermes/**"},
+                "success": True,
+                "output_preview": "No files matched the pattern.",
+            },
+        ]
+        validation = validate_repo_inspection_response(
+            "Repository Path: /tmp/ws-1/00-amof\n"
+            "Checkout State: detached\n"
+            "HEAD SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+            "origin/main SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+            "Cleanliness: clean\n"
+            "Evidence Paths: /tmp/evidence/proposal.sh\n",
+            tool_events=tool_events,
+        )
+        self.assertFalse(validation.ok)
+        self.assertEqual(validation.conflict["conflicting_field"], "head_sha")
 
     def test_glob_ignores_cursor_style_ignore_globs_parameter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

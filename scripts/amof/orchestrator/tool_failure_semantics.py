@@ -25,6 +25,55 @@ _NOT_A_FILE_RE = re.compile(r"\bnot a file\b|\bis a directory\b", re.IGNORECASE)
 _NO_PATHS_RE = re.compile(r"\bno paths provided\b", re.IGNORECASE)
 _LINTER_UNAVAILABLE_RE = re.compile(r"\blinter not configured\b|\bnot found in \$PATH\b", re.IGNORECASE)
 _INVALID_ARGS_RE = re.compile(r"\binvalid\b.*\b(argument|args?)\b|\bmust be\b", re.IGNORECASE)
+_REPO_FIELD_LINE_RE = re.compile(
+    r"^\s*(?:[-*]\s+)?(?:\*\*)?(?P<label>[^:]+?)(?:\*\*)?\s*:\s*(?P<value>.+?)\s*$",
+    re.IGNORECASE,
+)
+_PLACEHOLDER_VALUES = {
+    "",
+    ".git",
+    "not explicitly provided",
+    "unknown",
+    "not recorded",
+    "n/a",
+}
+_REPO_FIELD_ALIASES: Dict[str, tuple[str, ...]] = {
+    "repository_path": ("repository path", "repository root"),
+    "checkout_state": (
+        "checkout state",
+        "branch or detached state",
+        "branch/detached state",
+    ),
+    "head_sha": ("head sha", "head commit"),
+    "origin_main_sha": ("origin/main sha", "origin main sha"),
+    "cleanliness": ("cleanliness", "working tree status", "repository status"),
+    "mission_revision_test_paths": (
+        "mission revision test paths",
+        "mission-revision tests",
+    ),
+    "hermes_read_only_test_paths": (
+        "hermes read-only test paths",
+        "hermes tests",
+    ),
+    "evidence_paths": ("evidence paths", "evidence"),
+}
+_REQUIRED_REPO_FINDINGS: tuple[str, ...] = (
+    "repository_path",
+    "checkout_state",
+    "head_sha",
+    "origin_main_sha",
+    "cleanliness",
+    "mission_revision_test_paths",
+    "hermes_read_only_test_paths",
+    "evidence_paths",
+)
+_TOOLPROPOSAL_OUTPUT_KEYS: Dict[str, str] = {
+    "repository path": "repository_path",
+    "branch or detached state": "checkout_state",
+    "head sha": "head_sha",
+    "origin/main sha": "origin_main_sha",
+    "cleanliness": "cleanliness",
+}
 
 
 @dataclass(frozen=True)
@@ -73,6 +122,8 @@ class ToolFailureDetail:
 class RepoInspectionValidation:
     ok: bool
     missing: List[str]
+    normalized: Dict[str, str]
+    conflict: Dict[str, Any] | None = None
 
 
 def repo_inspection_runner_tools(tool_names: Sequence[str]) -> List[str]:
@@ -118,60 +169,57 @@ def enrich_repo_inspection_response(final_response: str, *, workspace_root: str 
     return text
 
 
-def validate_repo_inspection_response(final_response: str) -> RepoInspectionValidation:
+def validate_repo_inspection_response(
+    final_response: str,
+    *,
+    tool_events: Sequence[Dict[str, Any]] = (),
+    workspace_root: str | Path | None = None,
+) -> RepoInspectionValidation:
+    return normalize_repo_inspection_findings(
+        final_response,
+        tool_events=tool_events,
+        workspace_root=workspace_root,
+    )
+
+
+def normalize_repo_inspection_findings(
+    final_response: str,
+    *,
+    tool_events: Sequence[Dict[str, Any]] = (),
+    workspace_root: str | Path | None = None,
+) -> RepoInspectionValidation:
     text = str(final_response or "")
-    missing: List[str] = []
+    canonical_values, evidence_refs = _canonical_repo_evidence(tool_events)
+    response_values = _parse_repo_inspection_response(text)
+    if workspace_root and _is_missing_value("repository_path", response_values.get("repository_path")):
+        response_values["repository_path"] = str(Path(workspace_root))
 
-    path_match = _field_value(
-        text,
-        (
-            "Repository Path",
-            "Repository path",
-        ),
+    normalized = dict(canonical_values)
+    conflict: Dict[str, Any] | None = None
+    for key, response_value in response_values.items():
+        if _is_missing_value(key, response_value):
+            continue
+        canonical_value = canonical_values.get(key)
+        if canonical_value and not _values_match(key, canonical_value, response_value):
+            conflict = {
+                "conflicting_field": key,
+                "canonical_value": canonical_value,
+                "response_value": response_value,
+                "evidence_ref": evidence_refs.get(key),
+                "safe_next_action": "Inspect the conflicting repository evidence and response before retrying.",
+            }
+            break
+        normalized.setdefault(key, response_value)
+
+    missing = [
+        key for key in _REQUIRED_REPO_FINDINGS if _is_missing_value(key, normalized.get(key))
+    ]
+    return RepoInspectionValidation(
+        ok=not missing and conflict is None,
+        missing=missing,
+        normalized=normalized,
+        conflict=conflict,
     )
-    if (
-        not path_match
-        or path_match.strip() in {".git", ""}
-        or "not explicitly provided" in path_match.lower()
-    ):
-        missing.append("repository_path")
-
-    branch_value = _field_value(
-        text,
-        (
-            "Branch Or Detached State",
-            "Branch or Detached State",
-            "Branch",
-        ),
-    )
-    if not branch_value:
-        missing.append("branch_or_detached_state")
-    else:
-        lowered = branch_value.strip().lower()
-        if lowered != "detached" and _SHA40_RE.fullmatch(branch_value.strip()):
-            missing.append("branch_or_detached_state")
-
-    head_value = _field_value(text, ("HEAD SHA", "HEAD"))
-    if not head_value or not _SHA40_RE.search(head_value):
-        missing.append("head_sha")
-
-    origin_value = _field_value(text, ("origin/main SHA", "Origin/Main SHA", "origin/main"))
-    if not origin_value or not _SHA40_RE.search(origin_value):
-        missing.append("origin_main_sha")
-
-    clean_value = _field_value(text, ("Cleanliness", "Clean or Dirty Status", "Clean Status"))
-    if not clean_value or not re.search(r"\b(clean|dirty)\b", clean_value, re.IGNORECASE):
-        missing.append("cleanliness")
-
-    lower_text = text.lower()
-    if "mission-revision" not in lower_text:
-        missing.append("mission_revision_tests")
-    if "hermes" not in lower_text:
-        missing.append("hermes_tests")
-    if "evidence path" not in lower_text:
-        missing.append("evidence_paths")
-
-    return RepoInspectionValidation(ok=not missing, missing=missing)
 
 
 def analyze_tool_call_events(
@@ -183,9 +231,9 @@ def analyze_tool_call_events(
 ) -> Dict[str, Any]:
     failures: List[ToolFailureDetail] = []
     validation = (
-        validate_repo_inspection_response(final_response)
+        validate_repo_inspection_response(final_response, tool_events=tool_events)
         if is_read_only_repository_inspection(task_text)
-        else RepoInspectionValidation(ok=False, missing=[])
+        else RepoInspectionValidation(ok=False, missing=[], normalized={})
     )
     repo_mode = is_read_only_repository_inspection(task_text)
 
@@ -284,15 +332,133 @@ def classify_tool_failure(tool_name: str, error_summary: str) -> str:
 
 
 def _field_value(text: str, names: Sequence[str]) -> str | None:
-    for raw_name in names:
-        pattern = re.compile(
-            rf"{re.escape(raw_name)}\s*[:|-]\s*(.+)",
-            re.IGNORECASE,
-        )
-        match = pattern.search(text)
-        if match:
-            return match.group(1).strip()
+    parsed = _parse_repo_inspection_response(text)
+    for key, aliases in _REPO_FIELD_ALIASES.items():
+        if any(raw_name.lower() == alias.lower() for alias in aliases for raw_name in names):
+            return parsed.get(key)
     return None
+
+
+def _parse_repo_inspection_response(text: str) -> Dict[str, str]:
+    parsed: Dict[str, str] = {}
+    for raw_line in str(text or "").splitlines():
+        match = _REPO_FIELD_LINE_RE.match(raw_line)
+        if not match:
+            continue
+        label = _normalize_label(match.group("label"))
+        key = _label_to_key(label)
+        if not key:
+            continue
+        parsed[key] = _normalize_value(key, match.group("value"))
+    return parsed
+
+
+def _canonical_repo_evidence(
+    tool_events: Sequence[Dict[str, Any]],
+) -> tuple[Dict[str, str], Dict[str, str]]:
+    values: Dict[str, str] = {}
+    refs: Dict[str, str] = {}
+    evidence_paths: List[str] = []
+
+    for event in tool_events:
+        if event.get("success") is not True:
+            continue
+        tool_name = str(event.get("tool") or "")
+        evidence_ref = str(event.get("tool_id") or event.get("event_id") or "")
+        metadata = dict(event.get("metadata") or {})
+        if tool_name == "ToolProposal":
+            for line in str(metadata.get("stdout") or "").splitlines():
+                if "=" not in line:
+                    continue
+                raw_key, raw_value = line.split("=", 1)
+                mapped = _TOOLPROPOSAL_OUTPUT_KEYS.get(_normalize_label(raw_key))
+                if not mapped:
+                    continue
+                values[mapped] = _normalize_value(mapped, raw_value)
+                refs[mapped] = evidence_ref
+            script_path = str(metadata.get("script_path") or "").strip()
+            if script_path:
+                evidence_paths.append(script_path)
+                refs.setdefault("evidence_paths", evidence_ref)
+        elif tool_name == "Glob":
+            key = _glob_finding_key(str((event.get("args") or {}).get("glob_pattern") or ""))
+            if not key:
+                continue
+            values[key] = _normalize_glob_output(str(event.get("output_preview") or ""))
+            refs[key] = evidence_ref
+
+    if evidence_paths:
+        values["evidence_paths"] = ", ".join(dict.fromkeys(evidence_paths))
+    return values, refs
+
+
+def _normalize_label(label: str) -> str:
+    return str(label or "").strip().strip("*`").replace("\\", "").replace("_", " ").lower()
+
+
+def _label_to_key(label: str) -> str | None:
+    normalized_label = _normalize_label(label)
+    for key, aliases in _REPO_FIELD_ALIASES.items():
+        if normalized_label in aliases:
+            return key
+    return None
+
+
+def _normalize_value(key: str, value: str) -> str:
+    normalized = str(value or "").strip()
+    normalized = re.sub(r"^`(.+)`$", r"\1", normalized)
+    normalized = re.sub(r"^\*\*(.+)\*\*$", r"\1", normalized)
+    normalized = normalized.strip()
+    if key == "checkout_state" and normalized.lower() == "head":
+        return "detached"
+    return normalized
+
+
+def _glob_finding_key(glob_pattern: str) -> str | None:
+    normalized = str(glob_pattern or "").lower()
+    if "mission-revision" in normalized:
+        return "mission_revision_test_paths"
+    if "hermes" in normalized:
+        return "hermes_read_only_test_paths"
+    return None
+
+
+def _normalize_glob_output(output: str) -> str:
+    text = str(output or "").strip()
+    if not text or "no files matched" in text.lower():
+        return "none found"
+    return text
+
+
+def _is_missing_value(key: str, value: str | None) -> bool:
+    normalized = str(value or "").strip().strip("`").lower()
+    if key in {"mission_revision_test_paths", "hermes_read_only_test_paths"} and normalized == "none found":
+        return False
+    if key == "evidence_paths" and normalized:
+        return False
+    if key == "checkout_state" and normalized == "detached":
+        return False
+    if key in {"head_sha", "origin_main_sha"} and value and _SHA40_RE.search(str(value)):
+        return False
+    if key == "cleanliness" and value and re.search(r"\b(clean|dirty)\b", str(value), re.IGNORECASE):
+        return False
+    if (
+        "not explicitly provided" in normalized
+        or normalized.startswith("unknown")
+        or normalized.startswith("not recorded")
+    ):
+        return True
+    return normalized in _PLACEHOLDER_VALUES
+
+
+def _values_match(key: str, canonical_value: str, response_value: str) -> bool:
+    left = _normalize_value(key, canonical_value).strip().lower()
+    right = _normalize_value(key, response_value).strip().lower()
+    if key in {"head_sha", "origin_main_sha"}:
+        left_match = _SHA40_RE.search(left)
+        right_match = _SHA40_RE.search(right)
+        return bool(left_match and right_match and left_match.group(0) == right_match.group(0))
+    return left == right
 
 
 def _has_successful_followup(

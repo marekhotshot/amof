@@ -4438,6 +4438,15 @@ def cmd_agent(
 
         verifier_failed = False
         verifier_reasons: list[str] = []
+        if getattr(repo_validation, "conflict", None):
+            verifier_failed = True
+            verifier_reasons.append(
+                "findings_conflict:" + str(getattr(repo_validation, "conflict", {}).get("conflicting_field", "unknown"))
+            )
+            _mark_plan_failed_for_verifier(
+                plan,
+                "Verifier failed: repository inspection findings conflict with canonical evidence.",
+            )
         if fatal_tool_failures:
             verifier_failed = True
             verifier_reasons.append(f"fatal_tool_failures:{len(fatal_tool_failures)}")
@@ -4560,6 +4569,8 @@ def cmd_agent(
                 "status": "failed" if verifier_failed else "passed",
                 "reason": "; ".join(verifier_reasons) if verifier_reasons else None,
                 "diagnostic_warnings": diagnostic_warnings,
+                "findings_conflict": getattr(repo_validation, "conflict", None),
+                "normalized_repo_findings": dict(getattr(repo_validation, "normalized", {})),
                 "missing_repo_findings": list(getattr(repo_validation, "missing", [])),
                 "fatal_tool_failures": [failure.to_failure_dict() for failure in fatal_tool_failures],
                 "nonfatal_tool_failures": [
