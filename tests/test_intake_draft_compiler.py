@@ -107,6 +107,16 @@ class IntakeDraftCompilerTests(unittest.TestCase):
         draft = compile_intake_draft(raw_text)
         self.assertNotEqual(draft.classification, "kill")
 
+    def test_noun_phrase_runtime_extraction(self) -> None:
+        raw_text = "Adopt the IgorMraz.com repository and the hotshot runtime under AMOF governance."
+        draft = compile_intake_draft(raw_text)
+        packet = json.loads(draft.packet_text)
+        self.assertIn("hotshot", packet["extracted_runtimes"])
+        # Generic qualifiers never become runtime identities.
+        generic = compile_intake_draft("Keep the cloud runtime healthy.")
+        generic_packet = json.loads(generic.packet_text)
+        self.assertEqual(generic_packet["extracted_runtimes"], [])
+
     def test_bare_domain_does_not_pollute_paths(self) -> None:
         raw_text = "AMOF-777 today: inspect amof.dev availability and fix services/operator-console/src/app/page.tsx"
         draft = compile_intake_draft(raw_text)

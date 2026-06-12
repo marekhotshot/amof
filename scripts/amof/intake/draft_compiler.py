@@ -69,6 +69,17 @@ _DOMAIN_HINT = re.compile(
     re.IGNORECASE,
 )
 _RUNTIME_ID_HINT = re.compile(r"\b([a-z0-9][a-z0-9-]*runtime[a-z0-9-]*|[a-z0-9-]+-operator-host-\d+)\b", re.IGNORECASE)
+# Noun-phrase runtime mentions ("the hotshot runtime") name a runtime by its
+# qualifier; generic qualifiers are filtered so "the cloud runtime" stays
+# unextracted while "the hotshot runtime" yields hotshot.
+_RUNTIME_PHRASE_HINT = re.compile(r"\b([a-z0-9][a-z0-9-]{2,})\s+runtimes?\b", re.IGNORECASE)
+_RUNTIME_PHRASE_STOPWORDS = frozenset(
+    {
+        "the", "and", "this", "that", "cloud", "local", "dev", "full",
+        "stack", "amof", "operator", "every", "any", "each", "its", "their",
+        "new", "old", "existing", "current", "target", "production",
+    }
+)
 _FILE_PATH_HINT = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)+/?$")
 
 
@@ -164,6 +175,14 @@ def _extract_runtimes(text: str) -> list[str]:
             continue
         if value not in found:
             found.append(value)
+        if len(found) >= 8:
+            break
+    for match in _RUNTIME_PHRASE_HINT.finditer(text):
+        qualifier = match.group(1)
+        if qualifier.lower() in _RUNTIME_PHRASE_STOPWORDS or "runtime" in qualifier.lower():
+            continue
+        if qualifier not in found:
+            found.append(qualifier)
         if len(found) >= 8:
             break
     return found
