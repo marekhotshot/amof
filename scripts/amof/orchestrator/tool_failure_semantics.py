@@ -67,6 +67,18 @@ _REQUIRED_REPO_FINDINGS: tuple[str, ...] = (
     "hermes_read_only_test_paths",
     "evidence_paths",
 )
+# Render labels chosen so the canonical rendering re-parses to the same keys
+# through _REPO_FIELD_ALIASES (round-trip stable).
+_CANONICAL_FINDINGS_LABELS: Dict[str, str] = {
+    "repository_path": "Repository Path",
+    "checkout_state": "Branch Or Detached State",
+    "head_sha": "HEAD SHA",
+    "origin_main_sha": "origin/main SHA",
+    "cleanliness": "Cleanliness",
+    "mission_revision_test_paths": "Mission Revision Test Paths",
+    "hermes_read_only_test_paths": "Hermes Read-Only Test Paths",
+    "evidence_paths": "Evidence Paths",
+}
 _TOOLPROPOSAL_OUTPUT_KEYS: Dict[str, str] = {
     "repository path": "repository_path",
     "branch or detached state": "checkout_state",
@@ -189,26 +201,18 @@ def normalize_repo_inspection_findings(
     workspace_root: str | Path | None = None,
 ) -> RepoInspectionValidation:
     text = str(final_response or "")
-    canonical_values, evidence_refs = _canonical_repo_evidence(tool_events)
+    canonical_values, evidence_refs, conflict = _canonical_repo_evidence(tool_events)
     response_values = _parse_repo_inspection_response(text)
     if workspace_root and _is_missing_value("repository_path", response_values.get("repository_path")):
         response_values["repository_path"] = str(Path(workspace_root))
 
     normalized = dict(canonical_values)
-    conflict: Dict[str, Any] | None = None
     for key, response_value in response_values.items():
         if _is_missing_value(key, response_value):
             continue
-        canonical_value = canonical_values.get(key)
-        if canonical_value and not _values_match(key, canonical_value, response_value):
-            conflict = {
-                "conflicting_field": key,
-                "canonical_value": canonical_value,
-                "response_value": response_value,
-                "evidence_ref": evidence_refs.get(key),
-                "safe_next_action": "Inspect the conflicting repository evidence and response before retrying.",
-            }
-            break
+        # Model prose is commentary: it may fill gaps the structured evidence
+        # did not cover, but it can never redefine or conflict with canonical
+        # structured evidence.
         normalized.setdefault(key, response_value)
 
     missing = [
@@ -220,6 +224,50 @@ def normalize_repo_inspection_findings(
         normalized=normalized,
         conflict=conflict,
     )
+
+
+def render_canonical_findings(normalized: Dict[str, str]) -> str:
+    """Render normalized structured findings deterministically.
+
+    Same normalized mapping always produces byte-identical output: fixed key
+    order (_REQUIRED_REPO_FINDINGS), fixed labels, one `Label: value` line per
+    present finding.
+    """
+    lines: List[str] = []
+    for key in _REQUIRED_REPO_FINDINGS:
+        value = str(normalized.get(key) or "").strip()
+        if not value:
+            continue
+        lines.append(f"{_CANONICAL_FINDINGS_LABELS[key]}: {value}")
+    return "\n".join(lines)
+
+
+def strip_canonical_labels(prose: str) -> str:
+    """Remove canonical-looking labeled lines from model prose.
+
+    Any line whose label resolves to a canonical repository finding through
+    _REPO_FIELD_ALIASES is dropped so demoted commentary can never restate a
+    canonical field under any alias.
+    """
+    kept: List[str] = []
+    for raw_line in str(prose or "").splitlines():
+        match = _REPO_FIELD_LINE_RE.match(raw_line)
+        if match and _label_to_key(match.group("label")):
+            continue
+        kept.append(raw_line)
+    text = "\n".join(kept)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def render_terminal_task_findings(validation: RepoInspectionValidation) -> str | None:
+    """Terminal task findings for repo-inspection runs.
+
+    Rendered exclusively from the normalized structured findings; model prose
+    is carried separately as demoted commentary.
+    """
+    canonical = render_canonical_findings(validation.normalized)
+    return canonical or None
 
 
 def analyze_tool_call_events(
@@ -311,6 +359,7 @@ def analyze_tool_call_events(
         "nonfatal_failures": nonfatal,
         "diagnostic_warnings": diagnostic_warnings,
         "repo_validation": validation,
+        "repo_inspection_mode": repo_mode,
     }
 
 
@@ -355,10 +404,34 @@ def _parse_repo_inspection_response(text: str) -> Dict[str, str]:
 
 def _canonical_repo_evidence(
     tool_events: Sequence[Dict[str, Any]],
-) -> tuple[Dict[str, str], Dict[str, str]]:
+) -> tuple[Dict[str, str], Dict[str, str], Dict[str, Any] | None]:
     values: Dict[str, str] = {}
     refs: Dict[str, str] = {}
     evidence_paths: List[str] = []
+    conflict: Dict[str, Any] | None = None
+
+    def _record(key: str, raw_value: str, evidence_ref: str) -> None:
+        nonlocal conflict
+        normalized_value = _normalize_value(key, raw_value)
+        existing = values.get(key)
+        if (
+            conflict is None
+            and existing
+            and not _is_missing_value(key, existing)
+            and not _is_missing_value(key, normalized_value)
+            and not _values_match(key, existing, normalized_value)
+        ):
+            conflict = {
+                "conflicting_field": key,
+                "canonical_value": existing,
+                "response_value": normalized_value,
+                "evidence_ref": refs.get(key) or evidence_ref,
+                "conflict_source": "structured_evidence",
+                "safe_next_action": "Inspect the conflicting repository evidence and response before retrying.",
+            }
+            return
+        values[key] = normalized_value
+        refs[key] = evidence_ref
 
     for event in tool_events:
         if event.get("success") is not True:
@@ -374,8 +447,7 @@ def _canonical_repo_evidence(
                 mapped = _TOOLPROPOSAL_OUTPUT_KEYS.get(_normalize_label(raw_key))
                 if not mapped:
                     continue
-                values[mapped] = _normalize_value(mapped, raw_value)
-                refs[mapped] = evidence_ref
+                _record(mapped, raw_value, evidence_ref)
             script_path = str(metadata.get("script_path") or "").strip()
             if script_path:
                 evidence_paths.append(script_path)
@@ -389,7 +461,7 @@ def _canonical_repo_evidence(
 
     if evidence_paths:
         values["evidence_paths"] = ", ".join(dict.fromkeys(evidence_paths))
-    return values, refs
+    return values, refs, conflict
 
 
 def _normalize_label(label: str) -> str:

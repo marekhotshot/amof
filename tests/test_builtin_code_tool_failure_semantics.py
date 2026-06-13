@@ -15,10 +15,15 @@ if str(SCRIPTS_ROOT) not in sys.path:
 from amof.commands.agent_cmd import _agent_plans_dir, _resolved_manifest_artifact_root
 from amof.contracts_runtime import AgentRunResult
 from amof.orchestrator.tool_failure_semantics import (
+    _REPO_FIELD_ALIASES,
     analyze_tool_call_events,
     enrich_repo_inspection_response,
+    normalize_repo_inspection_findings,
+    render_canonical_findings,
+    render_terminal_task_findings,
     repo_inspection_runner_tools,
     repo_inspection_task_guidance,
+    strip_canonical_labels,
     validate_repo_inspection_response,
 )
 from amof.orchestrator.tools.glob_tool import GlobTool
@@ -322,38 +327,9 @@ class BuiltinCodeToolFailureSemanticsTests(unittest.TestCase):
         self.assertEqual(validation.normalized["mission_revision_test_paths"], "none found")
         self.assertEqual(validation.normalized["hermes_read_only_test_paths"], "none found")
 
-    def test_repo_inspection_conflicting_evidence_returns_conflict(self) -> None:
-        tool_events = [
-            {
-                "event_id": "run:0007",
-                "tool": "ToolProposal",
-                "success": True,
-                "metadata": {
-                    "stdout": (
-                        "repository_path=/tmp/ws-1/00-amof\n"
-                        "branch_or_detached_state=detached\n"
-                        "HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
-                        "origin/main_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
-                        "cleanliness=clean\n"
-                    ),
-                    "script_path": "/tmp/evidence/proposal.sh",
-                },
-            },
-            {
-                "event_id": "run:0008",
-                "tool": "Glob",
-                "args": {"glob_pattern": "**/tests/mission-revision/**"},
-                "success": True,
-                "output_preview": "No files matched the pattern.",
-            },
-            {
-                "event_id": "run:0009",
-                "tool": "Glob",
-                "args": {"glob_pattern": "**/tests/hermes/**"},
-                "success": True,
-                "output_preview": "No files matched the pattern.",
-            },
-        ]
+    def test_repo_inspection_prose_contradiction_completes_with_canonical_findings(self) -> None:
+        # Reference live-defect shape: prose contradicts canonical evidence.
+        # Prose is commentary only; it cannot conflict with canonical fields.
         validation = validate_repo_inspection_response(
             "Repository Path: /tmp/ws-1/00-amof\n"
             "Checkout State: detached\n"
@@ -361,10 +337,88 @@ class BuiltinCodeToolFailureSemanticsTests(unittest.TestCase):
             "origin/main SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
             "Cleanliness: clean\n"
             "Evidence Paths: /tmp/evidence/proposal.sh\n",
+            tool_events=_canonical_repo_tool_events(),
+        )
+        self.assertTrue(validation.ok)
+        self.assertIsNone(validation.conflict)
+        self.assertEqual(
+            validation.normalized["head_sha"],
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        rendered = render_terminal_task_findings(validation)
+        self.assertIn("HEAD SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", rendered)
+        self.assertNotIn("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", rendered)
+
+    def test_repo_inspection_prose_placeholder_contradiction_completes(self) -> None:
+        # The exact live failure: prose claimed the repository path was not
+        # explicitly provided while canonical evidence proved it.
+        validation = validate_repo_inspection_response(
+            "Repository Path: Not explicitly provided in the output.\n"
+            "Evidence Paths: some mislabeled prose value\n"
+            "The inspection completed; see canonical metadata.\n",
+            tool_events=_canonical_repo_tool_events(),
+        )
+        self.assertIsNone(validation.conflict)
+        self.assertEqual(validation.normalized["repository_path"], "/tmp/ws-1/00-amof")
+
+    def test_genuine_structured_evidence_conflict_still_returns_conflict(self) -> None:
+        # Two successful canonical evidence sources disagreeing is a genuine
+        # findings conflict and must not be weakened.
+        tool_events = list(_canonical_repo_tool_events())
+        tool_events.append(
+            {
+                "event_id": "run:0010",
+                "tool": "ToolProposal",
+                "success": True,
+                "metadata": {
+                    "stdout": "HEAD_SHA=cccccccccccccccccccccccccccccccccccccccc\n",
+                    "script_path": "/tmp/evidence/proposal-2.sh",
+                },
+            }
+        )
+        validation = validate_repo_inspection_response(
+            "Repository Path: /tmp/ws-1/00-amof\n"
+            "Checkout State: detached\n"
+            "Cleanliness: clean\n"
+            "Evidence Paths: /tmp/evidence/proposal.sh\n",
             tool_events=tool_events,
         )
         self.assertFalse(validation.ok)
         self.assertEqual(validation.conflict["conflicting_field"], "head_sha")
+        self.assertEqual(validation.conflict["conflict_source"], "structured_evidence")
+
+    def test_normalized_findings_render_is_deterministic(self) -> None:
+        first = normalize_repo_inspection_findings(
+            _valid_repo_inspection_response(),
+            tool_events=_canonical_repo_tool_events(),
+        )
+        second = normalize_repo_inspection_findings(
+            _valid_repo_inspection_response(),
+            tool_events=_canonical_repo_tool_events(),
+        )
+        rendered_first = render_canonical_findings(first.normalized)
+        rendered_second = render_canonical_findings(second.normalized)
+        self.assertEqual(
+            rendered_first.encode("utf-8"),
+            rendered_second.encode("utf-8"),
+        )
+        reparsed = validate_repo_inspection_response(
+            rendered_first,
+            tool_events=_canonical_repo_tool_events(),
+        )
+        self.assertTrue(reparsed.ok)
+
+    def test_label_stripping_covers_all_repo_field_aliases(self) -> None:
+        lines = ["Commentary that must survive label stripping."]
+        for aliases in _REPO_FIELD_ALIASES.values():
+            for alias in aliases:
+                lines.append(f"{alias.title()}: prose-injected value")
+                lines.append(f"- **{alias}**: prose-injected bullet value")
+        stripped = strip_canonical_labels("\n".join(lines))
+        self.assertIn("Commentary that must survive label stripping.", stripped)
+        self.assertNotIn("prose-injected", stripped)
+        # Stripped commentary can no longer state any canonical field.
+        self.assertEqual(validate_repo_inspection_response(stripped).normalized, {})
 
     def test_glob_ignores_cursor_style_ignore_globs_parameter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -446,6 +500,40 @@ class BuiltinCodeToolFailureSemanticsTests(unittest.TestCase):
         ).to_dict()
         _validate(AGENT_RUN_RESULT_SCHEMA_PATH, legacy)
         _validate(AGENT_RUN_RESULT_SCHEMA_PATH, detailed)
+
+
+def _canonical_repo_tool_events() -> list[dict]:
+    return [
+        {
+            "event_id": "run:0007",
+            "tool": "ToolProposal",
+            "success": True,
+            "metadata": {
+                "stdout": (
+                    "repository_path=/tmp/ws-1/00-amof\n"
+                    "branch_or_detached_state=detached\n"
+                    "HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "origin/main_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "cleanliness=clean\n"
+                ),
+                "script_path": "/tmp/evidence/proposal.sh",
+            },
+        },
+        {
+            "event_id": "run:0008",
+            "tool": "Glob",
+            "args": {"glob_pattern": "**/tests/mission-revision/**"},
+            "success": True,
+            "output_preview": "No files matched the pattern.",
+        },
+        {
+            "event_id": "run:0009",
+            "tool": "Glob",
+            "args": {"glob_pattern": "**/tests/hermes/**"},
+            "success": True,
+            "output_preview": "No files matched the pattern.",
+        },
+    ]
 
 
 def _repo_inspection_task() -> str:

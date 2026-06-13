@@ -32,6 +32,8 @@ from ..contracts_runtime import AgentRunResult
 from ..orchestrator.tool_failure_semantics import (
     analyze_tool_call_events,
     enrich_repo_inspection_response,
+    render_terminal_task_findings,
+    strip_canonical_labels,
 )
 from .studio import (
     StudioCliError,
@@ -4436,6 +4438,17 @@ def cmd_agent(
         repo_validation = tool_failure_analysis["repo_validation"]
         changed_paths = _git_changed_paths(git_before, git_after)
 
+        # Canonical structured evidence owns the terminal findings for
+        # repository-inspection runs. Model prose is demoted to commentary and
+        # stripped of canonical-looking labels so it can never restate or
+        # redefine canonical fields.
+        task_commentary: str | None = None
+        if tool_failure_analysis.get("repo_inspection_mode"):
+            canonical_findings = render_terminal_task_findings(repo_validation)
+            if canonical_findings:
+                task_commentary = strip_canonical_labels(task_findings or "") or None
+                task_findings = canonical_findings
+
         verifier_failed = False
         verifier_reasons: list[str] = []
         if getattr(repo_validation, "conflict", None):
@@ -4572,22 +4585,29 @@ def cmd_agent(
                 "findings_conflict": getattr(repo_validation, "conflict", None),
                 "normalized_repo_findings": dict(getattr(repo_validation, "normalized", {})),
                 "missing_repo_findings": list(getattr(repo_validation, "missing", [])),
+                "task_commentary": task_commentary,
                 "fatal_tool_failures": [failure.to_failure_dict() for failure in fatal_tool_failures],
                 "nonfatal_tool_failures": [
                     failure.to_failure_dict()
                     for failure in tool_failure_analysis["nonfatal_failures"]
                 ],
             }
+            run_failed = plan.has_failures or verifier_failed
             return _build_plan_execute_envelope(
-                status="completed" if not plan.has_failures and not verifier_failed else "failed",
+                status="completed" if not run_failed else "failed",
                 session_id=session.id,
-                exit_code=0 if not plan.has_failures and not verifier_failed else 1,
+                exit_code=0 if not run_failed else 1,
                 stop_reason=(
-                    "completed"
+                    # A genuine structured-evidence conflict terminates the run
+                    # with the specific findings_conflict stop reason, not the
+                    # generic plan_has_failures.
+                    "findings_conflict"
+                    if run_failed and getattr(repo_validation, "conflict", None)
+                    else "completed"
                     if not getattr(agent, "stop_reason", None)
                     or getattr(agent, "stop_reason", None) == "pending"
                     else getattr(agent, "stop_reason", None)
-                    if not plan.has_failures and not verifier_failed
+                    if not run_failed
                     else getattr(agent, "stop_reason", None) or "plan_has_failures"
                 ),
                 final_text=completed_line,
