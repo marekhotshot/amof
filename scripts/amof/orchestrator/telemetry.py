@@ -61,6 +61,7 @@ class ToolMetrics:
     calls: int = 0
     successes: int = 0
     failures: int = 0
+    advisory_blocks: int = 0
     total_duration_ms: int = 0
 
     @property
@@ -205,6 +206,11 @@ class SessionTelemetry:
         tm.calls += 1
         if success:
             tm.successes += 1
+        elif metadata and metadata.get("advisory"):
+            # Advisory guardrail redirect: the model is told to use a different
+            # allowed approach. It is neither a success nor a genuine failure, so
+            # it is bucketed separately and excluded from the fatal failure count.
+            tm.advisory_blocks += 1
         else:
             tm.failures += 1
         tm.total_duration_ms += duration_ms

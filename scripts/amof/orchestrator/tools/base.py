@@ -101,6 +101,22 @@ class ToolResult:
         return f"Error: {self.error}\n{self.output}" if self.output else f"Error: {self.error}"
 
 
+# Guardrail messages that redirect the model to a different (allowed) approach
+# rather than reporting a genuine execution failure. When the agent receives one
+# of these, adapts, and still reaches `completed`, the redirect must NOT be
+# counted as a tool failure that fatally fails an otherwise-successful subtask.
+WRITE_OVERWRITE_ADVISORY = (
+    "BLOCKED: Write cannot overwrite an existing file for this task. "
+    "Use StrReplace for targeted edits, or make the top-level task "
+    "explicitly request a full-file rewrite."
+)
+
+# Advisory guardrail redirects keyed for recovery-aware accounting. Genuine
+# failures (permission denied, IO errors, policy/trust-boundary denials,
+# writable-root denials) are deliberately excluded.
+ADVISORY_GUARDRAIL_MESSAGES = frozenset({WRITE_OVERWRITE_ADVISORY})
+
+
 @dataclass
 class ToolCall:
     """A tool call from the LLM."""
@@ -596,7 +612,12 @@ class ToolRegistry:
 
         error = self._check_guardrails(tool_call)
         if error:
-            return ToolResult(success=False, output="", error=error)
+            # Advisory guardrail redirects (e.g. "use StrReplace instead of
+            # overwriting") are surfaced to the model so it can adapt. They are
+            # marked advisory so recovery-aware accounting does not treat a
+            # recovered redirect as a fatal tool failure.
+            metadata = {"advisory": True} if error in ADVISORY_GUARDRAIL_MESSAGES else {}
+            return ToolResult(success=False, output="", error=error, metadata=metadata)
 
         try:
             result = tool.execute(**tool_call.arguments)
@@ -741,11 +762,7 @@ class ToolRegistry:
                     self.trust_state and self.trust_state.full_rewrite_authorized
                 )
                 if target_path.exists() and not full_rewrite_authorized:
-                    return (
-                        "BLOCKED: Write cannot overwrite an existing file for this task. "
-                        "Use StrReplace for targeted edits, or make the top-level task "
-                        "explicitly request a full-file rewrite."
-                    )
+                    return WRITE_OVERWRITE_ADVISORY
             return None
 
         # Shell checks command (dangerous + sensitive prompts handled inside check_shell)
