@@ -97,6 +97,11 @@ class PromoteMainPlan:
     legacy_numeric_fallback_used: bool = False
     promotion_target_policy_path: str | None = None
     compat_lock_reconciliation: dict[str, Any] | None = None
+    merge_base_sha: str | None = None
+    candidate_delta_paths: list[str] | None = None
+    current_main_advanced_paths: list[str] | None = None
+    overlap_paths: list[str] | None = None
+    stale_base: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1232,6 +1237,7 @@ def _materialize_synthetic_tree(
     source_sha: str,
     gitops_commit_sha: str | None,
     env_delta_files: list[str],
+    delta_base: str | None = None,
 ) -> tuple[str | None, str | None]:
     with tempfile.TemporaryDirectory(prefix="amof-promote-main-") as temp_dir:
         temp_path = Path(temp_dir)
@@ -1239,7 +1245,7 @@ def _materialize_synthetic_tree(
         if add_completed.returncode != 0:
             return None, (add_completed.stderr or add_completed.stdout or "").strip() or "git worktree add failed"
         try:
-            code_patch = _patch_text(repo_path, main_base, source_sha)
+            code_patch = _patch_text(repo_path, delta_base if delta_base is not None else main_base, source_sha)
             _apply_patch(temp_path, code_patch)
             if gitops_commit_sha and env_delta_files:
                 env_patch = _patch_text(repo_path, source_sha, gitops_commit_sha, pathspecs=env_delta_files)
@@ -1261,6 +1267,7 @@ def _create_synthetic_commit(
     gitops_commit_sha: str | None,
     env_delta_files: list[str],
     commit_message: str,
+    delta_base: str | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     with tempfile.TemporaryDirectory(prefix="amof-promote-main-") as temp_dir:
         temp_path = Path(temp_dir)
@@ -1268,7 +1275,7 @@ def _create_synthetic_commit(
         if add_completed.returncode != 0:
             return None, None, (add_completed.stderr or add_completed.stdout or "").strip() or "git worktree add failed"
         try:
-            code_patch = _patch_text(repo_path, main_base, source_sha)
+            code_patch = _patch_text(repo_path, delta_base if delta_base is not None else main_base, source_sha)
             _apply_patch(temp_path, code_patch)
             if gitops_commit_sha and env_delta_files:
                 env_patch = _patch_text(repo_path, source_sha, gitops_commit_sha, pathspecs=env_delta_files)
@@ -1501,6 +1508,16 @@ def plan_promote_main_dry_run(
     gitops_input = str(bundle.gitops_commit_sha or "").strip()
     gitops_commit_sha = _resolve_commit(repo_path, gitops_input) if gitops_input else None
     expected_main_sha = _resolve_commit(repo_path, bundle.expected_main_sha)
+    # Candidate-delta base: promotion applies only diff(merge_base..source) so a
+    # stale candidate never reverts main's advancement. For a non-stale candidate
+    # based directly on expected_main_sha the merge-base equals expected_main_sha,
+    # preserving the existing single-candidate behavior exactly.
+    _merge_base_completed = _git(repo_path, "merge-base", source_sha, expected_main_sha)
+    delta_base = (
+        _merge_base_completed.stdout.strip()
+        if _merge_base_completed.returncode == 0 and _merge_base_completed.stdout.strip()
+        else expected_main_sha
+    )
     bundle_id = _bundle_id(bundle.repo, ticket_id, source_sha, gitops_commit_sha, expected_main_sha)
     promotion_id = _promotion_id(bundle_id)
     lock_path = workspace_root / LOCK_DIR / f"promote-main-{_slugify(bundle.repo)}.lock"
@@ -1542,6 +1559,9 @@ def plan_promote_main_dry_run(
     code_delta_files: list[str] = []
     env_delta_files: list[str] = []
     synthetic_tree_sha: str | None = None
+    current_main_advanced_paths: list[str] = []
+    overlap_paths: list[str] = []
+    stale_base: bool = False
     promotion_target_policy_path = (
         str(target.policy_path.resolve(strict=False)) if target.policy_path is not None else None
     )
@@ -1611,7 +1631,7 @@ def plan_promote_main_dry_run(
             elif gitops_commit_sha is not None and rejection_reason is None:
                 rejection_reason = "source_sha is not included before gitops_commit_sha"
 
-            code_delta_entries = _name_status_diff(repo_path, expected_main_sha, source_sha)
+            code_delta_entries = _name_status_diff(repo_path, delta_base, source_sha)
             code_delta_files = [path for _, path in code_delta_entries]
             forbidden_code_delta = _forbidden_code_delta_files(code_delta_entries)
             if rejection_reason is None and code_delta_files and not forbidden_code_delta:
@@ -1700,6 +1720,12 @@ def plan_promote_main_dry_run(
                     source_sha=source_sha,
                     current_origin_main_sha=current_origin_main_sha,
                 )
+                # Authoritative post-fetch merge-base; equals delta_base whenever the
+                # promotion proceeds (origin_main_matches_expected_main_sha is enforced).
+                delta_base = merge_base
+                current_main_advanced_paths = _changed_files(repo_path, merge_base, current_origin_main_sha)
+                overlap_paths = list(overlapping_files)
+                stale_base = not _is_ancestor(repo_path, current_origin_main_sha, source_sha)
                 if overlapping_files:
                     rejection_reason = (
                         "stale-base overlap detected: "
@@ -1720,6 +1746,7 @@ def plan_promote_main_dry_run(
                     source_sha=source_sha,
                     gitops_commit_sha=gitops_commit_sha,
                     env_delta_files=env_delta_files,
+                    delta_base=delta_base,
                 )
                 if materialize_error:
                     rejection_reason = f"failed to materialize synthetic result tree: {materialize_error}"
@@ -1752,6 +1779,11 @@ def plan_promote_main_dry_run(
                 failure_classification=failure_classification,
                 legacy_numeric_fallback_used=legacy_numeric_fallback_used,
                 promotion_target_policy_path=promotion_target_policy_path,
+                merge_base_sha=delta_base,
+                candidate_delta_paths=list(code_delta_files),
+                current_main_advanced_paths=list(current_main_advanced_paths),
+                overlap_paths=list(overlap_paths),
+                stale_base=stale_base,
             )
     except PromotionLockError as exc:
         plan = PromoteMainPlan(
@@ -2002,6 +2034,7 @@ def execute_promote_main_push(
                 gitops_commit_sha=plan.gitops_commit_sha,
                 env_delta_files=plan.env_delta_files,
                 commit_message=plan.synthetic_commit_message,
+                delta_base=plan.merge_base_sha,
             )
             if materialize_error:
                 finalized = replace(
