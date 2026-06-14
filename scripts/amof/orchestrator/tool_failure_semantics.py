@@ -288,6 +288,11 @@ def analyze_tool_call_events(
     for call_index, event in enumerate(tool_events, start=1):
         if event.get("success") is not False:
             continue
+        # Advisory guardrail redirects (e.g. overwrite -> use StrReplace) are not
+        # genuine failures; the model is told to use a different allowed approach.
+        # Exclude them so a recovered redirect is not reported as a tool failure.
+        if (event.get("metadata") or {}).get("advisory"):
+            continue
         tool_name = str(event.get("tool") or "")
         args = dict(event.get("args") or {})
         error_summary = str(event.get("error") or "tool execution failed").strip()
