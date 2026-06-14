@@ -2320,12 +2320,55 @@ def _git_probe(workspace_root: Path) -> dict[str, str]:
         return result.stdout.strip()
 
     status = _run(["git", "status", "--short", "--untracked-files=all"])
+    tracked_numstat = _run(["git", "diff", "--numstat", "--"])
+    # `git diff` only reports tracked changes; newly created (untracked) files
+    # never appear. Synthesize numstat entries for untracked files so mutation
+    # detection, the diff guard, and py_compile verification all recognise
+    # create-only plans (the common case for new contract/module tickets).
+    untracked_numstat = _untracked_numstat(workspace_root, status)
+    numstat = "\n".join(part for part in (tracked_numstat, untracked_numstat) if part)
     return {
         "status": status,
         "status_entries": json.dumps(_git_status_entries(status)),
         "diff": _run(["git", "diff", "--"]),
-        "numstat": _run(["git", "diff", "--numstat", "--"]),
+        "numstat": numstat,
     }
+
+
+_UNTRACKED_NOISE_DIR_PARTS = {"__pycache__", ".git", ".pytest_cache", ".mypy_cache"}
+_UNTRACKED_NOISE_SUFFIXES = {".pyc", ".pyo", ".pyd"}
+
+
+def _is_untracked_noise(path: str) -> bool:
+    """True for build/cache artifacts that must not count as a target mutation."""
+    parts = Path(path).parts
+    if any(part in _UNTRACKED_NOISE_DIR_PARTS for part in parts):
+        return True
+    return Path(path).suffix.lower() in _UNTRACKED_NOISE_SUFFIXES
+
+
+def _untracked_numstat(workspace_root: Path, status_text: str) -> str:
+    """Build `git diff --numstat`-shaped lines for untracked files.
+
+    `git status --untracked-files=all` lists each untracked file individually,
+    so every `??` entry is a concrete path. Text files report their line count
+    as additions; unreadable/binary files use the numstat binary marker. Build
+    and cache artifacts (e.g. `__pycache__`, `*.pyc`) are excluded so they never
+    masquerade as a real target diff.
+    """
+    lines: list[str] = []
+    for st, path in _git_status_entries(status_text):
+        if st != "??" or not path or _is_untracked_noise(path):
+            continue
+        file_path = workspace_root / path
+        try:
+            if not file_path.is_file():
+                continue
+            added = len(file_path.read_text(encoding="utf-8").splitlines())
+            lines.append(f"{added}\t0\t{path}")
+        except (UnicodeDecodeError, OSError):
+            lines.append(f"-\t-\t{path}")
+    return "\n".join(lines)
 
 
 def _git_status_entries(status_text: str) -> list[list[str]]:
@@ -4403,7 +4446,12 @@ def cmd_agent(
                 git_before=git_before,
             )
         git_after = _git_probe(workspace_root)
-        diff_changed = git_before.get("diff") != git_after.get("diff")
+        # numstat now includes untracked (new) files, so comparing it detects
+        # create-only mutations that `git diff` alone (tracked-only) would miss.
+        diff_changed = (
+            git_before.get("diff") != git_after.get("diff")
+            or git_before.get("numstat") != git_after.get("numstat")
+        )
         has_after_diff = bool(git_after.get("numstat") or git_after.get("diff"))
         failed_tool_calls, failed_write_tool_calls = _tool_failure_counts(telemetry)
         write_action_count = _write_action_count(telemetry)

@@ -582,7 +582,6 @@ class RunnerFactory:
                 existing.calls += metrics.calls
                 existing.successes += metrics.successes
                 existing.failures += metrics.failures
-                existing.advisory_blocks += metrics.advisory_blocks
                 existing.total_duration_ms += metrics.total_duration_ms
 
         for path in child.inspected_files:
