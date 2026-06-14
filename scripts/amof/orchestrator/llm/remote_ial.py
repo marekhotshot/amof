@@ -44,6 +44,24 @@ def _parse_json_response(response: requests.Response) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _strip_code_fences(text: str) -> str:
+    """Remove one wrapping markdown code fence if present.
+
+    Strong planner models routinely wrap strict-JSON output in ```json ... ```
+    fences despite an explicit instruction not to. The remote-IAL structured
+    contract must tolerate that or the bounded plan-execute lane cannot use those
+    models. Only a single outer fence is removed; inner content is untouched.
+    """
+    stripped = str(text or "").strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    lines = lines[1:]  # drop the opening fence line (``` or ```json)
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]  # drop the closing fence line
+    return "\n".join(lines).strip()
+
+
 def _parse_optional_float(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
@@ -283,8 +301,9 @@ class RemoteIALClient(LLMClient):
                 message="Remote IAL structured response was empty.",
                 failure_class=PROVIDER_FAILURE_API_ERROR,
             )
+        candidate = _strip_code_fences(raw_text)
         try:
-            parsed = response_model.model_validate_json(raw_text)
+            parsed = response_model.model_validate_json(candidate)
         except (ValidationError, ValueError) as exc:
             raise ProviderError(
                 provider=self._provider,
@@ -297,5 +316,5 @@ class RemoteIALClient(LLMClient):
             usage=response.usage,
             stop_reason=response.stop_reason,
             raw=response.raw,
-            text=raw_text,
+            text=candidate,
         )
