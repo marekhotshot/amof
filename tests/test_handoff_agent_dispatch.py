@@ -159,6 +159,45 @@ class _FakeRunnerAgent:
         return f"fake agent response for {goal}"
 
 
+def _canonical_mission_packet(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "contract_version": "canonical-mission-packet-v1",
+        "mission": {
+            "mission_id": "AMOF-HANDOFF-CANONICAL-MISSION-PACKET-PUBLIC-001",
+            "ticket_id": "AMOF-123",
+        },
+        "task_class": "implementation",
+        "classification": "public",
+        "goal": "Implement the bounded public handoff transport slice.",
+        "objective": "Add strict public AMOF handoff transport support for canonical mission packets.",
+        "target_repository": {
+            "repo_name": "amof",
+            "repo_owner": "public",
+            "branch_ref": "origin/main",
+        },
+        "execution_allowed": True,
+        "mutations": {
+            "requested_mode": "bounded_worktree",
+            "allowed": ["bounded_worktree"],
+            "forbidden": [
+                "shell_commands",
+                "env_mutation",
+                "secret_injection",
+                "auth_headers",
+                "deployment",
+            ],
+        },
+        "validation_gates": [
+            "focused_handoff_tests",
+            "request_schema_tests",
+            "contract_tests",
+        ],
+    }
+    payload.update(overrides)
+    return json.loads(json.dumps(payload))
+
+
 def _write_packet(
     amof_home: Path,
     *,
@@ -166,6 +205,7 @@ def _write_packet(
     target: str = "amof-agent",
     text: str = "Execute this bounded goal.",
     studio_session_id: str | None = None,
+    payload_kind: str = "selected_text",
 ) -> Path:
     payload = handoff.PreparedPayload(
         text=text,
@@ -179,7 +219,7 @@ def _write_packet(
         source="chatgpt",
         target=target,
         studio_session_id=studio_session_id,
-        payload_kind="selected_text",
+        payload_kind=payload_kind,
         payload=payload,
         state="prepared",
     )
@@ -543,6 +583,35 @@ class HandoffAgentDispatchTests(unittest.TestCase):
         self.assertEqual(payload["status"], "accepted")
         self.assertEqual(payload["tracking_ref"], "handoff-test-001")
         self.assertEqual(state["status"], "accepted")
+
+    def test_accept_agent_is_idempotent_for_canonical_packet(self) -> None:
+        packet = _canonical_mission_packet()
+        with TemporaryDirectory(prefix="amof-handoff-accept-canonical-idempotent-") as td:
+            amof_home = Path(td)
+            canonical_text = handoff._canonical_json(packet)
+            _write_packet(
+                amof_home,
+                text=canonical_text,
+                payload_kind="canonical_mission_packet",
+            )
+            first_code, first_stdout, _first_stderr = _run_accept(
+                _accept_args(confirm=True), amof_home
+            )
+            state_path = (
+                amof_home / "share" / "handoff" / "state" / "handoff-test-001.json"
+            )
+            first_state = json.loads(state_path.read_text(encoding="utf-8"))
+            second_code, second_stdout, second_stderr = _run_accept(
+                _accept_args(confirm=True), amof_home
+            )
+            second_state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(first_code, 0)
+        self.assertEqual(second_code, 0)
+        self.assertEqual(second_stderr, "")
+        self.assertEqual(json.loads(first_stdout)["status"], "accepted")
+        self.assertEqual(json.loads(second_stdout)["status"], "accepted")
+        self.assertEqual(first_state, second_state)
 
     def test_status_projects_planning_waiting_executing_and_result_missing(self) -> None:
         with TemporaryDirectory(prefix="amof-handoff-status-projection-") as td:
@@ -1163,6 +1232,132 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(os.stat(result_path).st_mode), 0o600)
             self.assertIn("Execute-agent preview", stderr)
             self.assertNotIn("Execute this bounded goal.", stdout)
+
+    def test_canonical_packet_execute_derives_bounded_goal_not_raw_json(self) -> None:
+        captured: dict[str, object] = {}
+        canonical_payload = _canonical_mission_packet(
+            goal="Implement only the public transport handoff slice.",
+            objective="Add strict public handoff transport support for the canonical mission packet path only.",
+        )
+        canonical_text = handoff._canonical_json(canonical_payload)
+
+        def _fake_runtime(
+            manifest: dict[str, object],
+            payload: dict[str, object],
+            *,
+            studio_session_id: str | None = None,
+        ):
+            del manifest, studio_session_id
+            captured["payload"] = payload
+            return _correlation_envelope()
+
+        with TemporaryDirectory(prefix="amof-handoff-dispatch-canonical-goal-") as td:
+            amof_home = Path(td)
+            _write_packet(
+                amof_home,
+                text=canonical_text,
+                payload_kind="canonical_mission_packet",
+            )
+            with (
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope",
+                    side_effect=_fake_runtime,
+                ),
+            ):
+                code, stdout, stderr = _run_execute(
+                    _execute_args(confirm=True), amof_home
+                )
+
+        payload = captured["payload"]
+        assert isinstance(payload, dict)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout)["status"], "completed")
+        self.assertIn(
+            "Mission: AMOF-HANDOFF-CANONICAL-MISSION-PACKET-PUBLIC-001.",
+            payload["goal"],
+        )
+        self.assertIn("Ticket: AMOF-123.", payload["goal"])
+        self.assertIn("Task class: implementation.", payload["goal"])
+        self.assertIn(
+            "Goal: Implement only the public transport handoff slice.",
+            payload["goal"],
+        )
+        self.assertIn("Target repository: public/amof @ origin/main.", payload["goal"])
+        self.assertIn(
+            "Objective: Add strict public handoff transport support for the canonical mission packet path only.",
+            payload["goal"],
+        )
+        self.assertNotEqual(payload["goal"], canonical_text)
+        self.assertNotIn('{"schema_version"', payload["goal"])
+        self.assertIn("goal_source: canonical mission packet fields", stderr)
+        self.assertIn("mission_id: AMOF-HANDOFF-CANONICAL-MISSION-PACKET-PUBLIC-001", stderr)
+        self.assertNotIn("Implement only the public transport handoff slice.", stderr)
+        self.assertNotIn(
+            "Add strict public handoff transport support for the canonical mission packet path only.",
+            stderr,
+        )
+
+    def test_canonical_packet_execution_allowed_false_fails_closed(self) -> None:
+        canonical_text = handoff._canonical_json(
+            _canonical_mission_packet(execution_allowed=False)
+        )
+        with TemporaryDirectory(prefix="amof-handoff-dispatch-canonical-disabled-") as td:
+            amof_home = Path(td)
+            _write_packet(
+                amof_home,
+                text=canonical_text,
+                payload_kind="canonical_mission_packet",
+            )
+            with patch(
+                "amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope"
+            ) as runtime_mock:
+                code, stdout, stderr = _run_execute(
+                    _execute_args(confirm=True), amof_home
+                )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        runtime_mock.assert_not_called()
+        self.assertIn("execution_allowed", stderr)
+
+    def test_canonical_packet_preview_and_receipt_do_not_leak_secret_like_objective(
+        self,
+    ) -> None:
+        secret_value = "sk-public-test-should-not-leak"
+        canonical_text = handoff._canonical_json(
+            _canonical_mission_packet(
+                objective=f"Implement the slice without exposing {secret_value}."
+            )
+        )
+        with TemporaryDirectory(prefix="amof-handoff-dispatch-canonical-redacted-") as td:
+            amof_home = Path(td)
+            _write_packet(
+                amof_home,
+                text=canonical_text,
+                payload_kind="canonical_mission_packet",
+            )
+            with (
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope",
+                ) as runtime_mock,
+            ):
+                code, stdout, stderr = _run_execute(
+                    _execute_args(confirm=True), amof_home
+                )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        runtime_mock.assert_not_called()
+        self.assertIn("secret-like material", stderr)
+        self.assertNotIn(secret_value, stderr)
 
     def test_no_network_subprocess_or_external_app_integration_is_introduced(
         self,

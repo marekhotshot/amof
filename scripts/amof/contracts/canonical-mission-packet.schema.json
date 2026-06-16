@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/canonical-mission-packet.schema.json",
+  "title": "Canonical Mission Packet",
+  "description": "Strict versioned public handoff packet for bounded AMOF mission transport. This schema carries identity, policy, bounded goal and objective, target repository identity, and mutation scope without allowing command, secret, or self-approval authority fields.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "contract_version",
+    "mission",
+    "task_class",
+    "classification",
+    "goal",
+    "objective",
+    "target_repository",
+    "execution_allowed",
+    "mutations",
+    "validation_gates"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "contract_version": {
+      "type": "string",
+      "const": "canonical-mission-packet-v1"
+    },
+    "mission": {
+      "type": "object",
+      "required": [
+        "mission_id"
+      ],
+      "properties": {
+        "mission_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "ticket_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "task_class": {
+      "type": "string",
+      "enum": [
+        "analysis",
+        "implementation",
+        "validation",
+        "operations",
+        "research",
+        "documentation",
+        "migration",
+        "incident_response",
+        "other"
+      ]
+    },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "public",
+        "internal",
+        "restricted"
+      ]
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 280
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 800
+    },
+    "studio_session_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "target_repository": {
+      "type": "object",
+      "required": [
+        "repo_name",
+        "branch_ref"
+      ],
+      "properties": {
+        "repo_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "repo_owner": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "branch_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^(?![/.])(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]{1,128}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "execution_allowed": {
+      "type": "boolean"
+    },
+    "mutations": {
+      "type": "object",
+      "required": [
+        "requested_mode",
+        "allowed",
+        "forbidden"
+      ],
+      "properties": {
+        "requested_mode": {
+          "type": "string",
+          "enum": [
+            "read_only",
+            "bounded_worktree",
+            "runtime_mutation"
+          ]
+        },
+        "allowed": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "read_only",
+              "bounded_worktree",
+              "runtime_mutation"
+            ]
+          }
+        },
+        "forbidden": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[a-z0-9](?:[a-z0-9_-]{0,63})$"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "validation_gates": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120,
+        "pattern": "^[a-z0-9](?:[a-z0-9_-]{0,63})$"
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": [
+        "environment",
+        "namespace"
+      ],
+      "properties": {
+        "environment": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,119})$"
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9](?:[-a-z0-9.]{0,61}[a-z0-9])?$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mutations": {
+            "properties": {
+              "requested_mode": {
+                "const": "runtime_mutation"
+              }
+            },
+            "required": [
+              "requested_mode"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "runtime"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "runtime"
+        ]
+      },
+      "then": {
+        "properties": {
+          "mutations": {
+            "properties": {
+              "requested_mode": {
+                "const": "runtime_mutation"
+              }
+            },
+            "required": [
+              "requested_mode"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

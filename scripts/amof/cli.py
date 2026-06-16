@@ -189,7 +189,7 @@ def parse_args() -> argparse.Namespace:
     handoff_prepare.add_argument(
         "--payload-kind",
         required=True,
-        choices=["selected-text", "last-response"],
+        choices=["selected-text", "last-response", "canonical-mission-packet"],
         help="Operator-selected payload kind to prepare",
     )
     handoff_prepare.add_argument(

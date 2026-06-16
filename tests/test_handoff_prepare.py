@@ -58,6 +58,47 @@ def _outbox_dir(amof_home: Path) -> Path:
     return amof_home / "share" / "handoff" / "outbox"
 
 
+def _canonical_mission_packet(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "contract_version": "canonical-mission-packet-v1",
+        "mission": {
+            "mission_id": "AMOF-HANDOFF-CANONICAL-MISSION-PACKET-PUBLIC-001",
+            "ticket_id": "AMOF-123",
+        },
+        "task_class": "implementation",
+        "classification": "public",
+        "goal": "Implement the bounded public handoff transport slice.",
+        "objective": "Add strict public AMOF handoff transport support for canonical mission packets.",
+        "target_repository": {
+            "repo_name": "amof",
+            "repo_owner": "public",
+            "branch_ref": "origin/main",
+        },
+        "execution_allowed": True,
+        "mutations": {
+            "requested_mode": "bounded_worktree",
+            "allowed": ["bounded_worktree"],
+            "forbidden": [
+                "shell_commands",
+                "env_mutation",
+                "secret_injection",
+                "auth_headers",
+                "deployment",
+            ],
+        },
+        "validation_gates": [
+            "focused_handoff_tests",
+            "request_schema_tests",
+            "contract_tests",
+            "py_compile",
+            "git_diff_check",
+        ],
+    }
+    payload.update(overrides)
+    return json.loads(json.dumps(payload))
+
+
 class HandoffPrepareTests(unittest.TestCase):
     def test_selected_text_preview_without_confirmation_writes_nothing(self) -> None:
         with TemporaryDirectory(prefix="amof-handoff-preview-") as td:
@@ -95,6 +136,167 @@ class HandoffPrepareTests(unittest.TestCase):
             self.assertIn("payload_kind: last_response", stderr)
             self.assertIn("target: chatgpt", stderr)
             self.assertFalse(_outbox_dir(amof_home).exists())
+
+    def test_canonical_mission_packet_prepare_writes_canonical_payload_and_redacts_preview(
+        self,
+    ) -> None:
+        packet = _canonical_mission_packet()
+        raw = json.dumps(packet, indent=2).encode("utf-8")
+        with TemporaryDirectory(prefix="amof-handoff-canonical-prepare-") as td:
+            code, stdout, stderr = _run_prepare(
+                _prepare_args(
+                    confirm=True,
+                    payload_kind="canonical-mission-packet",
+                    studio_session="studio-20260608-004150",
+                ),
+                raw,
+                Path(td),
+            )
+
+            receipt = json.loads(stdout)
+            packet_path = Path(receipt["packet_path"])
+            written_packet = json.loads(packet_path.read_text(encoding="utf-8"))
+            stored_text = written_packet["payload"]["text"]
+            expected_packet = dict(packet)
+            expected_packet["studio_session_id"] = "studio-20260608-004150"
+
+        self.assertEqual(code, 0)
+        self.assertIn("payload_kind: canonical_mission_packet", stderr)
+        self.assertIn("canonical_mission_packet:", stderr)
+        self.assertIn("mission_id: AMOF-HANDOFF-CANONICAL-MISSION-PACKET-PUBLIC-001", stderr)
+        self.assertIn("ticket_id: AMOF-123", stderr)
+        self.assertIn("studio_session_id: studio-20260608-004150", stderr)
+        self.assertNotIn(expected_packet["objective"], stderr)
+        self.assertNotIn(expected_packet["goal"], stderr)
+        self.assertEqual(stored_text, handoff._canonical_json(expected_packet))
+        self.assertEqual(
+            receipt["sha256"],
+            handoff.hashlib.sha256(stored_text.encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(written_packet["payload_kind"], "canonical_mission_packet")
+        self.assertEqual(
+            written_packet["studio_session_id"], "studio-20260608-004150"
+        )
+
+    def test_canonical_mission_packet_invalid_json_is_rejected(self) -> None:
+        with TemporaryDirectory(prefix="amof-handoff-canonical-invalid-json-") as td:
+            code, stdout, stderr = _run_prepare(
+                _prepare_args(payload_kind="canonical-mission-packet"),
+                b'{"schema_version":1,',
+                Path(td),
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("valid JSON", stderr)
+
+    def test_canonical_mission_packet_non_object_json_is_rejected(self) -> None:
+        with TemporaryDirectory(prefix="amof-handoff-canonical-non-object-") as td:
+            code, stdout, stderr = _run_prepare(
+                _prepare_args(payload_kind="canonical-mission-packet"),
+                b'["not","an","object"]',
+                Path(td),
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("JSON object", stderr)
+
+    def test_canonical_mission_packet_missing_mission_identity_is_rejected(self) -> None:
+        packet = _canonical_mission_packet()
+        mission = dict(packet["mission"])
+        mission.pop("mission_id")
+        packet["mission"] = mission
+        with TemporaryDirectory(prefix="amof-handoff-canonical-missing-mission-") as td:
+            code, stdout, stderr = _run_prepare(
+                _prepare_args(payload_kind="canonical-mission-packet"),
+                json.dumps(packet).encode("utf-8"),
+                Path(td),
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("mission", stderr)
+        self.assertIn("required fields", stderr)
+
+    def test_canonical_mission_packet_unknown_unsafe_fields_are_rejected(self) -> None:
+        packet = _canonical_mission_packet()
+        packet["filesystem_path"] = "/tmp/unsafe"
+        with TemporaryDirectory(prefix="amof-handoff-canonical-unknown-field-") as td:
+            code, stdout, stderr = _run_prepare(
+                _prepare_args(payload_kind="canonical-mission-packet"),
+                json.dumps(packet).encode("utf-8"),
+                Path(td),
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("unknown fields", stderr)
+
+    def test_canonical_mission_packet_secret_like_values_are_rejected_without_echoing_them(
+        self,
+    ) -> None:
+        secret_value = "sk-public-test-should-not-leak"
+        packet = _canonical_mission_packet(
+            objective=f"Do not expose token={secret_value} during handoff."
+        )
+        with TemporaryDirectory(prefix="amof-handoff-canonical-secret-") as td:
+            code, stdout, stderr = _run_prepare(
+                _prepare_args(payload_kind="canonical-mission-packet"),
+                json.dumps(packet).encode("utf-8"),
+                Path(td),
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("secret-like material", stderr)
+        self.assertNotIn(secret_value, stderr)
+
+    def test_canonical_mission_packet_rejects_shell_env_token_and_self_approval_fields(
+        self,
+    ) -> None:
+        unsafe_fields = {
+            "command": "echo unsafe",
+            "shell_command": "echo unsafe",
+            "env": {"OPENAI_API_KEY": "secret"},
+            "token": "secret-value",
+            "approve_capabilities": ["secret"],
+            "approve_tool_packs": ["ops-jenkins"],
+            "approve_writable_roots": ["/tmp/out"],
+        }
+        for field_name, field_value in unsafe_fields.items():
+            with self.subTest(field_name=field_name):
+                packet = _canonical_mission_packet()
+                packet[field_name] = field_value
+                with TemporaryDirectory(
+                    prefix=f"amof-handoff-canonical-unsafe-{field_name}-"
+                ) as td:
+                    code, stdout, stderr = _run_prepare(
+                        _prepare_args(payload_kind="canonical-mission-packet"),
+                        json.dumps(packet).encode("utf-8"),
+                        Path(td),
+                    )
+                self.assertEqual(code, 1)
+                self.assertEqual(stdout, "")
+                self.assertIn("unknown fields", stderr)
+
+    def test_canonical_mission_packet_schema_is_strict_and_versioned(self) -> None:
+        schema = json.loads(
+            (
+                ROOT / "contracts" / "canonical-mission-packet.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(schema["properties"]["schema_version"]["const"], 1)
+        self.assertEqual(
+            schema["properties"]["contract_version"]["const"],
+            "canonical-mission-packet-v1",
+        )
+        self.assertFalse(schema["additionalProperties"])
+        self.assertIn("runtime", schema["properties"])
+        self.assertIn("mission", schema["required"])
+        self.assertIn("goal", schema["required"])
+        self.assertIn("branch_ref", schema["properties"]["target_repository"]["required"])
 
     def test_confirmed_flow_writes_exactly_one_packet_and_one_json_receipt(
         self,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -22,9 +23,15 @@ MAX_PAYLOAD_UTF8_BYTES = 40000
 HANDOFF_PACKET_SCHEMA_VERSION = 1
 HANDOFF_RECEIPT_SCHEMA_VERSION = 1
 HANDOFF_TARGET_AMOF_AGENT = "amof-agent"
+CANONICAL_MISSION_PACKET_SCHEMA_VERSION = 1
+CANONICAL_MISSION_PACKET_CONTRACT_VERSION = "canonical-mission-packet-v1"
+CANONICAL_MUTATION_ALLOWED_VALUES = frozenset(
+    {"read_only", "bounded_worktree", "runtime_mutation"}
+)
 PAYLOAD_KIND_MAP = {
     "selected-text": "selected_text",
     "last-response": "last_response",
+    "canonical-mission-packet": "canonical_mission_packet",
 }
 ALLOWED_PAYLOAD_KINDS = frozenset(PAYLOAD_KIND_MAP.values())
 HANDOFF_EXECUTION_STATUSES = frozenset(
@@ -43,6 +50,37 @@ HANDOFF_EXECUTION_STATUSES = frozenset(
 METADATA_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,63})$")
 HANDOFF_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+CANONICAL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+CANONICAL_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+CANONICAL_REPO_REF_RE = re.compile(
+    r"^(?![/.])(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._/-]{1,128}$"
+)
+CANONICAL_RUNTIME_SCOPE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,119})$")
+K8S_NAMESPACE_RE = re.compile(r"^[a-z0-9](?:[-a-z0-9.]{0,61}[a-z0-9])?$")
+CANONICAL_TASK_CLASSES = frozenset(
+    {
+        "analysis",
+        "implementation",
+        "validation",
+        "operations",
+        "research",
+        "documentation",
+        "migration",
+        "incident_response",
+        "other",
+    }
+)
+CANONICAL_CLASSIFICATIONS = frozenset({"public", "internal", "restricted"})
+SECRET_LIKE_VALUE_RE = re.compile(
+    r"(?i)(?:"
+    r"authorization\s*:\s*bearer\b|"
+    r"bearer\s+[A-Za-z0-9._-]{8,}|"
+    r"(?:api[_-]?key|secret|token|password)\s*[:=]\s*['\"]?[A-Za-z0-9._/+:-]{6,}|"
+    r"ghp_[A-Za-z0-9]{20,}|"
+    r"sk-[A-Za-z0-9._-]{12,}|"
+    r"AKIA[0-9A-Z]{16}"
+    r")"
+)
 
 
 @dataclass(frozen=True)
@@ -107,6 +145,146 @@ class PreparedHandoffReceipt:
             "utf8_byte_count": self.utf8_byte_count,
             "sha256": self.sha256,
         }
+
+
+@dataclass(frozen=True)
+class CanonicalMissionPacket:
+    schema_version: int
+    contract_version: str
+    mission_id: str
+    ticket_id: str
+    task_class: str
+    classification: str
+    goal: str
+    objective: str
+    repo_name: str
+    repo_owner: str | None
+    branch_ref: str
+    execution_allowed: bool
+    requested_mode: str
+    allowed_mutations: tuple[str, ...]
+    forbidden_mutations: tuple[str, ...]
+    validation_gates: tuple[str, ...]
+    studio_session_id: str | None = None
+    runtime_environment: str | None = None
+    runtime_namespace: str | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        mission: dict[str, Any] = {
+            "mission_id": self.mission_id,
+            "ticket_id": self.ticket_id,
+        }
+        target_repository: dict[str, Any] = {
+            "repo_name": self.repo_name,
+            "branch_ref": self.branch_ref,
+        }
+        if self.repo_owner is not None:
+            target_repository["repo_owner"] = self.repo_owner
+        payload: dict[str, Any] = {
+            "schema_version": self.schema_version,
+            "contract_version": self.contract_version,
+            "mission": mission,
+            "task_class": self.task_class,
+            "classification": self.classification,
+            "goal": self.goal,
+            "objective": self.objective,
+            "target_repository": target_repository,
+            "execution_allowed": self.execution_allowed,
+            "mutations": {
+                "requested_mode": self.requested_mode,
+                "allowed": list(self.allowed_mutations),
+                "forbidden": list(self.forbidden_mutations),
+            },
+            "validation_gates": list(self.validation_gates),
+        }
+        if self.studio_session_id is not None:
+            payload["studio_session_id"] = self.studio_session_id
+        if self.runtime_environment is not None or self.runtime_namespace is not None:
+            payload["runtime"] = {
+                "environment": self.runtime_environment,
+                "namespace": self.runtime_namespace,
+            }
+        return payload
+
+    def safe_preview_lines(self, *, indent: str = "") -> list[str]:
+        lines = [
+            f"{indent}canonical_mission_packet:",
+            f"{indent}  schema_version: {self.schema_version}",
+            f"{indent}  contract_version: {self.contract_version}",
+            f"{indent}  mission_id: {self.mission_id}",
+            f"{indent}  ticket_id: {self.ticket_id}",
+            f"{indent}  task_class: {self.task_class}",
+            f"{indent}  classification: {self.classification}",
+            f"{indent}  target_repository: {self.repo_name}",
+            f"{indent}  branch_ref: {self.branch_ref}",
+            f"{indent}  execution_allowed: {self.execution_allowed}",
+            f"{indent}  requested_mode: {self.requested_mode}",
+            f"{indent}  allowed_mutations: {','.join(self.allowed_mutations)}",
+            f"{indent}  forbidden_mutation_count: {len(self.forbidden_mutations)}",
+            f"{indent}  validation_gate_count: {len(self.validation_gates)}",
+        ]
+        if self.repo_owner is not None:
+            lines.insert(8, f"{indent}  target_repository_owner: {self.repo_owner}")
+        if self.studio_session_id is not None:
+            lines.insert(4, f"{indent}  studio_session_id: {self.studio_session_id}")
+        if self.runtime_environment is not None and self.runtime_namespace is not None:
+            lines.append(f"{indent}  runtime_environment: {self.runtime_environment}")
+            lines.append(f"{indent}  runtime_namespace: {self.runtime_namespace}")
+        return lines
+
+    def identity_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "mission_id": self.mission_id,
+            "ticket_id": self.ticket_id,
+            "task_class": self.task_class,
+            "classification": self.classification,
+            "target_repository": {
+                "repo_name": self.repo_name,
+                "branch_ref": self.branch_ref,
+            },
+            "execution_allowed": self.execution_allowed,
+            "requested_mode": self.requested_mode,
+            "allowed_mutations": list(self.allowed_mutations),
+            "forbidden_mutations": list(self.forbidden_mutations),
+            "validation_gates": list(self.validation_gates),
+        }
+        if self.repo_owner is not None:
+            payload["target_repository"]["repo_owner"] = self.repo_owner
+        if self.studio_session_id is not None:
+            payload["studio_session_id"] = self.studio_session_id
+        if self.runtime_environment is not None and self.runtime_namespace is not None:
+            payload["runtime"] = {
+                "environment": self.runtime_environment,
+                "namespace": self.runtime_namespace,
+            }
+        return payload
+
+    def derived_goal(self) -> str:
+        repo_identity = (
+            f"{self.repo_owner}/{self.repo_name}"
+            if self.repo_owner is not None
+            else self.repo_name
+        )
+        parts = [
+            "Execute the bounded canonical AMOF mission packet.",
+            f"Mission: {self.mission_id}.",
+            f"Ticket: {self.ticket_id}.",
+            f"Task class: {self.task_class}.",
+            f"Classification: {self.classification}.",
+            f"Goal: {self.goal}.",
+            f"Target repository: {repo_identity} @ {self.branch_ref}.",
+            f"Objective: {self.objective}.",
+            f"Execution allowed: {str(self.execution_allowed).lower()}.",
+            f"Requested mutation mode: {self.requested_mode}.",
+            f"Allowed mutations: {', '.join(self.allowed_mutations)}.",
+            f"Forbidden mutations: {', '.join(self.forbidden_mutations)}.",
+            f"Validation gates: {', '.join(self.validation_gates)}.",
+        ]
+        if self.runtime_environment is not None and self.runtime_namespace is not None:
+            parts.append(
+                f"Runtime scope: environment {self.runtime_environment}, namespace {self.runtime_namespace}."
+            )
+        return " ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -220,6 +398,103 @@ def _validate_handoff_id(value: str) -> str:
     return normalized
 
 
+def _validate_required_text(
+    value: Any,
+    *,
+    field_name: str,
+    max_length: int,
+    pattern: re.Pattern[str] | None = None,
+) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string.")
+    text = value.strip()
+    if not text:
+        raise ValueError(f"{field_name} is required.")
+    if len(text) > max_length:
+        raise ValueError(f"{field_name} must be at most {max_length} characters.")
+    if pattern is not None and not pattern.fullmatch(text):
+        raise ValueError(f"{field_name} has an invalid format.")
+    return text
+
+
+def _validate_optional_text(
+    value: Any,
+    *,
+    field_name: str,
+    max_length: int,
+    pattern: re.Pattern[str] | None = None,
+) -> str | None:
+    if value is None:
+        return None
+    return _validate_required_text(
+        value, field_name=field_name, max_length=max_length, pattern=pattern
+    )
+
+
+def _require_strict_object(
+    value: Any,
+    *,
+    field_name: str,
+    allowed: set[str],
+    required: set[str],
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a JSON object.")
+    extras = sorted(set(value) - allowed)
+    if extras:
+        raise ValueError(f"{field_name} has unknown fields: {extras}")
+    missing = sorted(key for key in required if key not in value)
+    if missing:
+        raise ValueError(f"{field_name} is missing required fields: {missing}")
+    return value
+
+
+def _validate_string_array(
+    value: Any,
+    *,
+    field_name: str,
+    min_items: int,
+    max_items: int,
+    max_item_length: int,
+    pattern: re.Pattern[str] | None = None,
+    allowed_values: set[str] | None = None,
+) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be an array.")
+    if len(value) < min_items:
+        raise ValueError(f"{field_name} must contain at least {min_items} item(s).")
+    if len(value) > max_items:
+        raise ValueError(f"{field_name} must contain at most {max_items} item(s).")
+    normalized: list[str] = []
+    for index, item in enumerate(value):
+        text = _validate_required_text(
+            item,
+            field_name=f"{field_name}[{index}]",
+            max_length=max_item_length,
+            pattern=pattern,
+        )
+        if allowed_values is not None and text not in allowed_values:
+            raise ValueError(f"{field_name}[{index}] is not an allowed value.")
+        normalized.append(text)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError(f"{field_name} must not contain duplicates.")
+    return tuple(normalized)
+
+
+def _reject_secret_like_values(value: Any, *, field_name: str) -> None:
+    if isinstance(value, str):
+        if SECRET_LIKE_VALUE_RE.search(value):
+            raise ValueError(f"{field_name} contains secret-like material.")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _reject_secret_like_values(item, field_name=f"{field_name}.{key}")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_secret_like_values(item, field_name=f"{field_name}[{index}]")
+
+
 def _payload_kind_from_cli(value: str) -> str:
     normalized = str(value or "").strip().lower()
     payload_kind = PAYLOAD_KIND_MAP.get(normalized)
@@ -228,7 +503,269 @@ def _payload_kind_from_cli(value: str) -> str:
     return payload_kind
 
 
-def _read_single_stdin_payload() -> PreparedPayload:
+def _canonical_mission_packet_schema_path() -> Path:
+    return (
+        Path(__file__).resolve().parents[3]
+        / "contracts"
+        / "canonical-mission-packet.schema.json"
+    )
+
+
+def _validate_schema_if_available(payload: dict[str, Any], schema_path: Path) -> None:
+    if importlib.util.find_spec("jsonschema") is None or not schema_path.exists():
+        return
+    import jsonschema
+
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    try:
+        jsonschema.validate(instance=payload, schema=schema)
+    except jsonschema.ValidationError as exc:
+        raise ValueError(exc.message) from exc
+
+
+def _parse_canonical_mission_packet_object(payload: Any) -> CanonicalMissionPacket:
+    root = _require_strict_object(
+        payload,
+        field_name="canonical mission packet",
+        allowed={
+            "schema_version",
+            "contract_version",
+            "mission",
+            "task_class",
+            "classification",
+            "goal",
+            "objective",
+            "target_repository",
+            "execution_allowed",
+            "mutations",
+            "validation_gates",
+            "runtime",
+            "studio_session_id",
+        },
+        required={
+            "schema_version",
+            "contract_version",
+            "mission",
+            "task_class",
+            "classification",
+            "goal",
+            "objective",
+            "target_repository",
+            "execution_allowed",
+            "mutations",
+            "validation_gates",
+        },
+    )
+    if root.get("schema_version") != CANONICAL_MISSION_PACKET_SCHEMA_VERSION:
+        raise ValueError("canonical mission packet schema_version must equal 1.")
+    contract_version = str(root.get("contract_version") or "").strip()
+    if contract_version != CANONICAL_MISSION_PACKET_CONTRACT_VERSION:
+        raise ValueError(
+            "canonical mission packet contract_version is not supported."
+        )
+    mission = _require_strict_object(
+        root.get("mission"),
+        field_name="canonical mission packet mission",
+        allowed={"mission_id", "ticket_id"},
+        required={"mission_id", "ticket_id"},
+    )
+    target_repository = _require_strict_object(
+        root.get("target_repository"),
+        field_name="canonical mission packet target_repository",
+        allowed={"repo_name", "repo_owner", "branch_ref"},
+        required={"repo_name", "branch_ref"},
+    )
+    mutations = _require_strict_object(
+        root.get("mutations"),
+        field_name="canonical mission packet mutations",
+        allowed={"requested_mode", "allowed", "forbidden"},
+        required={"requested_mode", "allowed", "forbidden"},
+    )
+    execution_allowed = root.get("execution_allowed")
+    if not isinstance(execution_allowed, bool):
+        raise ValueError("canonical mission packet execution_allowed must be boolean.")
+    task_class = _validate_required_text(
+        root.get("task_class"), field_name="task_class", max_length=64
+    )
+    if task_class not in CANONICAL_TASK_CLASSES:
+        raise ValueError("task_class is not supported for canonical mission packets.")
+    classification = _validate_required_text(
+        root.get("classification"), field_name="classification", max_length=64
+    )
+    if classification not in CANONICAL_CLASSIFICATIONS:
+        raise ValueError(
+            "classification is not supported for canonical mission packets."
+        )
+    goal = _validate_required_text(root.get("goal"), field_name="goal", max_length=280)
+    objective = _validate_required_text(
+        root.get("objective"), field_name="objective", max_length=800
+    )
+    mission_id = _validate_required_text(
+        mission.get("mission_id"),
+        field_name="mission.mission_id",
+        max_length=128,
+        pattern=CANONICAL_ID_RE,
+    )
+    ticket_id = _validate_required_text(
+        mission.get("ticket_id"),
+        field_name="mission.ticket_id",
+        max_length=128,
+        pattern=CANONICAL_ID_RE,
+    )
+    repo_name = _validate_required_text(
+        target_repository.get("repo_name"),
+        field_name="target_repository.repo_name",
+        max_length=128,
+        pattern=CANONICAL_REPO_ID_RE,
+    )
+    repo_owner = _validate_optional_text(
+        target_repository.get("repo_owner"),
+        field_name="target_repository.repo_owner",
+        max_length=128,
+        pattern=CANONICAL_REPO_ID_RE,
+    )
+    branch_ref = _validate_required_text(
+        target_repository.get("branch_ref"),
+        field_name="target_repository.branch_ref",
+        max_length=128,
+        pattern=CANONICAL_REPO_REF_RE,
+    )
+    requested_mode = _validate_required_text(
+        mutations.get("requested_mode"),
+        field_name="mutations.requested_mode",
+        max_length=64,
+    )
+    if requested_mode not in CANONICAL_MUTATION_ALLOWED_VALUES:
+        raise ValueError(
+            "mutations.requested_mode is not supported for canonical mission packets."
+        )
+    allowed_mutations = _validate_string_array(
+        mutations.get("allowed"),
+        field_name="mutations.allowed",
+        min_items=1,
+        max_items=4,
+        max_item_length=64,
+        allowed_values=set(CANONICAL_MUTATION_ALLOWED_VALUES),
+    )
+    if requested_mode not in allowed_mutations:
+        raise ValueError("mutations.requested_mode must be included in mutations.allowed.")
+    forbidden_mutations = _validate_string_array(
+        mutations.get("forbidden"),
+        field_name="mutations.forbidden",
+        min_items=1,
+        max_items=12,
+        max_item_length=80,
+        pattern=METADATA_LABEL_RE,
+    )
+    validation_gates = _validate_string_array(
+        root.get("validation_gates"),
+        field_name="validation_gates",
+        min_items=1,
+        max_items=12,
+        max_item_length=120,
+        pattern=METADATA_LABEL_RE,
+    )
+    if set(allowed_mutations) & set(forbidden_mutations):
+        raise ValueError(
+            "mutations.allowed and mutations.forbidden must not overlap."
+        )
+    studio_session_id = _validate_optional_text(
+        root.get("studio_session_id"),
+        field_name="studio_session_id",
+        max_length=128,
+        pattern=CANONICAL_ID_RE,
+    )
+    runtime_environment: str | None = None
+    runtime_namespace: str | None = None
+    runtime = root.get("runtime")
+    if runtime is not None:
+        runtime_obj = _require_strict_object(
+            runtime,
+            field_name="canonical mission packet runtime",
+            allowed={"environment", "namespace"},
+            required={"environment", "namespace"},
+        )
+        runtime_environment = _validate_required_text(
+            runtime_obj.get("environment"),
+            field_name="runtime.environment",
+            max_length=64,
+            pattern=CANONICAL_RUNTIME_SCOPE_RE,
+        )
+        runtime_namespace = _validate_required_text(
+            runtime_obj.get("namespace"),
+            field_name="runtime.namespace",
+            max_length=63,
+            pattern=K8S_NAMESPACE_RE,
+        )
+    if requested_mode == "runtime_mutation":
+        if runtime_environment is None or runtime_namespace is None:
+            raise ValueError(
+                "runtime.environment and runtime.namespace are required when runtime_mutation is requested."
+            )
+    elif runtime is not None:
+        raise ValueError(
+            "runtime scope is only allowed when mutations.requested_mode is runtime_mutation."
+        )
+    _reject_secret_like_values(root, field_name="canonical mission packet")
+    packet = CanonicalMissionPacket(
+        schema_version=CANONICAL_MISSION_PACKET_SCHEMA_VERSION,
+        contract_version=CANONICAL_MISSION_PACKET_CONTRACT_VERSION,
+        mission_id=mission_id,
+        ticket_id=ticket_id,
+        task_class=task_class,
+        classification=classification,
+        goal=goal,
+        objective=objective,
+        repo_name=repo_name,
+        repo_owner=repo_owner,
+        branch_ref=branch_ref,
+        execution_allowed=execution_allowed,
+        requested_mode=requested_mode,
+        allowed_mutations=allowed_mutations,
+        forbidden_mutations=forbidden_mutations,
+        validation_gates=validation_gates,
+        studio_session_id=studio_session_id,
+        runtime_environment=runtime_environment,
+        runtime_namespace=runtime_namespace,
+    )
+    _validate_schema_if_available(
+        packet.to_payload(), _canonical_mission_packet_schema_path()
+    )
+    return packet
+
+
+def _parse_canonical_mission_packet_text(
+    text: str,
+    *,
+    field_name: str,
+    require_canonical_text: bool,
+    studio_session_id: str | None = None,
+) -> tuple[CanonicalMissionPacket, str]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{field_name} must be valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{field_name} must be a JSON object.")
+    payload_studio_session_id = payload.get("studio_session_id")
+    if payload_studio_session_id is not None and studio_session_id is None:
+        raise ValueError(
+            f"{field_name} studio_session_id must be supplied by the handoff envelope."
+        )
+    if payload_studio_session_id is not None and studio_session_id is not None:
+        if str(payload_studio_session_id).strip() != studio_session_id:
+            raise ValueError(f"{field_name} studio_session_id must match the envelope.")
+    if studio_session_id is not None and payload_studio_session_id is None:
+        payload = dict(payload)
+        payload["studio_session_id"] = studio_session_id
+    packet = _parse_canonical_mission_packet_object(payload)
+    canonical_text = _canonical_json(packet.to_payload())
+    if require_canonical_text and text != canonical_text:
+        raise ValueError(f"{field_name} must use canonical JSON formatting.")
+    return packet, canonical_text
+
+
+def _read_single_stdin_text() -> str:
     raw = sys.stdin.buffer.read()
     if not raw:
         raise ValueError("payload stdin is empty.")
@@ -242,11 +779,28 @@ def _read_single_stdin_payload() -> PreparedPayload:
         text = raw.decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
         raise ValueError("payload stdin must be valid UTF-8.") from exc
+    return text
+
+
+def _read_single_stdin_payload(
+    payload_kind: str, *, studio_session_id: str | None = None
+) -> PreparedPayload:
+    text = _read_single_stdin_text()
+    if payload_kind == "canonical_mission_packet":
+        _packet, canonical_text = _parse_canonical_mission_packet_text(
+            text,
+            field_name="canonical mission packet",
+            require_canonical_text=False,
+            studio_session_id=studio_session_id,
+        )
+        return _validated_payload_from_text(
+            canonical_text, field_name="canonical mission packet"
+        )
     return PreparedPayload(
         text=text,
         character_count=len(text),
-        utf8_byte_count=len(raw),
-        sha256=hashlib.sha256(raw).hexdigest(),
+        utf8_byte_count=len(text.encode("utf-8")),
+        sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
     )
 
 
@@ -280,16 +834,27 @@ def _render_preview(
         "[handoff] Preview",
         f"source: {source}",
         f"target: {target}",
-        f"payload_kind: {payload_kind}",
-        f"character_count: {payload.character_count}",
-        f"utf8_byte_count: {payload.utf8_byte_count}",
-        f"sha256: {payload.sha256}",
-        "--- BEGIN PAYLOAD ---",
-        payload.text,
-        "--- END PAYLOAD ---",
     ]
     if studio_session_id is not None:
-        lines.insert(3, f"studio_session_id: {studio_session_id}")
+        lines.append(f"studio_session_id: {studio_session_id}")
+    lines.extend(
+        [
+            f"payload_kind: {payload_kind}",
+            f"character_count: {payload.character_count}",
+            f"utf8_byte_count: {payload.utf8_byte_count}",
+            f"sha256: {payload.sha256}",
+        ]
+    )
+    if payload_kind == "canonical_mission_packet":
+        canonical_packet, _ = _parse_canonical_mission_packet_text(
+            payload.text,
+            field_name="canonical mission packet",
+            require_canonical_text=True,
+            studio_session_id=studio_session_id,
+        )
+        lines.extend(canonical_packet.safe_preview_lines())
+    else:
+        lines.extend(["--- BEGIN PAYLOAD ---", payload.text, "--- END PAYLOAD ---"])
     return "\n".join(lines) + "\n"
 
 
@@ -303,29 +868,41 @@ def _render_execution_preview(
         f"handoff_id: {packet.handoff_id}",
         f"source: {packet.source}",
         f"target: {packet.target}",
-        f"payload_kind: {packet.payload_kind}",
-        f"character_count: {packet.payload.character_count}",
-        f"utf8_byte_count: {packet.payload.utf8_byte_count}",
-        f"sha256: {packet.payload.sha256}",
-        "selected_execution_configuration:",
-        f"  request_id: {request_payload['request_id']}",
-        f"  mode: {request_payload['mode']}",
-        f"  no_follow_up: {request_payload['no_follow_up']}",
-        f"  provider: {request_payload.get('provider')}",
-        f"  model: {request_payload.get('model')}",
-        f"  planner_model: {request_payload.get('planner_model')}",
-        f"  budget: {request_payload.get('budget')}",
-        f"  budget_strict: {request_payload.get('budget_strict', False)}",
-        f"  subtask_budget: {request_payload.get('subtask_budget')}",
-        f"  approve_capabilities: {request_payload.get('approve_capabilities', [])}",
-        f"  approve_tool_packs: {request_payload.get('approve_tool_packs', [])}",
-        f"  approve_writable_roots: {request_payload.get('approve_writable_roots', [])}",
-        "--- BEGIN PAYLOAD ---",
-        packet.payload.text,
-        "--- END PAYLOAD ---",
     ]
     if packet.studio_session_id is not None:
-        lines.insert(18, f"  studio_session_id: {packet.studio_session_id}")
+        lines.append(f"studio_session_id: {packet.studio_session_id}")
+    lines.extend(
+        [
+            f"payload_kind: {packet.payload_kind}",
+            f"character_count: {packet.payload.character_count}",
+            f"utf8_byte_count: {packet.payload.utf8_byte_count}",
+            f"sha256: {packet.payload.sha256}",
+            "selected_execution_configuration:",
+            f"  request_id: {request_payload['request_id']}",
+            f"  mode: {request_payload['mode']}",
+            f"  no_follow_up: {request_payload['no_follow_up']}",
+            f"  provider: {request_payload.get('provider')}",
+            f"  model: {request_payload.get('model')}",
+            f"  planner_model: {request_payload.get('planner_model')}",
+            f"  budget: {request_payload.get('budget')}",
+            f"  budget_strict: {request_payload.get('budget_strict', False)}",
+            f"  subtask_budget: {request_payload.get('subtask_budget')}",
+            f"  approve_capabilities: {request_payload.get('approve_capabilities', [])}",
+            f"  approve_tool_packs: {request_payload.get('approve_tool_packs', [])}",
+            f"  approve_writable_roots: {request_payload.get('approve_writable_roots', [])}",
+        ]
+    )
+    if packet.payload_kind == "canonical_mission_packet":
+        canonical_packet, _ = _parse_canonical_mission_packet_text(
+            packet.payload.text,
+            field_name="handoff packet canonical mission payload",
+            require_canonical_text=True,
+            studio_session_id=packet.studio_session_id,
+        )
+        lines.append("goal_source: canonical mission packet fields")
+        lines.extend(canonical_packet.safe_preview_lines(indent="  "))
+    else:
+        lines.extend(["--- BEGIN PAYLOAD ---", packet.payload.text, "--- END PAYLOAD ---"])
     return "\n".join(lines) + "\n"
 
 
@@ -470,6 +1047,16 @@ def _parse_prepared_handoff_packet(payload: dict[str, Any]) -> PreparedHandoffPa
         )
     if sha256 != prepared_payload.sha256:
         raise ValueError("handoff packet sha256 does not match payload text.")
+    if payload_kind == "canonical_mission_packet":
+        canonical_packet, canonical_text = _parse_canonical_mission_packet_text(
+            prepared_payload.text,
+            field_name="handoff packet canonical mission payload",
+            require_canonical_text=True,
+            studio_session_id=studio_session_id,
+        )
+        prepared_payload = _validated_payload_from_text(
+            canonical_text, field_name="payload.text"
+        )
     return PreparedHandoffPacket(
         schema_version=HANDOFF_PACKET_SCHEMA_VERSION,
         handoff_id=handoff_id,
@@ -656,11 +1243,24 @@ def _string_list(values: Any) -> list[str]:
 def _build_external_request_payload(
     args: Any, packet: PreparedHandoffPacket
 ) -> dict[str, Any]:
+    goal = packet.payload.text
+    if packet.payload_kind == "canonical_mission_packet":
+        canonical_packet, _canonical_text = _parse_canonical_mission_packet_text(
+            packet.payload.text,
+            field_name="handoff packet canonical mission payload",
+            require_canonical_text=True,
+            studio_session_id=packet.studio_session_id,
+        )
+        if not canonical_packet.execution_allowed:
+            raise ValueError(
+                "canonical mission packet execution_allowed must be true before execute-agent."
+            )
+        goal = canonical_packet.derived_goal()
     payload: dict[str, Any] = {
         "schema_version": 1,
         "request_id": packet.handoff_id,
         "mode": "plan-execute",
-        "goal": packet.payload.text,
+        "goal": goal,
         "no_follow_up": True,
     }
     if _optional_text(getattr(args, "provider", None)) is not None:
@@ -847,7 +1447,7 @@ def _handoff_status_payload(
         lifecycle_state = "result_missing"
     else:
         lifecycle_state = _project_inflight_lifecycle(loaded_state, run_info)
-    return {
+    payload = {
         "handoff_id": handoff_id,
         "tracking_ref": handoff_id,
         "status": lifecycle_state,
@@ -857,6 +1457,9 @@ def _handoff_status_payload(
         "target": loaded_packet.target,
         "payload_kind": loaded_packet.payload_kind,
         "studio_session_id": loaded_packet.studio_session_id,
+        "character_count": loaded_packet.payload.character_count,
+        "utf8_byte_count": loaded_packet.payload.utf8_byte_count,
+        "sha256": loaded_packet.payload.sha256,
         "request_id": handoff_id,
         "run_id": str((result or {}).get("session_id") or run_info.get("run_id") or "").strip() or None,
         "runner_id": _optional_text((result or {}).get("runner_id")),
@@ -897,6 +1500,15 @@ def _handoff_status_payload(
             else "complete"
         ),
     }
+    if loaded_packet.payload_kind == "canonical_mission_packet":
+        canonical_packet, _canonical_text = _parse_canonical_mission_packet_text(
+            loaded_packet.payload.text,
+            field_name="handoff packet canonical mission payload",
+            require_canonical_text=True,
+            studio_session_id=loaded_packet.studio_session_id,
+        )
+        payload["canonical_packet_identity"] = canonical_packet.identity_payload()
+    return payload
 
 
 def _runner_registry_dir() -> Path:
@@ -1197,7 +1809,9 @@ def cmd_handoff_prepare(args: Any) -> int:
             getattr(args, "studio_session", None)
         )
         payload_kind = _payload_kind_from_cli(str(getattr(args, "payload_kind", "")))
-        payload = _read_single_stdin_payload()
+        payload = _read_single_stdin_payload(
+            payload_kind, studio_session_id=studio_session_id
+        )
     except ValueError as exc:
         _stderr(f"[handoff] {exc}")
         return 1
