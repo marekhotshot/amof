@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -78,6 +79,146 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
             hermes_opensandbox._changed_paths_delta(before, after),
             ["src/contexts/PodcastPlayerContext.tsx"],
         )
+
+    def test_read_only_prompt_enforces_workspace_boundary_and_mutation_forbiddance(
+        self,
+    ) -> None:
+        workspace = Path("/tmp/amof-hermes-readonly-boundary")
+        prompt = hermes_opensandbox._build_prompt(
+            "inspect only",
+            _selection(),
+            workspace,
+        )
+        self.assertIn("already materialized", prompt)
+        self.assertIn(f"Read-only workspace boundary (exact path): {workspace}", prompt)
+        self.assertIn("Do not run git clone, git init, git worktree", prompt)
+        self.assertIn("Do not create, modify, or delete files", prompt)
+
+    def test_read_only_first_mutation_triggers_constrained_replan(self) -> None:
+        config = hermes_opensandbox.RemoteIALConfig(
+            base_url="https://ial.example.test",
+            api_key="unit-test-token",
+            model="remote-ial/test-worker",
+            timeout_seconds=30,
+        )
+
+        class _Adapter:
+            def __enter__(self) -> "_Adapter":
+                return self
+
+            def __exit__(self, *_exc: object) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-readonly-replan-") as td:
+            with (
+                patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
+                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
+                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
+                patch.object(hermes_opensandbox, "_remote_ial_health", return_value={"inference_health": "ready"}),
+                patch.object(hermes_opensandbox, "_RemoteIALOpenAIAdapter", return_value=_Adapter()),
+                patch.object(hermes_opensandbox, "_base_env", return_value={}),
+                patch.object(
+                    hermes_opensandbox,
+                    "_changed_paths",
+                    side_effect=[[], ["scratch.txt"], []],
+                ),
+                patch.object(
+                    hermes_opensandbox,
+                    "_restore_read_only_paths",
+                    return_value=["scratch.txt"],
+                ) as restore_paths,
+                patch.object(
+                    hermes_opensandbox,
+                    "hermes_dispatch_command",
+                    side_effect=lambda model, prompt: ["hermes", "chat", "--query", prompt],
+                ) as dispatch_command,
+                patch(
+                    "subprocess.run",
+                    return_value=subprocess.CompletedProcess(
+                        args=["hermes"],
+                        returncode=0,
+                        stdout="validation_ok\n",
+                        stderr="",
+                    ),
+                ) as run_process,
+            ):
+                result = hermes_opensandbox.run(
+                    manifest={"repos": [{"path": td}]},
+                    goal="inspect only",
+                    request_id="readonly-replan",
+                    studio_session_id=None,
+                    selection=_selection(),
+                )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["stop_reason"], "completed")
+        self.assertEqual(run_process.call_count, 2)
+        restore_paths.assert_called_once_with(Path(td), ["scratch.txt"])
+        self.assertEqual(dispatch_command.call_count, 2)
+        retry_prompt = dispatch_command.call_args_list[1].kwargs["prompt"]
+        self.assertIn("constrained replan", retry_prompt.lower())
+
+    def test_read_only_second_mutation_fails_closed(self) -> None:
+        config = hermes_opensandbox.RemoteIALConfig(
+            base_url="https://ial.example.test",
+            api_key="unit-test-token",
+            model="remote-ial/test-worker",
+            timeout_seconds=30,
+        )
+
+        class _Adapter:
+            def __enter__(self) -> "_Adapter":
+                return self
+
+            def __exit__(self, *_exc: object) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-readonly-replan-fail-") as td:
+            with (
+                patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
+                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
+                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
+                patch.object(hermes_opensandbox, "_remote_ial_health", return_value={"inference_health": "ready"}),
+                patch.object(hermes_opensandbox, "_RemoteIALOpenAIAdapter", return_value=_Adapter()),
+                patch.object(hermes_opensandbox, "_base_env", return_value={}),
+                patch.object(
+                    hermes_opensandbox,
+                    "_changed_paths",
+                    side_effect=[[], ["first-change.txt"], ["second-change.txt"]],
+                ),
+                patch.object(
+                    hermes_opensandbox,
+                    "_restore_read_only_paths",
+                    return_value=["first-change.txt"],
+                ) as restore_paths,
+                patch.object(
+                    hermes_opensandbox,
+                    "hermes_dispatch_command",
+                    side_effect=lambda model, prompt: ["hermes", "chat", "--query", prompt],
+                ),
+                patch(
+                    "subprocess.run",
+                    return_value=subprocess.CompletedProcess(
+                        args=["hermes"],
+                        returncode=0,
+                        stdout="validation_ok\n",
+                        stderr="",
+                    ),
+                ) as run_process,
+            ):
+                result = hermes_opensandbox.run(
+                    manifest={"repos": [{"path": td}]},
+                    goal="inspect only",
+                    request_id="readonly-replan-fail",
+                    studio_session_id=None,
+                    selection=_selection(),
+                )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["stop_reason"], "read_only_mutation_detected")
+        self.assertEqual(result["changed_paths"], ["second-change.txt"])
+        self.assertEqual(run_process.call_count, 2)
+        restore_paths.assert_called_once_with(Path(td), ["first-change.txt"])
 
     def test_read_only_dirty_workspace_blocks_before_subprocess(self) -> None:
         config = hermes_opensandbox.RemoteIALConfig(

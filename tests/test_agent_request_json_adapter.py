@@ -155,10 +155,14 @@ class ExternalAgentRequestAdapterTests(unittest.TestCase):
         captured: dict[str, object] = {}
 
         def _fake_run(
-            manifest: dict[str, object], request: agent_cmd.AgentPlanExecuteJsonRequest
+            manifest: dict[str, object],
+            request: agent_cmd.AgentPlanExecuteJsonRequest,
+            *,
+            studio_session_id: str | None = None,
         ) -> agent_cmd.AgentPlanExecuteEnvelope:
             captured["manifest"] = manifest
             captured["request"] = request
+            captured["studio_session_id"] = studio_session_id
             return _envelope()
 
         with patch(
@@ -184,6 +188,7 @@ class ExternalAgentRequestAdapterTests(unittest.TestCase):
         self.assertEqual(request.approve_tool_packs, [])
         self.assertEqual(request.approve_writable_roots, [])
         self.assertTrue(request.no_follow_up)
+        self.assertIsNone(cast(object, captured["studio_session_id"]))
         self.assertEqual(response.request_id, "external-request-001")
         self.assertEqual(response.result["status"], "completed")
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import threading
@@ -677,7 +678,13 @@ class _RemoteIALOpenAIAdapter:
             self.thread.join(timeout=2)
 
 
-def _build_prompt(goal: str, selection: HermesBackendSelection, workspace: Path) -> str:
+def _build_prompt(
+    goal: str,
+    selection: HermesBackendSelection,
+    workspace: Path,
+    *,
+    read_only_replan: bool = False,
+) -> str:
     lines = [
         "You are executing as Hermes under AMOF authority.",
         f"AMOF runner_id: {selection.runner_id}",
@@ -698,7 +705,18 @@ def _build_prompt(goal: str, selection: HermesBackendSelection, workspace: Path)
         lines.append(f"Writable roots: {roots}")
         lines.append("Modify files only inside the listed writable roots. Do not commit, push, promote, deploy, tag, or release.")
     else:
-        lines.append("Read-only run: do not modify files.")
+        lines.extend(
+            [
+                "Read-only run: this repository is already materialized and must be inspected in place.",
+                f"Read-only workspace boundary (exact path): {workspace}",
+                "Do not run git clone, git init, git worktree, or create nested repositories.",
+                "Do not create, modify, or delete files anywhere in this workspace.",
+            ]
+        )
+        if read_only_replan:
+            lines.append(
+                "Read-only mutation was detected once; this constrained replan must remain read-only within the same workspace boundary."
+            )
     lines.extend(["", "Mission:", goal])
     return "\n".join(lines)
 
@@ -728,6 +746,41 @@ def _changed_paths_delta(before: list[str], after: list[str]) -> list[str]:
     before_set = {item for item in before if item}
     after_set = {item for item in after if item}
     return sorted(after_set - before_set)
+
+
+def _restore_read_only_paths(workspace: Path, paths: list[str]) -> list[str]:
+    restored: list[str] = []
+    if not paths:
+        return restored
+    for rel_path in sorted({item for item in paths if item}):
+        target = workspace / rel_path
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", rel_path],
+            cwd=str(workspace),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        ).returncode == 0
+        if tracked:
+            subprocess.run(
+                ["git", "restore", "--staged", "--worktree", "--", rel_path],
+                cwd=str(workspace),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+            restored.append(rel_path)
+            continue
+        if target.is_symlink() or target.is_file():
+            target.unlink(missing_ok=True)
+            restored.append(rel_path)
+            continue
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+            restored.append(rel_path)
+    return sorted(restored)
 
 
 def _write_run_hermes_config(run_dir: Path, adapter: _RemoteIALOpenAIAdapter, model: str) -> Path:
@@ -960,79 +1013,94 @@ def run(
             started_at=started_at,
         )
 
+    read_only_replan_used = False
     prompt = _build_prompt(goal, selection, workspace)
-    command = hermes_dispatch_command(model=remote_ial.model, prompt=prompt)
-    (run_dir / "request.json").write_text(
-        json.dumps(
-            {
-                "request_id": request_id,
-                "runner_id": selection.runner_id,
-                "backend": BACKEND_TYPE,
-                "backend_contract_version": BACKEND_CONTRACT_VERSION,
-                "runtime_contract": RUNTIME_CONTRACT,
-                "isolation_model": ISOLATION_MODEL,
-                "studio_session_id": studio_session_id,
-                "capabilities": selection.capabilities,
-                "writable_roots": selection.writable_roots,
-                "workspace": str(workspace),
-                "requested_provider": REMOTE_IAL_PROVIDER,
-                "requested_model": remote_ial.model,
-                "transport": "remote_ial",
-                "fallback_used": False,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    status = "completed"
-    stop_reason = "completed"
-    exit_code = 0
-    try:
-        with _RemoteIALOpenAIAdapter(remote_ial) as adapter:
-            completed = subprocess.run(
-                command,
-                cwd=str(workspace),
-                env=_base_env(adapter, run_dir),
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=selection.timeout_seconds,
+    while True:
+        command = hermes_dispatch_command(model=remote_ial.model, prompt=prompt)
+        (run_dir / "request.json").write_text(
+            json.dumps(
+                {
+                    "request_id": request_id,
+                    "runner_id": selection.runner_id,
+                    "backend": BACKEND_TYPE,
+                    "backend_contract_version": BACKEND_CONTRACT_VERSION,
+                    "runtime_contract": RUNTIME_CONTRACT,
+                    "isolation_model": ISOLATION_MODEL,
+                    "studio_session_id": studio_session_id,
+                    "capabilities": selection.capabilities,
+                    "writable_roots": selection.writable_roots,
+                    "workspace": str(workspace),
+                    "requested_provider": REMOTE_IAL_PROVIDER,
+                    "requested_model": remote_ial.model,
+                    "transport": "remote_ial",
+                    "fallback_used": False,
+                },
+                indent=2,
             )
-        stdout_path.write_text(completed.stdout or "", encoding="utf-8")
-        stderr_path.write_text(completed.stderr or "", encoding="utf-8")
-        runtime_log_path.write_text((completed.stdout or "") + ("\n--- STDERR ---\n" + completed.stderr if completed.stderr else ""), encoding="utf-8")
-        exit_code = int(completed.returncode)
-        if exit_code != 0:
+            + "\n",
+            encoding="utf-8",
+        )
+        status = "completed"
+        stop_reason = "completed"
+        exit_code = 0
+        try:
+            with _RemoteIALOpenAIAdapter(remote_ial) as adapter:
+                completed = subprocess.run(
+                    command,
+                    cwd=str(workspace),
+                    env=_base_env(adapter, run_dir),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=selection.timeout_seconds,
+                )
+            stdout_path.write_text(completed.stdout or "", encoding="utf-8")
+            stderr_path.write_text(completed.stderr or "", encoding="utf-8")
+            runtime_log_path.write_text((completed.stdout or "") + ("\n--- STDERR ---\n" + completed.stderr if completed.stderr else ""), encoding="utf-8")
+            exit_code = int(completed.returncode)
+            if exit_code != 0:
+                status = "failed"
+                stop_reason = "hermes_process_failed"
+        except subprocess.TimeoutExpired as exc:
             status = "failed"
-            stop_reason = "hermes_process_failed"
-    except subprocess.TimeoutExpired as exc:
-        status = "failed"
-        stop_reason = "timeout"
-        exit_code = 124
-        stdout_path.write_text(exc.stdout or "", encoding="utf-8")
-        stderr_path.write_text(exc.stderr or "", encoding="utf-8")
-        _write_runtime_log(runtime_log_path, "Hermes process timed out.")
-    except Exception as exc:
-        status = "failed"
-        stop_reason = "hermes_runtime_exception"
-        exit_code = 1
-        stdout_path.write_text("", encoding="utf-8")
-        stderr_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
-        _write_runtime_log(runtime_log_path, f"{type(exc).__name__}: {exc}")
+            stop_reason = "timeout"
+            exit_code = 124
+            stdout_path.write_text(exc.stdout or "", encoding="utf-8")
+            stderr_path.write_text(exc.stderr or "", encoding="utf-8")
+            _write_runtime_log(runtime_log_path, "Hermes process timed out.")
+        except Exception as exc:
+            status = "failed"
+            stop_reason = "hermes_runtime_exception"
+            exit_code = 1
+            stdout_path.write_text("", encoding="utf-8")
+            stderr_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+            _write_runtime_log(runtime_log_path, f"{type(exc).__name__}: {exc}")
 
-    task_findings = stdout_path.read_text(encoding="utf-8").strip()
-    runtime_detail = stderr_path.read_text(encoding="utf-8").strip()
-    validation_status = _infer_validation_status(task_findings or runtime_detail)
-    if status == "completed" and validation_status == "failed":
-        status = "failed"
-        stop_reason = "validation_failed"
-        exit_code = 1
-    changed = _changed_paths_delta(preexisting_changed_paths, _changed_paths(workspace))
-    if status == "completed" and not selection.writable_roots and changed:
-        status = "failed"
-        stop_reason = "read_only_mutation_detected"
-        exit_code = 1
+        task_findings = stdout_path.read_text(encoding="utf-8").strip()
+        runtime_detail = stderr_path.read_text(encoding="utf-8").strip()
+        validation_status = _infer_validation_status(task_findings or runtime_detail)
+        if status == "completed" and validation_status == "failed":
+            status = "failed"
+            stop_reason = "validation_failed"
+            exit_code = 1
+        changed = _changed_paths_delta(preexisting_changed_paths, _changed_paths(workspace))
+        if status == "completed" and not selection.writable_roots and changed:
+            if read_only_replan_used:
+                status = "failed"
+                stop_reason = "read_only_mutation_detected"
+                exit_code = 1
+                break
+            restored_paths = _restore_read_only_paths(workspace, changed)
+            _append_event(
+                event_log_path,
+                "read_only_mutation_replan",
+                changed_paths=list(changed),
+                restored_paths=list(restored_paths),
+            )
+            read_only_replan_used = True
+            prompt = _build_prompt(goal, selection, workspace, read_only_replan=True)
+            continue
+        break
     final_text = _runtime_summary_text(
         status=status,
         stop_reason=stop_reason,
