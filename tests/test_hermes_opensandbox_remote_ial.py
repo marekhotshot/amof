@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS_ROOT = ROOT / "scripts"
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from amof.execution_backends import hermes_opensandbox
 
@@ -21,10 +27,12 @@ def _selection() -> hermes_opensandbox.HermesBackendSelection:
 
 def _health() -> dict[str, object]:
     return {
+        "backend_contract_version": "hermes-cli-remote-ial-v1",
+        "runtime_contract": "Hermes CLI + Remote IAL",
+        "isolation_model": "runtime_owner_workspace",
         "dispatch_available": True,
         "runtime_health": "ready",
         "hermes_runtime": "ready",
-        "opensandbox": "ready",
         "inference_transport": "remote_ial",
         "inference_health": "ready",
         "requested_provider": "remote-ial",
@@ -33,7 +41,24 @@ def _health() -> dict[str, object]:
         "effective_model": "remote-ial/test-worker",
         "direct_provider_fallback": "disabled",
         "execution_endpoint": "/tmp/hermes",
-        "process_identity": {"hermes_executable": "/tmp/hermes"},
+        "process_identity": {
+            "hermes_executable": "/tmp/hermes",
+            "dispatch_probe": {
+                "status": "ready",
+                "exit_code": 0,
+                "probe_command": ["/tmp/hermes", "chat", "--help"],
+                "dispatch_command_preview": [
+                    "/tmp/hermes",
+                    "chat",
+                    "--cli",
+                    "--quiet",
+                    "--model",
+                    "remote-ial/test-worker",
+                    "--query",
+                    "<amof-contract-probe>",
+                ],
+            },
+        },
         "supported_capabilities": ["read"],
         "writable_root_required": True,
         "cancellation_support": "timeout_process_termination",
@@ -65,7 +90,6 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
             with (
                 patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
                 patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
-                patch.object(hermes_opensandbox, "_probe_opensandbox", return_value={"status": "ready", "exit_code": 0}),
                 patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
                 patch.object(hermes_opensandbox, "_remote_ial_health", return_value={"inference_health": "ready"}),
                 patch.object(
@@ -106,7 +130,6 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
                     clear=False,
                 ),
                 patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
-                patch.object(hermes_opensandbox, "_probe_opensandbox", return_value={"status": "ready", "exit_code": 0}),
                 patch("subprocess.run") as run_process,
             ):
                 result = hermes_opensandbox.run(
@@ -134,7 +157,6 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
             with (
                 patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
                 patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
-                patch.object(hermes_opensandbox, "_probe_opensandbox", return_value={"status": "ready", "exit_code": 0}),
                 patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
                 patch.object(hermes_opensandbox, "_remote_ial_health", return_value={"inference_health": "ready"}),
                 patch("subprocess.run") as run_process,
@@ -155,6 +177,86 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         self.assertEqual(result["requested_provider"], "remote-ial")
         self.assertEqual(result["effective_provider"], "unverified")
         run_process.assert_not_called()
+
+    def test_dispatch_unavailable_returns_typed_failure_truth(self) -> None:
+        config = hermes_opensandbox.RemoteIALConfig(
+            base_url="https://ial.example.test",
+            api_key="unit-test-token",
+            model="remote-ial/test-worker",
+            timeout_seconds=30,
+        )
+        health = dict(_health())
+        health["dispatch_available"] = False
+        health["runtime_health"] = "unavailable"
+        health["hermes_runtime"] = "unavailable"
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-dispatch-unavailable-") as td:
+            with (
+                patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
+                patch.object(hermes_opensandbox, "runtime_health", return_value=health),
+                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
+                patch.object(hermes_opensandbox, "_remote_ial_health", return_value={"inference_health": "ready"}),
+                patch("subprocess.run") as run_process,
+            ):
+                result = hermes_opensandbox.run(
+                    manifest={"repos": [{"path": td}]},
+                    goal="inspect only",
+                    request_id="dispatch-unavailable",
+                    studio_session_id=None,
+                    selection=_selection(),
+                )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["stop_reason"], "hermes_dispatch_unavailable")
+        self.assertFalse(result["fallback_used"])
+        self.assertEqual(
+            (result.get("evidence_refs") or {}).get("backend_contract_version"),
+            "hermes-cli-remote-ial-v1",
+        )
+        self.assertEqual(
+            ((result.get("evidence_refs") or {}).get("dispatch_probe") or {}).get("status"),
+            "ready",
+        )
+        run_process.assert_not_called()
+
+    def test_runtime_health_reports_missing_hermes_cli_truthfully(self) -> None:
+        missing = Path("/tmp/amof-missing-hermes/bin/hermes")
+        with patch.object(hermes_opensandbox, "hermes_executable", return_value=missing):
+            health = hermes_opensandbox.runtime_health()
+
+        self.assertFalse(health["dispatch_available"])
+        self.assertEqual(health["runtime_health"], "unavailable")
+        self.assertEqual(health["hermes_runtime"], "unavailable")
+        self.assertEqual(health["backend_contract_version"], "hermes-cli-remote-ial-v1")
+        self.assertEqual(health["runtime_contract"], "Hermes CLI + Remote IAL")
+        self.assertEqual(health["isolation_model"], "runtime_owner_workspace")
+        probe = (health["process_identity"] or {}).get("dispatch_probe") or {}
+        self.assertEqual(probe.get("status"), "unavailable")
+        self.assertEqual(probe.get("probe_command"), [str(missing), "chat", "--help"])
+
+    def test_hermes_runtime_root_uses_amof_home_authority(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-home-root-") as td:
+            with patch.dict(os.environ, {"AMOF_HOME": td}, clear=False):
+                root = hermes_opensandbox.hermes_runtime_root()
+
+        self.assertEqual(
+            root,
+            Path(td).resolve(strict=False) / "share" / "runners" / "hermes-agent" / "v2026.6.5",
+        )
+
+    def test_probe_and_dispatch_use_same_hermes_command_contract(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-probe-contract-") as td:
+            hermes_bin = Path(td) / "hermes"
+            hermes_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            hermes_bin.chmod(0o755)
+            with patch.object(hermes_opensandbox, "hermes_executable", return_value=hermes_bin):
+                probe = hermes_opensandbox._probe_hermes_cli_contract("remote-ial/test-worker")
+                dispatch = hermes_opensandbox.hermes_dispatch_command(
+                    model="remote-ial/test-worker",
+                    prompt="inspect only",
+                )
+
+        self.assertEqual(probe["dispatch_command_preview"][:-1], dispatch[:-1])
+        self.assertEqual(probe["dispatch_command_preview"][0], dispatch[0])
 
     def test_base_env_strips_direct_provider_variables(self) -> None:
         with patch.dict(

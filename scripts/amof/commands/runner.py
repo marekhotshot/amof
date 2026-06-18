@@ -352,10 +352,13 @@ def _template_payload(kind: str) -> dict[str, Any]:
         return {
             "version": "1.0.0",
             "runner_id": "hermes-local-ticket-write",
-            "name": "Hermes Local Ticket Write",
+            "name": "Hermes CLI Remote IAL Ticket Write",
             "context": "local",
             "status": "available",
             "backend": hermes_opensandbox.BACKEND_TYPE,
+            "backend_contract_version": hermes_opensandbox.BACKEND_CONTRACT_VERSION,
+            "runtime_contract": hermes_opensandbox.RUNTIME_CONTRACT,
+            "isolation_model": hermes_opensandbox.ISOLATION_MODEL,
             "capabilities": [
                 "intake.validate",
                 "intake.plan",
@@ -377,7 +380,8 @@ def _template_payload(kind: str) -> dict[str, Any]:
             "labels": [
                 "local",
                 "hermes",
-                "opensandbox",
+                "hermes-cli",
+                "remote-ial",
             ],
             "trust_level": "local",
             "registration_source": "amof.runner.template.hermes-opensandbox",
@@ -526,7 +530,12 @@ def _cmd_register(args: argparse.Namespace) -> int:
         suffix = (
             "planning_only=yes no_dispatch=yes"
             if backend == "planning_only"
-            else f"backend={backend} dispatch_available={dispatch}"
+            else (
+                f"backend={backend} "
+                f"backend_contract_version={hermes_opensandbox.BACKEND_CONTRACT_VERSION} "
+                f"runtime_contract={hermes_opensandbox.RUNTIME_CONTRACT} "
+                f"dispatch_available={dispatch}"
+            )
         )
         print(f"REGISTERED runner_id={validated.runner_id} context={validated.context} status={validated.status} {suffix}")
     return 0
@@ -647,6 +656,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
                 "runner "
                 f"{item.get('runner_id') or '-'} "
                 f"backend={item.get('backend_type') or '-'} "
+                f"backend_contract_version={item.get('backend_contract_version') or '-'} "
+                f"runtime_contract={item.get('runtime_contract') or '-'} "
                 f"dispatch_available={'yes' if item.get('dispatch_available') else 'no'} "
                 f"runtime_health={item.get('runtime_health') or '-'} "
                 f"endpoint={item.get('execution_endpoint') or '-'} "

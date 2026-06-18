@@ -22,6 +22,30 @@
   "runtime_log_path": "/tmp/amof/runtime.log",
   "result_path": "/tmp/amof/result.json",
   "journal_path": "/tmp/amof/journal.md",
+  "evidence_refs": {
+    "backend_contract_version": "hermes-cli-remote-ial-v1",
+    "runtime_contract": "Hermes CLI + Remote IAL",
+    "isolation_model": "runtime_owner_workspace",
+    "dispatch_probe": {
+      "status": "ready",
+      "exit_code": 0,
+      "probe_command": [
+        "/tmp/amof/hermes",
+        "chat",
+        "--help"
+      ],
+      "dispatch_command_preview": [
+        "/tmp/amof/hermes",
+        "chat",
+        "--cli",
+        "--quiet",
+        "--model",
+        "openai/gpt-4o-mini",
+        "--query",
+        "<amof-contract-probe>"
+      ]
+    }
+  },
   "started_at": "2026-06-08T00:41:50Z",
   "completed_at": "2026-06-08T00:42:10Z",
   "budget_summary": {

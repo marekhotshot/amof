@@ -1,4 +1,4 @@
-"""Hermes/OpenSandbox execution backend contract for governed AMOF handoffs."""
+"""Hermes compatibility backend contract for governed AMOF handoffs."""
 
 from __future__ import annotations
 
@@ -18,13 +18,15 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from ..app_paths import runs_dir
+from ..app_paths import get_app_paths, runs_dir
 from ..commands.studio import attach_run_reference, require_active_studio_session
 
 BACKEND_TYPE = "hermes_opensandbox"
+BACKEND_CONTRACT_VERSION = "hermes-cli-remote-ial-v1"
+RUNTIME_CONTRACT = "Hermes CLI + Remote IAL"
+ISOLATION_MODEL = "runtime_owner_workspace"
+FUTURE_ISOLATION_MODELS = ("session_execution_environment", "run_execution_environment")
 REMOTE_IAL_PROVIDER = "remote-ial"
-DEFAULT_HERMES_RUNTIME_ROOT = Path.home() / ".local" / "share" / "amof" / "runners" / "hermes-agent" / "v2026.6.5"
-DEFAULT_OPENSANDBOX_RUNTIME_ROOT = Path.home() / ".local" / "share" / "amof" / "runners" / "opensandbox" / "0.1.14"
 SUPPORTED_CAPABILITIES = ("read", "bounded_write", "shell_limited", "focused_tests")
 DIRECT_PROVIDER_ENV_NAMES = (
     "OPENROUTER_API_KEY",
@@ -51,7 +53,7 @@ DANGEROUS_CAPABILITIES = {
 
 
 class HermesBackendError(RuntimeError):
-    """Raised when Hermes/OpenSandbox cannot be dispatched truthfully."""
+    """Raised when the Hermes compatibility backend cannot be dispatched truthfully."""
 
 
 @dataclass(frozen=True)
@@ -85,19 +87,12 @@ def _runtime_root_from_env(name: str, default: Path) -> Path:
 
 
 def hermes_runtime_root() -> Path:
-    return _runtime_root_from_env("AMOF_HERMES_RUNTIME_ROOT", DEFAULT_HERMES_RUNTIME_ROOT)
-
-
-def opensandbox_runtime_root() -> Path:
-    return _runtime_root_from_env("AMOF_OPENSANDBOX_RUNTIME_ROOT", DEFAULT_OPENSANDBOX_RUNTIME_ROOT)
+    default = get_app_paths().data_root / "runners" / "hermes-agent" / "v2026.6.5"
+    return _runtime_root_from_env("AMOF_HERMES_RUNTIME_ROOT", default)
 
 
 def hermes_executable() -> Path:
     return hermes_runtime_root() / "venv" / "bin" / "hermes"
-
-
-def opensandbox_executable() -> Path:
-    return opensandbox_runtime_root() / "venv" / "bin" / "opensandbox"
 
 
 def _normalize_remote_ial_base_url(value: str) -> str:
@@ -178,9 +173,64 @@ def is_hermes_runner(record: dict[str, Any]) -> bool:
     return runner_backend_type(record) == BACKEND_TYPE
 
 
+def _requested_model(model_override: str | None = None) -> str:
+    return str(model_override or os.environ.get("AMOF_REMOTE_IAL_MODEL") or "").strip() or "unconfigured"
+
+
+def hermes_dispatch_command(*, model: str, prompt: str) -> list[str]:
+    return [
+        str(hermes_executable()),
+        "chat",
+        "--cli",
+        "--quiet",
+        "--model",
+        model,
+        "--query",
+        prompt,
+    ]
+
+
+def _probe_hermes_cli_contract(model: str) -> dict[str, Any]:
+    executable = hermes_executable()
+    dispatch_preview = hermes_dispatch_command(model=model, prompt="<amof-contract-probe>")
+    if not executable.is_file():
+        return {
+            "status": "unavailable",
+            "exit_code": 127,
+            "stdout": "",
+            "stderr": "hermes executable not found",
+            "probe_command": [str(executable), "chat", "--help"],
+            "dispatch_command_preview": dispatch_preview,
+        }
+    if not os.access(executable, os.X_OK):
+        return {
+            "status": "unavailable",
+            "exit_code": 126,
+            "stdout": "",
+            "stderr": "hermes executable is not executable",
+            "probe_command": [str(executable), "chat", "--help"],
+            "dispatch_command_preview": dispatch_preview,
+        }
+    completed = subprocess.run(
+        [str(executable), "chat", "--help"],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    return {
+        "status": "ready" if completed.returncode == 0 else "failed",
+        "exit_code": completed.returncode,
+        "stdout": (completed.stdout or "").strip(),
+        "stderr": (completed.stderr or "").strip(),
+        "probe_command": [str(executable), "chat", "--help"],
+        "dispatch_command_preview": dispatch_preview,
+    }
+
+
 def runtime_health() -> dict[str, Any]:
     hermes = hermes_executable()
-    opensandbox = opensandbox_executable()
+    dispatch_probe = _probe_hermes_cli_contract(_requested_model())
     receipt_path = hermes_runtime_root() / "receipts" / "install-receipt.json"
     receipt: dict[str, Any] = {}
     if receipt_path.is_file():
@@ -192,23 +242,30 @@ def runtime_health() -> dict[str, Any]:
             receipt = {}
     health = {
         "backend_type": BACKEND_TYPE,
-        "dispatch_available": hermes.is_file() and os.access(hermes, os.X_OK) and opensandbox.is_file(),
-        "runtime_health": "ready" if hermes.is_file() and opensandbox.is_file() else "unavailable",
-        "hermes_runtime": "ready" if hermes.is_file() and os.access(hermes, os.X_OK) else "unavailable",
-        "opensandbox": "ready" if opensandbox.is_file() else "unavailable",
+        "backend_contract_version": BACKEND_CONTRACT_VERSION,
+        "runtime_contract": RUNTIME_CONTRACT,
+        "isolation_model": ISOLATION_MODEL,
+        "future_isolation_models": list(FUTURE_ISOLATION_MODELS),
+        "dispatch_available": False,
+        "runtime_health": "ready" if dispatch_probe["status"] == "ready" else "unavailable",
+        "hermes_runtime": "ready" if dispatch_probe["status"] == "ready" else "unavailable",
         "inference_transport": "remote_ial",
         "inference_health": "blocked",
         "requested_provider": REMOTE_IAL_PROVIDER,
         "effective_provider": "unverified",
-        "requested_model": str(os.environ.get("AMOF_REMOTE_IAL_MODEL") or "") or "unconfigured",
+        "requested_model": _requested_model(),
         "effective_model": "unverified",
         "direct_provider_fallback": "disabled",
         "execution_endpoint": str(hermes),
         "process_identity": {
+            "backend_id": BACKEND_TYPE,
+            "backend_contract_version": BACKEND_CONTRACT_VERSION,
+            "runtime_contract": RUNTIME_CONTRACT,
+            "isolation_model": ISOLATION_MODEL,
+            "future_isolation_models": list(FUTURE_ISOLATION_MODELS),
             "hermes_executable": str(hermes),
             "hermes_runtime_root": str(hermes_runtime_root()),
-            "opensandbox_executable": str(opensandbox),
-            "opensandbox_runtime_root": str(opensandbox_runtime_root()),
+            "dispatch_probe": dict(dispatch_probe),
             "runner_source_sha": str((receipt.get("upstream") or {}).get("commit") or ""),
             "runner_version": str((receipt.get("upstream") or {}).get("package_version") or ""),
         },
@@ -222,6 +279,8 @@ def runtime_health() -> dict[str, Any]:
         remote_health = _remote_ial_health(config)
         health.update(
             {
+                "dispatch_available": dispatch_probe["status"] == "ready"
+                and remote_health.get("inference_health") == "ready",
                 "inference_health": remote_health.get("inference_health", "blocked"),
                 "requested_model": config.model,
                 "effective_model": str(remote_health.get("selected_model") or "unverified"),
@@ -244,11 +303,13 @@ def doctor_record(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "runner_id": str(record.get("runner_id") or ""),
         "backend_type": runner_backend_type(record),
+        "backend_contract_version": health.get("backend_contract_version"),
+        "runtime_contract": health.get("runtime_contract"),
+        "isolation_model": health.get("isolation_model"),
         "dispatch_available": bool(health["dispatch_available"]),
         "runtime_health": health["runtime_health"],
         "dispatch": "available" if health["dispatch_available"] else "blocked",
         "hermes_runtime": health.get("hermes_runtime", health["runtime_health"]),
-        "opensandbox": health.get("opensandbox", "unverified"),
         "inference_transport": health.get("inference_transport", "remote_ial"),
         "inference_health": health.get("inference_health", "blocked"),
         "requested_provider": health.get("requested_provider", REMOTE_IAL_PROVIDER),
@@ -711,25 +772,6 @@ def _base_env(adapter: _RemoteIALOpenAIAdapter | None = None, run_dir: Path | No
     return env
 
 
-def _probe_opensandbox() -> dict[str, Any]:
-    executable = opensandbox_executable()
-    if not executable.is_file():
-        return {"status": "unavailable", "exit_code": 127, "stdout": "", "stderr": "opensandbox executable not found"}
-    completed = subprocess.run(
-        [str(executable), "--version"],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=10,
-    )
-    return {
-        "status": "ready" if completed.returncode == 0 else "failed",
-        "exit_code": completed.returncode,
-        "stdout": (completed.stdout or "").strip(),
-        "stderr": (completed.stderr or "").strip(),
-    }
-
-
 def run(
     *,
     manifest: dict[str, Any],
@@ -768,8 +810,10 @@ def run(
         result_path=result_path,
         status="running",
     )
-    opensandbox_probe = _probe_opensandbox()
-    _append_event(event_log_path, "opensandbox_probe", **opensandbox_probe)
+    dispatch_probe = dict(health.get("process_identity", {}).get("dispatch_probe") or {})
+    if not dispatch_probe:
+        dispatch_probe = _probe_hermes_cli_contract(_requested_model(model))
+    _append_event(event_log_path, "hermes_dispatch_probe", **dispatch_probe)
     try:
         remote_ial = _remote_ial_config(model)
         remote_health = _remote_ial_health(remote_ial)
@@ -787,7 +831,7 @@ def run(
             changed_paths=[],
             selection=selection,
             health=health,
-            opensandbox_probe=opensandbox_probe,
+            dispatch_probe=dispatch_probe,
             requested_model=str(model or os.environ.get("AMOF_REMOTE_IAL_MODEL") or "unconfigured"),
             effective_model="unverified",
         )
@@ -815,7 +859,7 @@ def run(
             changed_paths=[],
             selection=selection,
             health=health,
-            opensandbox_probe=opensandbox_probe,
+            dispatch_probe=dispatch_probe,
             requested_model=remote_ial.model,
             effective_model="unverified",
         )
@@ -842,7 +886,7 @@ def run(
             changed_paths=[],
             selection=selection,
             health=health,
-            opensandbox_probe=opensandbox_probe,
+            dispatch_probe=dispatch_probe,
             requested_model=remote_ial.model,
             effective_model="unverified",
         )
@@ -857,7 +901,7 @@ def run(
         )
 
     if not bool(health["dispatch_available"]):
-        final_text = "Hermes/OpenSandbox dispatch is unavailable; selected runner failed closed."
+        final_text = "Hermes CLI + Remote IAL dispatch is unavailable; selected runner failed closed."
         result = _result_payload(
             run_id=run_id,
             status="blocked",
@@ -870,7 +914,7 @@ def run(
             changed_paths=[],
             selection=selection,
             health=health,
-            opensandbox_probe=opensandbox_probe,
+            dispatch_probe=dispatch_probe,
         )
         _append_event(event_log_path, "run_blocked", reason="dispatch_unavailable")
         return _write_terminal_result(
@@ -896,7 +940,7 @@ def run(
             changed_paths=[],
             selection=selection,
             health=health,
-            opensandbox_probe=opensandbox_probe,
+            dispatch_probe=dispatch_probe,
             requested_model=remote_ial.model,
             effective_model="unverified",
         )
@@ -917,14 +961,16 @@ def run(
         )
 
     prompt = _build_prompt(goal, selection, workspace)
-    command = [str(hermes_executable()), "chat", "--cli", "--quiet", "--model", remote_ial.model]
-    command.extend(["--query", prompt])
+    command = hermes_dispatch_command(model=remote_ial.model, prompt=prompt)
     (run_dir / "request.json").write_text(
         json.dumps(
             {
                 "request_id": request_id,
                 "runner_id": selection.runner_id,
                 "backend": BACKEND_TYPE,
+                "backend_contract_version": BACKEND_CONTRACT_VERSION,
+                "runtime_contract": RUNTIME_CONTRACT,
+                "isolation_model": ISOLATION_MODEL,
                 "studio_session_id": studio_session_id,
                 "capabilities": selection.capabilities,
                 "writable_roots": selection.writable_roots,
@@ -1009,7 +1055,7 @@ def run(
         changed_paths=changed,
         selection=selection,
         health=health,
-        opensandbox_probe=opensandbox_probe,
+        dispatch_probe=dispatch_probe,
         validation_status=validation_status,
         requested_model=remote_ial.model,
         effective_model=remote_ial.model,
@@ -1046,7 +1092,7 @@ def _result_payload(
     changed_paths: list[str],
     selection: HermesBackendSelection,
     health: dict[str, Any],
-    opensandbox_probe: dict[str, Any],
+    dispatch_probe: dict[str, Any],
     validation_status: str = "not_run",
     requested_model: str = "unconfigured",
     effective_model: str = "unverified",
@@ -1084,10 +1130,13 @@ def _result_payload(
         "approved_capabilities": list(selection.capabilities),
         "effective_capabilities": list(selection.capabilities),
         "evidence_refs": {
+            "backend_contract_version": BACKEND_CONTRACT_VERSION,
+            "runtime_contract": RUNTIME_CONTRACT,
+            "isolation_model": ISOLATION_MODEL,
             "event_log_path": str(event_log_path),
             "runtime_log_path": str(runtime_log_path),
             "process_identity": health.get("process_identity"),
-            "opensandbox_probe": dict(opensandbox_probe),
+            "dispatch_probe": dict(dispatch_probe),
             "inference": {
                 "requested_provider": REMOTE_IAL_PROVIDER,
                 "effective_provider": REMOTE_IAL_PROVIDER if effective_model != "unverified" else "unverified",

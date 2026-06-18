@@ -1161,7 +1161,7 @@ def parse_args() -> argparse.Namespace:
 
     runner_template = runner_sub.add_parser(
         "template",
-        help="Print a safe local planning runner YAML template",
+        help="Print a safe runner YAML template",
     )
     runner_template.add_argument(
         "--kind",

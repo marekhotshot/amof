@@ -185,12 +185,26 @@ class RunnerRegistrationTests(unittest.TestCase):
             self.assertEqual(stderr, "")
             payload = yaml.safe_load(stdout)
             self.assertEqual(payload["backend"], "hermes_opensandbox")
+            self.assertEqual(payload["backend_contract_version"], "hermes-cli-remote-ial-v1")
+            self.assertEqual(payload["runtime_contract"], "Hermes CLI + Remote IAL")
+            self.assertEqual(payload["isolation_model"], "runtime_owner_workspace")
+            self.assertEqual(payload["name"], "Hermes CLI Remote IAL Ticket Write")
             self.assertIn("bounded_worktree", payload["allowed_mutation_modes"])
             self.assertIn("bounded_write", payload["capabilities"])
+            self.assertIn("hermes-cli", payload["labels"])
+            self.assertIn("remote-ial", payload["labels"])
+            self.assertNotIn("opensandbox", payload["labels"])
             runner_path = _write(Path(td) / "hermes.yaml", stdout)
             health = {
+                "backend_contract_version": "hermes-cli-remote-ial-v1",
+                "runtime_contract": "Hermes CLI + Remote IAL",
+                "isolation_model": "runtime_owner_workspace",
                 "dispatch_available": True,
                 "runtime_health": "ready",
+                "hermes_runtime": "ready",
+                "inference_transport": "remote_ial",
+                "inference_health": "ready",
+                "direct_provider_fallback": "disabled",
                 "execution_endpoint": "/tmp/hermes",
                 "process_identity": {"hermes_executable": "/tmp/hermes"},
                 "cancellation_support": "timeout_process_termination",
@@ -206,6 +220,8 @@ class RunnerRegistrationTests(unittest.TestCase):
                 )
                 self.assertEqual(register_code, 0)
                 self.assertIn("backend=hermes_opensandbox", register_stdout)
+                self.assertIn("backend_contract_version=hermes-cli-remote-ial-v1", register_stdout)
+                self.assertIn("runtime_contract=Hermes CLI + Remote IAL", register_stdout)
                 self.assertIn("dispatch_available=yes", register_stdout)
                 self.assertEqual(register_stderr, "")
                 doctor_code, doctor_stdout, doctor_stderr = _run_runner_cmd(_runner_args("doctor", json=True))
@@ -216,6 +232,9 @@ class RunnerRegistrationTests(unittest.TestCase):
             self.assertEqual(doctor["dispatch"], "available")
             self.assertTrue(doctor["runners"][0]["dispatch_available"])
             self.assertEqual(doctor["runners"][0]["backend_type"], "hermes_opensandbox")
+            self.assertEqual(doctor["runners"][0]["backend_contract_version"], "hermes-cli-remote-ial-v1")
+            self.assertEqual(doctor["runners"][0]["runtime_contract"], "Hermes CLI + Remote IAL")
+            self.assertEqual(doctor["runners"][0]["isolation_model"], "runtime_owner_workspace")
             self.assertEqual(doctor["runners"][0]["inference_transport"], "remote_ial")
             self.assertEqual(doctor["runners"][0]["direct_provider_fallback"], "disabled")
 
@@ -226,8 +245,15 @@ class RunnerRegistrationTests(unittest.TestCase):
             self.assertEqual(code, 0)
             runner_path = _write(Path(td) / "hermes.yaml", stdout)
             health = {
+                "backend_contract_version": "hermes-cli-remote-ial-v1",
+                "runtime_contract": "Hermes CLI + Remote IAL",
+                "isolation_model": "runtime_owner_workspace",
                 "dispatch_available": False,
                 "runtime_health": "unavailable",
+                "hermes_runtime": "unavailable",
+                "inference_transport": "remote_ial",
+                "inference_health": "blocked",
+                "direct_provider_fallback": "disabled",
                 "execution_endpoint": "/missing/hermes",
                 "process_identity": {"hermes_executable": "/missing/hermes"},
                 "cancellation_support": "timeout_process_termination",
@@ -251,6 +277,7 @@ class RunnerRegistrationTests(unittest.TestCase):
             self.assertFalse(doctor["runners"][0]["dispatch_available"])
             self.assertEqual(doctor["runners"][0]["runtime_health"], "unavailable")
             self.assertEqual(doctor["runners"][0]["inference_health"], "blocked")
+            self.assertEqual(doctor["runners"][0]["runtime_contract"], "Hermes CLI + Remote IAL")
 
     def test_generated_intake_and_runner_template_match_and_scan(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-runner-template-dogfood-") as td:
