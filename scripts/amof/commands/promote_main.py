@@ -102,6 +102,7 @@ class PromoteMainPlan:
     current_main_advanced_paths: list[str] | None = None
     overlap_paths: list[str] | None = None
     stale_base: bool | None = None
+    candidate_worktree_closeout: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1380,6 +1381,104 @@ def _finalize_plan(
     return finalized
 
 
+def _candidate_worktree_closeout_dir(workspace_root: Path, ticket_id: str) -> Path:
+    return _promotion_receipts_root(workspace_root, ticket_id) / "closeout"
+
+
+def _worktree_records(repo_path: Path) -> list[dict[str, Any]]:
+    output = _git_ok(repo_path, "worktree", "list", "--porcelain")
+    records: list[dict[str, Any]] = []
+    current: dict[str, Any] = {}
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if current:
+                records.append(current)
+                current = {}
+            continue
+        key, _, value = line.partition(" ")
+        if key == "worktree":
+            if current:
+                records.append(current)
+                current = {}
+            current["path"] = value
+        elif key == "HEAD":
+            current["head"] = value
+        elif key == "branch":
+            current["branch"] = value.removeprefix("refs/heads/")
+        elif key == "detached":
+            current["detached"] = True
+    if current:
+        records.append(current)
+    return records
+
+
+def _candidate_worktree_closeout_payload(
+    repo_path: Path,
+    *,
+    workspace_root: Path,
+    ticket_id: str,
+    candidate_branch: str,
+    source_sha: str,
+    promoted_result_sha: str,
+) -> dict[str, Any]:
+    closeout_dir = _candidate_worktree_closeout_dir(workspace_root, ticket_id)
+    ensure_dir(closeout_dir)
+    timestamp = time.strftime("%Y-%m-%d-%H%M%S")
+    closeout_path = closeout_dir / f"{timestamp}-candidate-worktree-closeout-{_slugify(ticket_id)}.json"
+    matching_records = [
+        record for record in _worktree_records(repo_path) if record.get("branch") == candidate_branch
+    ]
+    payload: dict[str, Any] = {
+        "candidate_branch": candidate_branch,
+        "source_sha": source_sha,
+        "promoted_result_sha": promoted_result_sha,
+        "candidate_worktree_path": None,
+        "worktree_clean": None,
+        "worktree_status": None,
+        "safe_remove_command": None,
+        "auto_removal_allowed": False,
+        "refusal_reason": None,
+        "closeout_receipt_path": _display_path(closeout_path, workspace_root=workspace_root),
+    }
+    if not matching_records:
+        payload["refusal_reason"] = "candidate branch is not checked out in any registered worktree"
+        closeout_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return payload
+    if len(matching_records) > 1:
+        payload["refusal_reason"] = "candidate branch is checked out in multiple registered worktrees"
+        closeout_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return payload
+
+    candidate_path = Path(str(matching_records[0]["path"])).resolve(strict=False)
+    payload["candidate_worktree_path"] = str(candidate_path)
+    status_output = _git_ok(candidate_path, "status", "--short", "--branch", "--untracked-files=all")
+    payload["worktree_status"] = status_output
+    status_lines = [line for line in status_output.splitlines() if line and not line.startswith("##")]
+    is_clean = not status_lines
+    payload["worktree_clean"] = is_clean
+    if not is_clean:
+        payload["refusal_reason"] = "candidate worktree is dirty"
+        closeout_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return payload
+    canonical_repo_root = repo_path.resolve(strict=False)
+    if candidate_path == canonical_repo_root or _is_within_path(candidate_path, canonical_repo_root):
+        payload["refusal_reason"] = "candidate worktree path is inside the canonical repo checkout"
+        closeout_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return payload
+    if not _is_ancestor(repo_path, source_sha, candidate_branch):
+        payload["refusal_reason"] = "source SHA is not preserved by the candidate branch"
+        closeout_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return payload
+
+    payload["safe_remove_command"] = (
+        f'git -C "{repo_path}" worktree remove "{candidate_path}"'
+    )
+    payload["auto_removal_allowed"] = True
+    closeout_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
 def _lock_payload_for(bundle: PromoteMainInput, *, promotion_id: str, expected_main_sha: str) -> dict[str, Any]:
     return {
         "promotion_id": promotion_id,
@@ -1882,6 +1981,18 @@ def _print_plan(plan: PromoteMainPlan) -> None:
             print(f"    backup: {reconciliation['backup_path']}")
         if reconciliation.get("doctor_status"):
             print(f"    doctor: {reconciliation['doctor_status']}")
+    if plan.candidate_worktree_closeout:
+        closeout = plan.candidate_worktree_closeout
+        print("  Candidate worktree closeout:")
+        if closeout.get("closeout_receipt_path"):
+            print(f"    receipt: {closeout['closeout_receipt_path']}")
+        if closeout.get("candidate_worktree_path"):
+            print(f"    path: {closeout['candidate_worktree_path']}")
+        if closeout.get("safe_remove_command"):
+            print(f"    remove: {closeout['safe_remove_command']}")
+        print(f"    auto-removal allowed: {'yes' if closeout.get('auto_removal_allowed') else 'no'}")
+        if closeout.get("refusal_reason"):
+            print(f"    refusal: {closeout['refusal_reason']}")
     print("  Code delta files:")
     for path in plan.code_delta_files or ["<none>"]:
         print(f"    - {path}")
@@ -2130,6 +2241,17 @@ def execute_promote_main_push(
                         public_repo_path=repo_path,
                     ),
                 )
+            finalized = replace(
+                finalized,
+                candidate_worktree_closeout=_candidate_worktree_closeout_payload(
+                    repo_path,
+                    workspace_root=workspace_root,
+                    ticket_id=plan.ticket_id,
+                    candidate_branch=plan.candidate_branch,
+                    source_sha=plan.source_sha,
+                    promoted_result_sha=synthetic_commit_sha or "",
+                ),
+            )
             _rewrite_audit_record(workspace_root, finalized)
     except PromotionLockError as exc:
         finalized = replace(

@@ -188,6 +188,34 @@ class PromoteMainLinkageTests(unittest.TestCase):
             private_local_head,
         )
 
+    def _prepare_public_candidate_worktree_workspace(self) -> tuple[Path, Path, Path, str, str]:
+        temp_root = Path(tempfile.mkdtemp(prefix="amof-promote-closeout-"))
+        remote = temp_root / "public.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+
+        seed = temp_root / "seed"
+        subprocess.run(["git", "init", "-b", "main", str(seed)], check=True, capture_output=True, text=True)
+        (seed / "README.md").write_text("# public base\n", encoding="utf-8")
+        _git(seed, "add", "README.md")
+        _git(seed, "commit", "-m", "public base")
+        _git(seed, "remote", "add", "origin", str(remote))
+        _git(seed, "push", "-u", "origin", "main")
+
+        repo = temp_root / "repos" / "amof"
+        repo.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "clone", str(remote), str(repo)], check=True, capture_output=True, text=True)
+        _git(repo, "fetch", "origin", "main")
+        expected_public_main = _git(repo, "rev-parse", "origin/main")
+
+        candidate_branch = "ticket/AMOF-PROMOTE-MAIN-WORKTREE-CLOSEOUT-001"
+        candidate_worktree = temp_root / "candidate-worktree"
+        _git(repo, "worktree", "add", "-b", candidate_branch, str(candidate_worktree), "origin/main")
+        (candidate_worktree / "README.md").write_text("# candidate from worktree\n", encoding="utf-8")
+        _git(candidate_worktree, "add", "README.md")
+        _git(candidate_worktree, "commit", "-m", "candidate worktree change")
+        source_sha = _git(candidate_worktree, "rev-parse", "HEAD")
+        return temp_root, repo, candidate_worktree, candidate_branch, source_sha
+
     def _prepare_stale_base_workspace(self, *, overlapping: bool) -> tuple[Path, str, str, str]:
         temp_root = Path(tempfile.mkdtemp(prefix="amof-promote-linkage-stale-"))
         remote = temp_root / "remote.git"
@@ -451,6 +479,56 @@ class PromoteMainLinkageTests(unittest.TestCase):
             reconcile.assert_not_called()
             audit_payload = json.loads((temp_root / plan.audit_record_path).read_text(encoding="utf-8"))
             self.assertIsNone(audit_payload["compat_lock_reconciliation"])
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def test_successful_public_promotion_writes_candidate_worktree_closeout_receipt(self) -> None:
+        temp_root, repo, candidate_worktree, candidate_branch, source_sha = self._prepare_public_candidate_worktree_workspace()
+        try:
+            expected_public_main = _git(repo, "rev-parse", "origin/main")
+            bundle = PromoteMainInput(
+                repo="amof",
+                ticket_id="AMOF-PROMOTE-MAIN-WORKTREE-CLOSEOUT-001",
+                candidate_branch=candidate_branch,
+                source_sha=source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=expected_public_main,
+                promotion_reason="test candidate worktree closeout receipt",
+                dry_run=False,
+            )
+            with mock.patch.object(
+                promote_main_module,
+                "_reconcile_operator_compat_lock_after_promotion",
+                return_value=None,
+            ):
+                plan = execute_promote_main_push(
+                    {"repos": [{"name": "amof", "path": str(repo)}]},
+                    bundle,
+                    ecosystem=None,
+                    workspace_root=temp_root,
+                )
+
+            self.assertTrue(plan.ok, plan.failure_reason)
+            self.assertEqual(plan.status, "promoted")
+            closeout = plan.candidate_worktree_closeout
+            self.assertIsNotNone(closeout)
+            assert closeout is not None
+            self.assertEqual(closeout["candidate_branch"], candidate_branch)
+            self.assertEqual(closeout["candidate_worktree_path"], str(candidate_worktree.resolve(strict=False)))
+            self.assertEqual(closeout["source_sha"], source_sha)
+            self.assertEqual(closeout["promoted_result_sha"], plan.result_main_sha)
+            self.assertEqual(closeout["worktree_clean"], True)
+            self.assertEqual(closeout["auto_removal_allowed"], True)
+            self.assertIn(str(repo.resolve(strict=False)), closeout["safe_remove_command"])
+            self.assertIn(str(candidate_worktree.resolve(strict=False)), closeout["safe_remove_command"])
+            receipt_path = temp_root / closeout["closeout_receipt_path"]
+            self.assertTrue(receipt_path.is_file())
+            receipt_payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+            self.assertEqual(receipt_payload["candidate_branch"], candidate_branch)
+            self.assertEqual(receipt_payload["candidate_worktree_path"], str(candidate_worktree.resolve(strict=False)))
+            self.assertEqual(receipt_payload["safe_remove_command"], closeout["safe_remove_command"])
+            audit_payload = json.loads((temp_root / plan.audit_record_path).read_text(encoding="utf-8"))
+            self.assertEqual(audit_payload["candidate_worktree_closeout"]["closeout_receipt_path"], closeout["closeout_receipt_path"])
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
 
