@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from .app_paths import ticket_worktrees_dir
+from .app_paths import ensure_canonical_repo_write_allowed, ticket_worktrees_dir
 from .state import get_ticket_repos
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,11 @@ def switch_to_ticket(
     Returns the path to the newly created (or existing) worktree.
     """
     wt_path = get_ticket_repo_worktree_path(workspace_root, ticket_id, repo_name)
+    ensure_canonical_repo_write_allowed(
+        operation="create ticket worktree",
+        target_path=wt_path,
+        base=workspace_root,
+    )
     
     # 1. If worktree directory already exists, ensure it's valid
     if wt_path.exists() and (wt_path / ".git").exists():

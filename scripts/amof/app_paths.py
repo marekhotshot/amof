@@ -8,6 +8,12 @@ from pathlib import Path
 
 
 APP_NAME = "amof"
+CANONICAL_REPO_WRITE_FORBIDDEN = "CANONICAL_REPO_WRITE_FORBIDDEN"
+CANONICAL_REPO_MAINTENANCE_ENV = "AMOF_CANONICAL_REPO_MAINTENANCE"
+CANONICAL_PATH_CLASSIFICATIONS = {
+    "canonical_public_repo",
+    "canonical_private_repo",
+}
 
 
 def _normalized(path: str | Path) -> Path:
@@ -26,6 +32,27 @@ def _looks_like_operator_workspace_root(path: Path) -> bool:
         (path / "compat" / "public-private.lock.yaml").is_file()
         and (path / "repos").is_dir()
     )
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(parent.resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+@dataclass(frozen=True)
+class OperatorPathInfo:
+    path: Path
+    workspace_root: Path | None
+    classification: str
+    canonical_public_repo_root: Path | None
+    canonical_private_repo_root: Path | None
+
+    @property
+    def is_canonical_repo(self) -> bool:
+        return self.classification in CANONICAL_PATH_CLASSIFICATIONS
 
 
 @dataclass(frozen=True)
@@ -205,18 +232,99 @@ def queue_dir() -> Path:
 def ensure_parent_dir(path: str | Path) -> Path:
     """Ensure the parent directory exists and return the normalized path."""
     normalized = _normalized(path)
+    ensure_canonical_repo_write_allowed(
+        operation="create parent directory",
+        target_path=normalized,
+    )
     normalized.parent.mkdir(parents=True, exist_ok=True)
     return normalized
+
+
+def classify_operator_path(path: str | Path, base: str | Path | None = None) -> OperatorPathInfo:
+    normalized = _normalized(path)
+    workspace_root = operator_workspace_root(base if base is not None else normalized)
+    canonical_public_repo_root: Path | None = None
+    canonical_private_repo_root: Path | None = None
+    classification = "unknown"
+    if workspace_root is not None:
+        canonical_public_repo_root = (workspace_root / "repos" / "amof").resolve(strict=False)
+        canonical_private_repo_root = (workspace_root / "repos" / "amof-private").resolve(strict=False)
+        if _is_relative_to(normalized, canonical_public_repo_root):
+            classification = "canonical_public_repo"
+        elif _is_relative_to(normalized, canonical_private_repo_root):
+            classification = "canonical_private_repo"
+        elif _is_relative_to(normalized, workspace_root / "worktrees" / "public"):
+            classification = "public_ticket_worktree"
+        elif _is_relative_to(normalized, workspace_root / "worktrees" / "private"):
+            classification = "private_ticket_worktree"
+        elif _is_relative_to(normalized, workspace_root / "receipts"):
+            classification = "operator_receipts"
+    if classification == "unknown":
+        app_paths = get_app_paths()
+        if any(
+            _is_relative_to(normalized, root)
+            for root in (
+                app_paths.config_root,
+                app_paths.data_root,
+                app_paths.cache_root,
+                app_paths.state_root,
+            )
+        ):
+            classification = "app_data"
+    return OperatorPathInfo(
+        path=normalized,
+        workspace_root=workspace_root,
+        classification=classification,
+        canonical_public_repo_root=canonical_public_repo_root,
+        canonical_private_repo_root=canonical_private_repo_root,
+    )
+
+
+def canonical_repo_write_hint(base: str | Path | None = None) -> str:
+    workspace_root = operator_workspace_root(base)
+    if workspace_root is None:
+        return "Use a ticket worktree under ./worktrees/..."
+    return f"Use a ticket worktree under {workspace_root / 'worktrees' / '...'}"
+
+
+def ensure_canonical_repo_write_allowed(
+    *,
+    operation: str,
+    target_path: str | Path,
+    base: str | Path | None = None,
+    maintenance_action: bool = False,
+) -> Path:
+    info = classify_operator_path(target_path, base=base)
+    if not info.is_canonical_repo:
+        return info.path
+    if maintenance_action and os.environ.get(CANONICAL_REPO_MAINTENANCE_ENV) == "1":
+        return info.path
+    env_note = (
+        f" Only narrow maintenance cleanup may use {CANONICAL_REPO_MAINTENANCE_ENV}=1."
+        if maintenance_action
+        else f" {CANONICAL_REPO_MAINTENANCE_ENV}=1 is not a general bypass for implementation work."
+    )
+    raise RuntimeError(
+        f"{CANONICAL_REPO_WRITE_FORBIDDEN}: {operation} would touch {info.classification} at {info.path}. "
+        f"{canonical_repo_write_hint(info.workspace_root)}.{env_note}"
+    )
 
 
 __all__ = [
     "APP_NAME",
     "AppPaths",
+    "CANONICAL_REPO_MAINTENANCE_ENV",
+    "CANONICAL_REPO_WRITE_FORBIDDEN",
+    "CANONICAL_PATH_CLASSIFICATIONS",
+    "OperatorPathInfo",
+    "canonical_repo_write_hint",
+    "classify_operator_path",
     "config_file",
     "contexts_file",
     "director_prepare_runs_dir",
     "director_run_local_dir",
     "downloads_dir",
+    "ensure_canonical_repo_write_allowed",
     "ensure_app_roots",
     "ensure_parent_dir",
     "evidence_dir",

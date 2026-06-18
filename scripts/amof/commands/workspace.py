@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import yaml
 
+from ..app_paths import ensure_canonical_repo_write_allowed
 from ..app_config import get_registered_workspace, load_workspace_registry, register_workspace
 from ..utils import (
     get_git_branch,
@@ -297,6 +298,11 @@ def cmd_workspace(manifest: Dict[str, Any], ecosystem: Optional[str] = None) -> 
     }
 
     workspace_path = get_workspace_filename(ecosystem)
+    ensure_canonical_repo_write_allowed(
+        operation="write workspace file",
+        target_path=Path.cwd() / workspace_path,
+        base=Path.cwd(),
+    )
     with workspace_path.open("w", encoding="utf-8") as f:
         json.dump(workspace_data, f, indent=2)
 

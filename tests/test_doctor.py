@@ -263,6 +263,81 @@ class DoctorLayoutTests(unittest.TestCase):
         self.assertTrue(report["app_data"]["roots"]["config_root"]["inside_source_workspace"])
         self.assertEqual(report["verdict"], "FAIL")
 
+    def test_doctor_reports_canonical_repo_dirt_with_typed_reason(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-doctor-canonical-dirty-") as td:
+            temp_root = Path(td)
+            workspace = temp_root / "workspace"
+            (workspace / "repos" / "amof" / "scripts" / "amof").mkdir(parents=True, exist_ok=True)
+            (workspace / "repos" / "amof" / "scripts" / "amof" / "__init__.py").write_text(
+                "__version__ = 'test'\n",
+                encoding="utf-8",
+            )
+            _seed_required_contracts(workspace / "repos" / "amof")
+            _init_git_repo(workspace)
+            _init_git_repo(workspace / "repos" / "amof")
+            (workspace / "repos" / "amof" / "README.md").write_text("dirty\n", encoding="utf-8")
+
+            with patch.dict("os.environ", {"AMOF_HOME": str(temp_root / ".amof-home")}, clear=False):
+                report = topology_report(
+                    start_path=workspace / "repos" / "amof",
+                    import_origin=str(workspace / "repos" / "amof" / "scripts" / "amof" / "__init__.py"),
+                    path_entries=[str(workspace / "repos" / "amof" / "scripts")],
+                )
+
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertTrue(any("CANONICAL_REPO_DIRTY:" in item for item in report["failures"]))
+
+    def test_doctor_reports_nested_worktrees_inside_canonical_repo(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-doctor-nested-worktrees-") as td:
+            temp_root = Path(td)
+            workspace = temp_root / "workspace"
+            canonical = workspace / "repos" / "amof"
+            (canonical / "scripts" / "amof").mkdir(parents=True, exist_ok=True)
+            (canonical / "scripts" / "amof" / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+            _seed_required_contracts(canonical)
+            _init_git_repo(workspace)
+            _init_git_repo(canonical)
+            subprocess.run(
+                ["git", "worktree", "add", str(canonical / "worktrees" / "public" / "nested"), "HEAD"],
+                cwd=canonical,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=_commit_env(),
+            )
+
+            with patch.dict("os.environ", {"AMOF_HOME": str(temp_root / ".amof-home")}, clear=False):
+                report = topology_report(
+                    start_path=canonical,
+                    import_origin=str(canonical / "scripts" / "amof" / "__init__.py"),
+                    path_entries=[str(canonical / "scripts")],
+                )
+
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertTrue(any("CANONICAL_REPO_NESTED_WORKTREES:" in item for item in report["failures"]))
+
+    def test_doctor_reports_artifacts_inside_canonical_repo(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-doctor-canonical-artifacts-") as td:
+            temp_root = Path(td)
+            workspace = temp_root / "workspace"
+            canonical = workspace / "repos" / "amof"
+            (canonical / "scripts" / "amof").mkdir(parents=True, exist_ok=True)
+            (canonical / "scripts" / "amof" / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+            _seed_required_contracts(canonical)
+            _init_git_repo(workspace)
+            _init_git_repo(canonical)
+            (canonical / "receipts").mkdir(parents=True, exist_ok=True)
+
+            with patch.dict("os.environ", {"AMOF_HOME": str(temp_root / ".amof-home")}, clear=False):
+                report = topology_report(
+                    start_path=canonical,
+                    import_origin=str(canonical / "scripts" / "amof" / "__init__.py"),
+                    path_entries=[str(canonical / "scripts")],
+                )
+
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertTrue(any("CANONICAL_REPO_ARTIFACTS_PRESENT:" in item for item in report["failures"]))
+
 
 if __name__ == "__main__":
     unittest.main()

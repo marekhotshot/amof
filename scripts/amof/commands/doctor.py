@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional
 
 from ..app_config import ensure_default_context_config, get_context, get_current_context_name, load_contexts
 from ..app_paths import (
+    CANONICAL_REPO_WRITE_FORBIDDEN,
+    classify_operator_path,
     config_file,
     contexts_file,
     ensure_app_roots,
@@ -150,6 +152,81 @@ def _path_status(path: Path) -> dict[str, Any]:
         "exists": normalized.exists(),
         "is_dir": normalized.is_dir(),
         "writable": os.access(normalized, os.W_OK) if normalized.exists() else False,
+    }
+
+
+def _git_ref(path: Path, ref: str) -> str | None:
+    output = _run(["git", "rev-parse", ref], cwd=path)
+    if _is_git_failure_output(output) or not output:
+        return None
+    return output.strip()
+
+
+def _nested_worktrees_within(repo_path: Path) -> list[str]:
+    output = _run(["git", "worktree", "list", "--porcelain"], cwd=repo_path)
+    if _is_git_failure_output(output):
+        return []
+    nested: list[str] = []
+    current_path: Path | None = None
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            current_path = None
+            continue
+        key, _, value = line.partition(" ")
+        if key != "worktree":
+            continue
+        current_path = Path(value).resolve(strict=False)
+        if current_path == repo_path.resolve(strict=False):
+            continue
+        if _is_relative_to(current_path, repo_path):
+            nested.append(str(current_path))
+    return nested
+
+
+def _canonical_repo_artifacts(repo_path: Path) -> list[str]:
+    artifacts: list[str] = []
+    for relative_name in ("receipts", ".amof-local", ".amof-home", "worktrees"):
+        candidate = (repo_path / relative_name).resolve(strict=False)
+        if candidate.exists():
+            artifacts.append(str(candidate))
+    return artifacts
+
+
+def _canonical_repo_policy_report(repo_path: Path) -> dict[str, Any]:
+    info = classify_operator_path(repo_path, base=repo_path)
+    branch = _run(["git", "branch", "--show-current"], cwd=repo_path) or "detached"
+    head = _git_ref(repo_path, "HEAD")
+    origin_main = _git_ref(repo_path, "origin/main")
+    issues: list[str] = []
+    summary = _git_summary(repo_path)
+    if int(summary.get("dirty_count", 0) or 0):
+        issues.append(f"CANONICAL_REPO_DIRTY: {repo_path}")
+    if branch == "detached":
+        issues.append(f"CANONICAL_REPO_DETACHED_OR_STALE: {repo_path} is detached")
+    elif branch != "main":
+        issues.append(f"CANONICAL_REPO_IMPLEMENTATION_BRANCH: {repo_path} branch={branch}")
+    if head and origin_main and head != origin_main:
+        issues.append(f"CANONICAL_REPO_DETACHED_OR_STALE: {repo_path} HEAD={head} origin/main={origin_main}")
+    nested_worktrees = _nested_worktrees_within(repo_path)
+    if nested_worktrees:
+        issues.append(
+            "CANONICAL_REPO_NESTED_WORKTREES: " + ", ".join(nested_worktrees)
+        )
+    artifacts = _canonical_repo_artifacts(repo_path)
+    if artifacts:
+        issues.append(
+            "CANONICAL_REPO_ARTIFACTS_PRESENT: " + ", ".join(artifacts)
+        )
+    return {
+        "path": str(repo_path),
+        "classification": info.classification,
+        "branch": branch,
+        "head": head,
+        "origin_main": origin_main,
+        "nested_worktrees": nested_worktrees,
+        "artifacts": artifacts,
+        "issues": issues,
     }
 
 
@@ -405,6 +482,7 @@ def topology_report(
     current_context_payload = get_context(current_context)
     context_summary = _context_provider_summary(current_context, current_context_payload)
     secret_exposure = _secret_exposure_report(canonical_amof=canonical_amof)
+    canonical_repo_policy = _canonical_repo_policy_report(canonical_amof) if surfaces["canonical_amof"].get("git") else None
 
     warnings: List[str] = []
     failures: List[str] = []
@@ -453,6 +531,8 @@ def topology_report(
         warnings.append(f"kubeconfig ref path does not exist: {context_summary['kubeconfig_ref']}")
     if secret_exposure["finding_count"]:
         failures.append(f"secret-exposure check found {secret_exposure['finding_count']} obvious source file(s)")
+    if canonical_repo_policy is not None:
+        failures.extend(canonical_repo_policy["issues"])
 
     verdict = "FAIL" if failures else ("WARN" if warnings else "PASS")
     return {
@@ -478,6 +558,7 @@ def topology_report(
             "current": context_summary,
         },
         "secret_exposure": secret_exposure,
+        "canonical_repo_policy": canonical_repo_policy,
         "warnings": warnings,
         "failures": failures,
     }
@@ -500,6 +581,9 @@ def cmd_doctor(args: Any = None) -> int:
         print(f"  app config:      {report['app_data']['files']['config_file']['path']}")
         print(f"  evidence dir:    {report['app_data']['roots']['evidence_dir']['path']}")
         print(f"  workspaces dir:  {report['app_data']['roots']['workspaces_dir']['path']}")
+        policy = report.get("canonical_repo_policy") or {}
+        if policy:
+            print(f"  canonical repo classification: {policy.get('classification')}")
         for key, surface in report["surfaces"].items():
             print(
                 f"  {key}: branch={surface.get('branch')} head={surface.get('head')} "

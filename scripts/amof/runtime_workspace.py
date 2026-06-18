@@ -10,6 +10,8 @@ import re
 import shutil
 import subprocess
 
+from .app_paths import ensure_canonical_repo_write_allowed
+
 
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -120,6 +122,10 @@ def materialize_run_workspace(
         raise RuntimeWorkspaceError("expected_sha is required.")
 
     base_dir = Path(target_base_dir).resolve(strict=False)
+    ensure_canonical_repo_write_allowed(
+        operation="materialize run workspace",
+        target_path=base_dir,
+    )
     base_dir.mkdir(parents=True, exist_ok=True)
     run_root = _ensure_within_base(base_dir, base_dir / safe_run_id)
     workspace_path = _ensure_within_base(run_root, run_root / safe_repo_name)
