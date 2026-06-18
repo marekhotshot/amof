@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from ..app_paths import evidence_dir, locks_dir
+from ..app_paths import evidence_dir, locks_dir, operator_receipts_root, operator_workspace_root, receipts_dir
 from ..intake.build_write import ENV_ONLY_COMMIT_MESSAGE_RE, ENV_PATH_PREFIX, infer_ticket_id
 from ..manifest import get_ecosystem_root, resolve_workspace_root, simple_parse_yaml
 from ..utils import ensure_dir
@@ -1307,7 +1307,23 @@ def _promotion_receipts_root(workspace_root: Path, ticket_id: str) -> Path:
     ticket_dir = str(ticket_id).strip()
     if len(workspace_root.parts) >= 3 and tuple(workspace_root.parts[-3:]) == ("receipts", "promote-main", ticket_dir):
         return workspace_root
-    return workspace_root / "receipts" / "promote-main" / ticket_dir
+    receipts_root = operator_receipts_root(workspace_root)
+    if receipts_root is not None:
+        return receipts_root / "promote-main" / ticket_dir
+    return receipts_dir() / "promote-main" / ticket_dir
+
+
+def _is_explicit_promotion_receipts_root(path: Path) -> bool:
+    return len(path.parts) >= 3 and path.parts[-3] == "receipts" and path.parts[-2] == "promote-main"
+
+
+def _normalize_promotion_workspace_root(workspace_root: Path) -> Path:
+    if _is_explicit_promotion_receipts_root(workspace_root):
+        return workspace_root
+    detected = operator_workspace_root(workspace_root)
+    if detected is not None:
+        return detected
+    return workspace_root
 
 
 def _promotion_audit_dir(
@@ -1316,8 +1332,9 @@ def _promotion_audit_dir(
     ecosystem: str | None,
     ticket_id: str,
 ) -> Path:
-    if ecosystem:
-        return get_ecosystem_root(ecosystem, str(workspace_root)) / AUDIT_SUBDIR
+    operator_root = operator_workspace_root(workspace_root)
+    if ecosystem and operator_root is not None:
+        return get_ecosystem_root(ecosystem, str(operator_root)) / AUDIT_SUBDIR
     return _promotion_receipts_root(workspace_root, ticket_id) / AUDIT_SUBDIR
 
 
@@ -1494,7 +1511,9 @@ def plan_promote_main_dry_run(
     ecosystem: str | None,
     workspace_root: Path | None = None,
 ) -> PromoteMainPlan:
-    workspace_root = (workspace_root or resolve_workspace_root()).resolve()
+    workspace_root = _normalize_promotion_workspace_root(
+        (workspace_root or resolve_workspace_root()).resolve()
+    )
     target = _resolve_promote_main_target(manifest, workspace_root, bundle.repo)
     repo_path = target.repo_path
     if not repo_path.exists():
@@ -1904,7 +1923,9 @@ def execute_promote_main_push(
     ecosystem: str | None,
     workspace_root: Path | None = None,
 ) -> PromoteMainPlan:
-    workspace_root = (workspace_root or resolve_workspace_root()).resolve()
+    workspace_root = _normalize_promotion_workspace_root(
+        (workspace_root or resolve_workspace_root()).resolve()
+    )
     plan = plan_promote_main_dry_run(manifest, bundle, ecosystem=ecosystem, workspace_root=workspace_root)
     plan = replace(plan, mode="push")
     _rewrite_audit_record(workspace_root, plan)
@@ -2136,7 +2157,9 @@ def execute_promote_main_revert(
     ecosystem: str,
     workspace_root: Path | None = None,
 ) -> PromoteMainRevertResult:
-    workspace_root = (workspace_root or resolve_workspace_root()).resolve()
+    workspace_root = _normalize_promotion_workspace_root(
+        (workspace_root or resolve_workspace_root()).resolve()
+    )
     repo_path = _resolve_repo_path(manifest, workspace_root, request.repo)
     synthetic_commit_sha = _resolve_commit(repo_path, request.synthetic_commit_sha)
     lock_path = workspace_root / LOCK_DIR / f"promote-main-{_slugify(request.repo)}.lock"

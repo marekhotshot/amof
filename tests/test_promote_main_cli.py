@@ -155,6 +155,57 @@ class PromoteMainCliTests(unittest.TestCase):
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
 
+    def test_promote_main_dry_run_from_repo_checkout_does_not_create_repo_receipts(self) -> None:
+        temp_root, repo, branch, source_sha, expected_main_sha = self._prepare_workspace()
+        try:
+            (temp_root / "compat").mkdir(parents=True, exist_ok=True)
+            (temp_root / "compat" / "public-private.lock.yaml").write_text(
+                "public:\n"
+                "  repo_url: \"https://github.com/marekhotshot/amof.git\"\n"
+                "  main_sha: \"0000000000000000000000000000000000000000\"\n",
+                encoding="utf-8",
+            )
+            receipts_root = temp_root / "receipts" / "promote-main" / "AMOF-PROMOTE-MAIN-ECOSYSTEM-SEMANTICS-001"
+            amof_home = temp_root / "amof-home"
+            env = _commit_env(
+                {
+                    "PYTHONPATH": str(SCRIPTS_ROOT),
+                    "AMOF_HOME": str(amof_home),
+                }
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "amof",
+                    "promote-main",
+                    "--repo",
+                    "amof",
+                    "--ticket-id",
+                    "AMOF-PROMOTE-MAIN-ECOSYSTEM-SEMANTICS-001",
+                    "--candidate-branch",
+                    branch,
+                    "--source-sha",
+                    source_sha,
+                    "--expected-main-sha",
+                    expected_main_sha,
+                    "--promotion-reason",
+                    "test repo checkout hygiene",
+                    "--dry-run",
+                ],
+                cwd=repo,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((repo / "receipts").exists())
+            self.assertTrue((receipts_root / "audit").exists())
+            self.assertTrue(any((receipts_root / "audit").iterdir()))
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
     def test_promote_main_private_dry_run_uses_exact_policy_location(self) -> None:
         temp_root, _repo, branch, source_sha, expected_main_sha = self._prepare_private_workspace()
         try:

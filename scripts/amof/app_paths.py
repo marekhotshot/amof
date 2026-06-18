@@ -21,6 +21,13 @@ def _xdg_base(env_name: str, fallback: Path) -> Path:
     return _normalized(fallback)
 
 
+def _looks_like_operator_workspace_root(path: Path) -> bool:
+    return (
+        (path / "compat" / "public-private.lock.yaml").is_file()
+        and (path / "repos").is_dir()
+    )
+
+
 @dataclass(frozen=True)
 class AppPaths:
     config_root: Path
@@ -60,6 +67,35 @@ def get_app_paths() -> AppPaths:
         cache_root=cache_base / APP_NAME,
         state_root=state_base / APP_NAME,
     )
+
+
+def operator_workspace_root(base: str | Path | None = None) -> Path | None:
+    """Return the operator workspace root when it can be detected safely."""
+    explicit = os.environ.get("AMOF_OPERATOR_WORKSPACE_ROOT")
+    if explicit and explicit.strip():
+        return _normalized(explicit)
+    start = _normalized(
+        base
+        if base is not None
+        else os.environ.get("AMOF_WORKSPACE_ROOT")
+        or os.environ.get("AMOF_CWD")
+        or Path.cwd()
+    )
+    for candidate in (start, *start.parents):
+        if _looks_like_operator_workspace_root(candidate):
+            return candidate
+    return None
+
+
+def operator_receipts_root(base: str | Path | None = None) -> Path | None:
+    """Return the preferred operator receipts root when configured or detectable."""
+    explicit = os.environ.get("AMOF_RECEIPTS_ROOT")
+    if explicit and explicit.strip():
+        return _normalized(explicit)
+    root = operator_workspace_root(base)
+    if root is None:
+        return None
+    return root / "receipts"
 
 
 def ensure_app_roots() -> AppPaths:
@@ -190,6 +226,8 @@ __all__ = [
     "locks_dir",
     "logs_dir",
     "materialized_runs_dir",
+    "operator_receipts_root",
+    "operator_workspace_root",
     "planning_workspaces_dir",
     "provider_profiles_dir",
     "queue_dir",

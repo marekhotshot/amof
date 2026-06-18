@@ -710,6 +710,74 @@ class PromoteMainLinkageTests(unittest.TestCase):
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
 
+    def test_plan_promote_main_repo_checkout_uses_detected_operator_receipts_root(self) -> None:
+        temp_root, repo, source_sha, expected_main_sha = self._prepare_workspace()
+        try:
+            lock_path = temp_root / "compat" / "public-private.lock.yaml"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path.write_text(
+                "public:\n"
+                "  repo_url: \"https://github.com/marekhotshot/amof.git\"\n"
+                "  main_sha: \"0000000000000000000000000000000000000000\"\n",
+                encoding="utf-8",
+            )
+            bundle = PromoteMainInput(
+                repo="amof",
+                ticket_id="AMOF-RUNTIME-CONTEXT-SWITCHING-001",
+                candidate_branch="ticket/AMOF-RUNTIME-CONTEXT-SWITCHING-001-runtime-context-switching",
+                source_sha=source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=expected_main_sha,
+                promotion_reason="test operator receipts root detection",
+                dry_run=True,
+            )
+            plan = plan_promote_main_dry_run(
+                {"repos": []},
+                bundle,
+                ecosystem=None,
+                workspace_root=repo,
+            )
+            audit_path = temp_root / plan.audit_record_path
+            self.assertTrue(audit_path.exists())
+            self.assertIn("receipts/promote-main/AMOF-RUNTIME-CONTEXT-SWITCHING-001/audit", str(audit_path))
+            self.assertFalse((repo / "receipts").exists())
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def test_plan_promote_main_repo_checkout_falls_back_to_amof_home_receipts(self) -> None:
+        temp_root, repo, source_sha, expected_main_sha = self._prepare_workspace()
+        try:
+            amof_home = temp_root / "amof-home"
+            bundle = PromoteMainInput(
+                repo="amof",
+                ticket_id="AMOF-RUNTIME-CONTEXT-SWITCHING-001",
+                candidate_branch="ticket/AMOF-RUNTIME-CONTEXT-SWITCHING-001-runtime-context-switching",
+                source_sha=source_sha,
+                gitops_commit_sha=None,
+                expected_main_sha=expected_main_sha,
+                promotion_reason="test AMOF_HOME receipts fallback",
+                dry_run=True,
+            )
+            with mock.patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
+                plan = plan_promote_main_dry_run(
+                    {"repos": []},
+                    bundle,
+                    ecosystem=None,
+                    workspace_root=repo,
+                )
+            audit_path = Path(plan.audit_record_path)
+            self.assertTrue(audit_path.exists())
+            self.assertTrue(
+                str(audit_path).startswith(
+                    str(
+                        amof_home / "share" / "receipts" / "promote-main" / "AMOF-RUNTIME-CONTEXT-SWITCHING-001"
+                    )
+                )
+            )
+            self.assertFalse((repo / "receipts").exists())
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
     def test_plan_promote_main_missing_repo_fails_with_clear_resolution_error(self) -> None:
         temp_root = Path(tempfile.mkdtemp(prefix="amof-promote-linkage-missing-repo-"))
         try:
