@@ -21,6 +21,7 @@ READ_ONLY_REPO_INSPECTION_TOOLS: tuple[str, ...] = (
 _SHA40_RE = re.compile(r"\b[0-9a-f]{40}\b", re.IGNORECASE)
 _LINT_INTENT_RE = re.compile(r"\b(lint|linter|diagnostic(?:s)?)\b", re.IGNORECASE)
 _FILE_NOT_FOUND_RE = re.compile(r"\bfile not found\b|\bdoesn't exist\b", re.IGNORECASE)
+_DIRECTORY_NOT_FOUND_RE = re.compile(r"\bdirectory not found\b", re.IGNORECASE)
 _NOT_A_FILE_RE = re.compile(r"\bnot a file\b|\bis a directory\b", re.IGNORECASE)
 _NO_PATHS_RE = re.compile(r"\bno paths provided\b", re.IGNORECASE)
 _LINTER_UNAVAILABLE_RE = re.compile(r"\blinter not configured\b|\bnot found in \$PATH\b", re.IGNORECASE)
@@ -324,6 +325,11 @@ def analyze_tool_call_events(
                 required_or_optional = "alternative_group"
                 required_for = "repository metadata fallback"
                 safe_next_action = "Use the completed repository findings already collected through alternate read-only evidence."
+        elif repo_mode and tool_name == "LS" and _DIRECTORY_NOT_FOUND_RE.search(error_summary):
+            if _has_successful_tool_followup(tool_events, call_index, "LS") or validation.ok:
+                required_or_optional = "alternative_group"
+                required_for = "repository root discovery fallback"
+                safe_next_action = "Use the later successful repository root listing already collected through alternate read-only evidence."
         elif repo_mode and tool_name == "ToolProposal":
             if _has_successful_tool_followup(tool_events, call_index, "ToolProposal"):
                 required_or_optional = "alternative_group"
@@ -375,6 +381,8 @@ def classify_tool_failure(tool_name: str, error_summary: str) -> str:
     if tool_name == "ToolProposal" and "allowed_paths" in error:
         return "invalid_tool_arguments"
     if _FILE_NOT_FOUND_RE.search(error):
+        return "missing_file"
+    if _DIRECTORY_NOT_FOUND_RE.search(error):
         return "missing_file"
     if _NOT_A_FILE_RE.search(error):
         return "unsupported_path"

@@ -32,6 +32,7 @@ from amof.orchestrator.tools.base import (
     ToolCall,
     create_default_registry,
 )
+from amof.orchestrator.tool_failure_semantics import analyze_tool_call_events
 from amof.orchestrator.trust_boundary import create_trust_state
 
 
@@ -1888,6 +1889,41 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             self.assertEqual(result.metadata["command"][0], "python3")
             self.assertTrue(str(result.metadata["script_path"]).endswith("proposal.py"))
             self.assertIn("2", result.metadata["stdout"])
+
+    def test_repo_inspection_ls_directory_guess_failure_is_nonfatal_after_successful_root_listing(self) -> None:
+        analysis = analyze_tool_call_events(
+            task_text="Inspect this repository read-only and report the repository path, branch, head sha, origin/main sha, cleanliness, mission revision test paths, hermes read-only test paths, and evidence paths.",
+            tool_events=[
+                {
+                    "tool": "LS",
+                    "args": {"target_directory": "marekhotshot/simple-ai-shop"},
+                    "success": False,
+                    "error": "Directory not found: marekhotshot/simple-ai-shop",
+                    "tool_id": "ls-1",
+                },
+                {
+                    "tool": "LS",
+                    "args": {"target_directory": ""},
+                    "success": True,
+                    "output_preview": "/\n  commerce/\n  src/\n  README.md\n",
+                    "tool_id": "ls-2",
+                },
+            ],
+            final_response=(
+                "Repository Path: /var/lib/amof/share/workspaces/ws-1/00-simple-ai-shop\n"
+                "Branch Or Detached State: detached at 67f8526b254d8839c025423b6bfda36895881160\n"
+                "HEAD SHA: 67f8526b254d8839c025423b6bfda36895881160\n"
+                "origin/main SHA: 67f8526b254d8839c025423b6bfda36895881160\n"
+                "Cleanliness: clean\n"
+                "Mission Revision Test Paths: not present in this repository\n"
+                "Hermes Read-Only Test Paths: not present in this repository\n"
+                "Evidence Paths: /var/lib/amof/share/runs/20260623-160557/events.jsonl\n"
+            ),
+        )
+        self.assertTrue(analysis["repo_validation"].ok)
+        self.assertEqual(len(analysis["fatal_failures"]), 0)
+        self.assertEqual(len(analysis["failures"]), 1)
+        self.assertEqual(analysis["failures"][0].required_or_optional, "alternative_group")
 
     def test_tool_proposal_rejects_unsafe_commands_before_execution(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-tool-proposal-unsafe-") as td:
