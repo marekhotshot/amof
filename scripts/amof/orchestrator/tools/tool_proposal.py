@@ -118,6 +118,7 @@ class ToolProposalTool(Tool):
             "script_hash": script_hash,
             "script_path": str(script_path),
             "script_runtime": runtime,
+            "command": command,
             "rc": rc,
             "stdout": stdout[:4000],
             "stderr": stderr[:4000],
@@ -130,6 +131,8 @@ class ToolProposalTool(Tool):
             f"stderr:\n{stderr[:4000]}"
         ).rstrip()
         return ToolResult(success=rc == 0, output=output, error=None if rc == 0 else f"proposal exited with rc={rc}", metadata=metadata)
+
+
 
 
 def _validate_static_gates(*, proposal: Dict[str, Any], script: str, workspace_root: Path) -> str | None:

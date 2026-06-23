@@ -1846,6 +1846,49 @@ class AgentRuntimeProfileTests(unittest.TestCase):
             self.assertTrue(script_exists)
             self.assertTrue(script_in_appdata)
 
+    def test_tool_proposal_executes_raw_python_source_with_python3(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-tool-proposal-python-") as td:
+            root = Path(td)
+            repo = root / "repo"
+            _init_git_repo(repo)
+            target = repo / "app.py"
+            target.write_text("def greet():\n    return 'hello'\n", encoding="utf-8")
+            amof_home = root / "amof-home"
+            registry = create_default_registry(
+                guardrails=Guardrails(
+                    config=GuardrailConfig.public_defaults(), writable_roots=[repo]
+                ),
+                role="worker",
+                workspace_root=repo,
+                trust_state=create_trust_state("Inspect files using raw Python proposal"),
+            )
+
+            with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}):
+                with _cwd(repo):
+                    result = registry.execute(
+                        ToolCall(
+                            id="proposal-python",
+                            name="ToolProposal",
+                            arguments={
+                                "purpose": "Count lines in app.py with Python source",
+                                "mutation_intent": False,
+                                "allowed_paths": ["app.py"],
+                                "allow_network": False,
+                                "timeout_seconds": 5,
+                                "inputs": ["app.py"],
+                                "outputs": ["stdout line count"],
+                                "rollback": "No rollback needed for read-only inspection.",
+                                "script": "from pathlib import Path\nprint(len(Path('app.py').read_text().splitlines()))\n",
+                            },
+                        )
+                    )
+
+            self.assertTrue(result.success, result.error)
+            self.assertEqual(result.metadata["rc"], 0)
+            self.assertEqual(result.metadata["command"][0], "python3")
+            self.assertTrue(str(result.metadata["script_path"]).endswith("proposal.py"))
+            self.assertIn("2", result.metadata["stdout"])
+
     def test_tool_proposal_rejects_unsafe_commands_before_execution(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-tool-proposal-unsafe-") as td:
             repo = Path(td) / "repo"
