@@ -51,6 +51,18 @@ DANGEROUS_CAPABILITIES = {
     "tags",
     "releases",
 }
+WRITE_SCOPE_PROPOSAL_START = "AMOF_WRITE_SCOPE_PROPOSAL_JSON_START"
+WRITE_SCOPE_PROPOSAL_END = "AMOF_WRITE_SCOPE_PROPOSAL_JSON_END"
+WRITE_SCOPE_PROPOSAL_FIELDS = (
+    "target_id",
+    "base_sha",
+    "allowed_roots",
+    "denied_roots",
+    "reason",
+    "expected_checks",
+    "docs_only",
+    "source_mutation",
+)
 
 
 class HermesBackendError(RuntimeError):
@@ -678,10 +690,97 @@ class _RemoteIALOpenAIAdapter:
             self.thread.join(timeout=2)
 
 
+def _goal_requests_write_scope_proposal(goal: str) -> bool:
+    lowered = goal.lower()
+    return "write_scope_proposal" in lowered or "write scope proposal" in lowered
+
+
+def _primary_manifest_target(manifest: dict[str, Any]) -> dict[str, str]:
+    repos = manifest.get("repos")
+    if not isinstance(repos, list) or not repos:
+        return {}
+    first = repos[0]
+    if not isinstance(first, dict):
+        return {}
+    base_sha = str(first.get("sha") or first.get("branch") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", base_sha):
+        base_sha = ""
+    return {
+        "target_id": str(first.get("target_id") or "").strip(),
+        "base_sha": base_sha,
+        "repository_url": str(first.get("url") or "").strip(),
+        "workspace_path": str(first.get("path") or "").strip(),
+    }
+
+
+def _normalize_write_scope_proposal(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    proposal = dict(value)
+    required = set(WRITE_SCOPE_PROPOSAL_FIELDS)
+    if not required.issubset(proposal):
+        return None
+    target_id = str(proposal.get("target_id") or "").strip()
+    base_sha = str(proposal.get("base_sha") or "").strip().lower()
+    reason = str(proposal.get("reason") or "").strip()
+    if not target_id or not re.fullmatch(r"[0-9a-f]{40}", base_sha) or not reason:
+        return None
+
+    def _string_list(name: str) -> list[str] | None:
+        raw = proposal.get(name)
+        if not isinstance(raw, list):
+            return None
+        values = [str(item).strip() for item in raw]
+        if any(not item for item in values):
+            return None
+        return values
+
+    allowed_roots = _string_list("allowed_roots")
+    denied_roots = _string_list("denied_roots")
+    expected_checks = _string_list("expected_checks")
+    docs_only = proposal.get("docs_only")
+    source_mutation = proposal.get("source_mutation")
+    if (
+        allowed_roots is None
+        or denied_roots is None
+        or expected_checks is None
+        or not isinstance(docs_only, bool)
+        or not isinstance(source_mutation, bool)
+    ):
+        return None
+    proposal["target_id"] = target_id
+    proposal["base_sha"] = base_sha
+    proposal["reason"] = reason
+    proposal["allowed_roots"] = allowed_roots
+    proposal["denied_roots"] = denied_roots
+    proposal["expected_checks"] = expected_checks
+    proposal["docs_only"] = docs_only
+    proposal["source_mutation"] = source_mutation
+    return proposal
+
+
+def _extract_write_scope_proposal_output(
+    text: str,
+) -> tuple[dict[str, Any] | None, str]:
+    pattern = re.compile(
+        rf"{WRITE_SCOPE_PROPOSAL_START}\s*(\{{.*?\}})\s*{WRITE_SCOPE_PROPOSAL_END}",
+        re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        return None, text.strip()
+    try:
+        parsed = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        parsed = None
+    proposal = _normalize_write_scope_proposal(parsed)
+    summary = (text[: match.start()] + text[match.end() :]).strip()
+    return proposal, summary
 def _build_prompt(
     goal: str,
     selection: HermesBackendSelection,
     workspace: Path,
+    manifest: dict[str, Any] | None = None,
     *,
     read_only_replan: bool = False,
 ) -> str:
@@ -716,6 +815,32 @@ def _build_prompt(
         if read_only_replan:
             lines.append(
                 "Read-only mutation was detected once; this constrained replan must remain read-only within the same workspace boundary."
+            )
+    if _goal_requests_write_scope_proposal(goal):
+        target = _primary_manifest_target(manifest or {})
+        lines.extend(
+            [
+                "",
+                "Structured write-scope contract:",
+                "If the mission asks for a structured write_scope_proposal, emit exactly one JSON object between these markers before any human-readable summary.",
+                WRITE_SCOPE_PROPOSAL_START,
+                '{"target_id":"","base_sha":"","allowed_roots":[],"denied_roots":[],"reason":"","expected_checks":[],"docs_only":false,"source_mutation":false}',
+                WRITE_SCOPE_PROPOSAL_END,
+                "Use exactly those JSON field names. Do not wrap them in another object.",
+                "Keep allowed_roots and denied_roots repository-relative.",
+                "After the JSON block, emit a Markdown summary for humans. Do not restate the JSON block in prose.",
+                "If evidence does not justify a bounded follow-up, omit the JSON block and emit only the Markdown summary.",
+            ]
+        )
+        if target:
+            lines.extend(
+                [
+                    "Canonical proposal target context:",
+                    f"- target_id: {target.get('target_id') or 'unknown'}",
+                    f"- base_sha: {target.get('base_sha') or 'unknown'}",
+                    f"- repository_url: {target.get('repository_url') or 'unknown'}",
+                    f"- workspace_path: {target.get('workspace_path') or workspace}",
+                ]
             )
     lines.extend(["", "Mission:", goal])
     return "\n".join(lines)
@@ -1014,7 +1139,12 @@ def run(
         )
 
     read_only_replan_used = False
-    prompt = _build_prompt(goal, selection, workspace)
+    prompt = _build_prompt(goal, selection, workspace, manifest)
+    write_scope_proposal: dict[str, Any] | None = None
+    task_findings = ""
+    runtime_detail = ""
+    validation_status = "not_run"
+    changed: list[str] = []
     while True:
         command = hermes_dispatch_command(model=remote_ial.model, prompt=prompt)
         (run_dir / "request.json").write_text(
@@ -1076,8 +1206,11 @@ def run(
             stderr_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
             _write_runtime_log(runtime_log_path, f"{type(exc).__name__}: {exc}")
 
-        task_findings = stdout_path.read_text(encoding="utf-8").strip()
+        raw_task_findings = stdout_path.read_text(encoding="utf-8").strip()
         runtime_detail = stderr_path.read_text(encoding="utf-8").strip()
+        write_scope_proposal, task_findings = _extract_write_scope_proposal_output(
+            raw_task_findings
+        )
         validation_status = _infer_validation_status(task_findings or runtime_detail)
         if status == "completed" and validation_status == "failed":
             status = "failed"
@@ -1098,7 +1231,13 @@ def run(
                 restored_paths=list(restored_paths),
             )
             read_only_replan_used = True
-            prompt = _build_prompt(goal, selection, workspace, read_only_replan=True)
+            prompt = _build_prompt(
+                goal,
+                selection,
+                workspace,
+                manifest,
+                read_only_replan=True,
+            )
             continue
         break
     final_text = _runtime_summary_text(
@@ -1127,6 +1266,7 @@ def run(
         validation_status=validation_status,
         requested_model=remote_ial.model,
         effective_model=remote_ial.model,
+        write_scope_proposal=write_scope_proposal,
     )
     _write_terminal_result(
         result_path=result_path,
@@ -1165,6 +1305,7 @@ def _result_payload(
     requested_model: str = "unconfigured",
     effective_model: str = "unverified",
     task_findings: str | None = None,
+    write_scope_proposal: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "result_kind": "agent_run_result",
@@ -1176,6 +1317,11 @@ def _result_payload(
         "stop_reason": stop_reason,
         "final_text": final_text,
         "task_findings": task_findings,
+        **(
+            {"write_scope_proposal": write_scope_proposal}
+            if write_scope_proposal is not None
+            else {}
+        ),
         "runner_id": selection.runner_id,
         "backend": BACKEND_TYPE,
         "requested_provider": REMOTE_IAL_PROVIDER,

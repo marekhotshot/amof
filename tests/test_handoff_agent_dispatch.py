@@ -420,6 +420,65 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             self.assertEqual(captured["request_id"], "handoff-test-001")
             self.assertIn("selected_execution_configuration", stderr)
 
+    def test_explicit_hermes_result_preserves_structured_write_scope_proposal(self) -> None:
+        def _fake_hermes(**kwargs: object) -> dict[str, object]:
+            selection = kwargs["selection"]
+            return {
+                "schema_version": 1,
+                "result_kind": "agent_run_result",
+                "contract_version": "agent-run-v1",
+                "status": "completed",
+                "session_id": "hermes-session-write-scope",
+                "exit_code": 0,
+                "stop_reason": "completed",
+                "final_text": "hermes ok",
+                "task_findings": "Documentation drift confirmed.",
+                "runner_id": selection.runner_id,
+                "backend": "hermes_opensandbox",
+                "plan_path": None,
+                "checkpoint_path": None,
+                "event_log_path": "/tmp/hermes-events.jsonl",
+                "runtime_log_path": "/tmp/hermes-runtime.log",
+                "journal_path": None,
+                "changed_paths": [],
+                "validation_summary": {"status": "passed"},
+                "write_scope_proposal": {
+                    "target_id": "github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",
+                    "base_sha": "67f8526b254d8839c025423b6bfda36895881160",
+                    "allowed_roots": ["docs/launch-readiness/simple-ai-shop-launch-readiness.md"],
+                    "denied_roots": [],
+                    "reason": "Documentation-only follow-up is safe and bounded.",
+                    "expected_checks": ["git diff --check"],
+                    "docs_only": True,
+                    "source_mutation": True,
+                },
+                "approved_capabilities": list(selection.capabilities),
+                "effective_capabilities": list(selection.capabilities),
+                "evidence_refs": {},
+                "budget_summary": {"limit": None, "spent": 0.0, "remaining": None},
+            }
+
+        with TemporaryDirectory(prefix="amof-handoff-hermes-write-scope-preserve-") as td:
+            amof_home = Path(td)
+            _write_packet(amof_home)
+            _write_runner_record(amof_home)
+            with (
+                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
+                patch("amof.commands.handoff.hermes_opensandbox.run", side_effect=_fake_hermes),
+            ):
+                code, stdout, _stderr = _run_execute(
+                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"), amof_home
+                )
+
+            receipt = json.loads(stdout)
+            result = json.loads(Path(receipt["result_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(code, 0)
+            self.assertEqual(receipt["status"], "completed")
+            self.assertEqual(
+                result["write_scope_proposal"]["allowed_roots"],
+                ["docs/launch-readiness/simple-ai-shop-launch-readiness.md"],
+            )
+
     def test_explicit_unsupported_runner_fails_closed_without_builtin_substitution(self) -> None:
         with TemporaryDirectory(prefix="amof-handoff-runner-fail-closed-") as td:
             amof_home = Path(td)

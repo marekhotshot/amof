@@ -129,6 +129,7 @@ class AgentRunResult:
     failure: dict[str, Any] | None = None
     changed_paths: list[str] | None = None
     validation_summary: dict[str, Any] | None = None
+    write_scope_proposal: dict[str, Any] | None = None
     approved_capabilities: list[str] | None = None
     effective_capabilities: list[str] | None = None
     evidence_refs: dict[str, Any] | None = None
@@ -210,6 +211,11 @@ class AgentRunResult:
             **({"failure": dict(self.failure)} if self.failure is not None else {}),
             **({"changed_paths": list(self.changed_paths)} if self.changed_paths is not None else {}),
             **({"validation_summary": dict(self.validation_summary)} if self.validation_summary is not None else {}),
+            **(
+                {"write_scope_proposal": dict(self.write_scope_proposal)}
+                if self.write_scope_proposal is not None
+                else {}
+            ),
             **({"approved_capabilities": list(self.approved_capabilities)} if self.approved_capabilities is not None else {}),
             **({"effective_capabilities": list(self.effective_capabilities)} if self.effective_capabilities is not None else {}),
             **({"evidence_refs": dict(self.evidence_refs)} if self.evidence_refs is not None else {}),

@@ -89,6 +89,61 @@
       "type": "object",
       "additionalProperties": true
     },
+    "write_scope_proposal": {
+      "type": ["object", "null"],
+      "required": [
+        "target_id",
+        "base_sha",
+        "allowed_roots",
+        "denied_roots",
+        "reason",
+        "expected_checks",
+        "docs_only",
+        "source_mutation"
+      ],
+      "properties": {
+        "target_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "allowed_roots": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "denied_roots": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_checks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "docs_only": {
+          "type": "boolean"
+        },
+        "source_mutation": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
     "budget_summary": {
       "type": "object",
       "required": ["limit", "spent", "remaining"],

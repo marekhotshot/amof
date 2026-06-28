@@ -68,6 +68,135 @@ def _health() -> dict[str, object]:
 
 
 class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
+    def test_structured_write_scope_proposal_is_parsed_from_runner_output(self) -> None:
+        config = hermes_opensandbox.RemoteIALConfig(
+            base_url="https://ial.example.test",
+            api_key="unit-test-token",
+            model="remote-ial/test-worker",
+            timeout_seconds=30,
+        )
+        stdout = (
+            f"{hermes_opensandbox.WRITE_SCOPE_PROPOSAL_START}\n"
+            '{"target_id":"github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",'
+            '"base_sha":"67f8526b254d8839c025423b6bfda36895881160",'
+            '"allowed_roots":["docs/launch-readiness/simple-ai-shop-launch-readiness.md"],'
+            '"denied_roots":[],'
+            '"reason":"A focused documentation follow-up is justified by the inspected launch-readiness evidence.",'
+            '"expected_checks":["git diff --check"],'
+            '"docs_only":true,'
+            '"source_mutation":true}\n'
+            f"{hermes_opensandbox.WRITE_SCOPE_PROPOSAL_END}\n\n"
+            "# Launch readiness summary\n\n- Deployment docs are stale.\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-write-scope-") as td:
+            with (
+                patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
+                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
+                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
+                patch.object(
+                    hermes_opensandbox,
+                    "_remote_ial_health",
+                    return_value={"inference_health": "ready"},
+                ),
+                patch.object(
+                    hermes_opensandbox,
+                    "_changed_paths",
+                    side_effect=[[], []],
+                ),
+                patch("subprocess.run") as run_process,
+            ):
+                run_process.return_value = type(
+                    "Completed",
+                    (),
+                    {"stdout": stdout, "stderr": "", "returncode": 0},
+                )()
+                result = hermes_opensandbox.run(
+                    manifest={
+                        "repos": [
+                            {
+                                "path": td,
+                                "url": "https://github.com/marekhotshot/simple-ai-shop.git",
+                                "target_id": "github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",
+                                "sha": "67f8526b254d8839c025423b6bfda36895881160",
+                                "branch": "67f8526b254d8839c025423b6bfda36895881160",
+                            }
+                        ]
+                    },
+                    goal=(
+                        "Inspect launch readiness and return a structured "
+                        "write_scope_proposal for docs/launch-readiness/simple-ai-shop-launch-readiness.md."
+                    ),
+                    request_id="write-scope",
+                    studio_session_id=None,
+                    selection=_selection(),
+                )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(
+            result["write_scope_proposal"],
+            {
+                "target_id": "github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",
+                "base_sha": "67f8526b254d8839c025423b6bfda36895881160",
+                "allowed_roots": [
+                    "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+                ],
+                "denied_roots": [],
+                "reason": "A focused documentation follow-up is justified by the inspected launch-readiness evidence.",
+                "expected_checks": ["git diff --check"],
+                "docs_only": True,
+                "source_mutation": True,
+            },
+        )
+        self.assertEqual(
+            result["task_findings"],
+            "# Launch readiness summary\n\n- Deployment docs are stale.",
+        )
+
+    def test_prose_only_write_scope_text_does_not_become_structured_proposal(self) -> None:
+        config = hermes_opensandbox.RemoteIALConfig(
+            base_url="https://ial.example.test",
+            api_key="unit-test-token",
+            model="remote-ial/test-worker",
+            timeout_seconds=30,
+        )
+        stdout = (
+            "Consider docs/launch-readiness/simple-ai-shop-launch-readiness.md for a later bounded write, "
+            "but no structured proposal is attached here."
+        )
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-write-scope-prose-") as td:
+            with (
+                patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
+                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
+                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
+                patch.object(
+                    hermes_opensandbox,
+                    "_remote_ial_health",
+                    return_value={"inference_health": "ready"},
+                ),
+                patch.object(
+                    hermes_opensandbox,
+                    "_changed_paths",
+                    side_effect=[[], []],
+                ),
+                patch("subprocess.run") as run_process,
+            ):
+                run_process.return_value = type(
+                    "Completed",
+                    (),
+                    {"stdout": stdout, "stderr": "", "returncode": 0},
+                )()
+                result = hermes_opensandbox.run(
+                    manifest={"repos": [{"path": td}]},
+                    goal="Inspect launch readiness and return a structured write scope proposal if warranted.",
+                    request_id="write-scope-prose-only",
+                    studio_session_id=None,
+                    selection=_selection(),
+                )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertNotIn("write_scope_proposal", result)
+        self.assertIn("no structured proposal is attached", result["task_findings"])
+
     def test_changed_paths_delta_ignores_preexisting_dirtiness(self) -> None:
         before = ["src/components/CookieConsent.tsx", "src/components/PodcastPage.tsx"]
         after = [

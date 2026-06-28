@@ -12,6 +12,21 @@
   "checkpoint_path": null,
   "event_log_path": "/tmp/amof/events.jsonl",
   "journal_path": "/tmp/amof/journal.md",
+  "write_scope_proposal": {
+    "target_id": "github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",
+    "base_sha": "67f8526b254d8839c025423b6bfda36895881160",
+    "allowed_roots": [
+      "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+    ],
+    "denied_roots": [],
+    "reason": "A focused documentation-only follow-up can update the launch-readiness report without changing application code.",
+    "expected_checks": [
+      "git diff --check",
+      "markdown lint if configured"
+    ],
+    "docs_only": true,
+    "source_mutation": true
+  },
   "budget_summary": {
     "limit": 2.0,
     "spent": 0.42,
