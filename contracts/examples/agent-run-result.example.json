@@ -35,8 +35,9 @@
       "markdown lint if configured"
     ],
     "docs_only": true,
-    "source_mutation": true
+    "source_mutation": false
   },
+  "proposal_missing_reason": null,
   "evidence_refs": {
     "backend_contract_version": "hermes-cli-remote-ial-v1",
     "runtime_contract": "Hermes CLI + Remote IAL",
@@ -61,6 +62,15 @@
       ]
     }
   },
+  "evidence_previews": [
+    {
+      "path": "/tmp/amof/events.jsonl",
+      "title": "events",
+      "kind": "jsonl",
+      "preview_text": "{\n  \"event\": \"run_created\"\n}",
+      "raw_text": "{\"event\":\"run_created\"}"
+    }
+  ],
   "started_at": "2026-06-08T00:41:50Z",
   "completed_at": "2026-06-08T00:42:10Z",
   "budget_summary": {

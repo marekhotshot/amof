@@ -63,6 +63,11 @@ WRITE_SCOPE_PROPOSAL_FIELDS = (
     "docs_only",
     "source_mutation",
 )
+SECRET_LIKE_TEXT_RE = re.compile(
+    r"(?i)(bearer\s+[A-Za-z0-9._-]+|"
+    r"(?:token|secret|password|authorization|api[_-]?key)\s*[:=]\s*['\"]?[^\s,'\"]+|"
+    r"(?:ghp|github_pat|sk|xoxb|xoxp|xoxs|xoxa)-[A-Za-z0-9._-]+)"
+)
 
 
 class HermesBackendError(RuntimeError):
@@ -357,6 +362,99 @@ def _write_runtime_log(path: Path, message: str) -> None:
     path.write_text(message if message.endswith("\n") else f"{message}\n", encoding="utf-8")
 
 
+def _redact_secret_like_text(text: str) -> str:
+    return SECRET_LIKE_TEXT_RE.sub("[redacted]", text)
+
+
+def _preview_kind(path: str, text: str) -> str:
+    lowered = path.lower()
+    if lowered.endswith(".json"):
+        return "json"
+    if lowered.endswith(".jsonl"):
+        return "jsonl"
+    if lowered.endswith(".log"):
+        return "log"
+    if re.search(r"^\s*#{1,6}\s+", text, re.MULTILINE) or re.search(
+        r"^\s*[-*+]\s+", text, re.MULTILINE
+    ):
+        return "markdown"
+    return "text"
+
+
+def _truncate_preview(text: str, limit: int = 16000) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}\n[truncated {len(text) - limit} chars]"
+
+
+def _preview_payload(*, path: str, raw: str, load_error: str | None = None) -> dict[str, Any]:
+    sanitized = _truncate_preview(_redact_secret_like_text(raw))
+    kind = _preview_kind(path, sanitized)
+    preview_text = sanitized
+    if kind == "json":
+        try:
+            preview_text = json.dumps(json.loads(sanitized), indent=2)
+        except json.JSONDecodeError:
+            preview_text = sanitized
+    elif kind == "jsonl":
+        lines: list[str] = []
+        for line in sanitized.splitlines():
+            if not line.strip():
+                continue
+            try:
+                lines.append(json.dumps(json.loads(line), indent=2))
+            except json.JSONDecodeError:
+                lines.append(line)
+            if len(lines) >= 80:
+                break
+        preview_text = "\n\n".join(lines)
+    return {
+        "path": path,
+        "title": Path(path).stem,
+        "kind": kind,
+        "preview_text": preview_text,
+        "raw_text": sanitized,
+        "load_error": load_error,
+    }
+
+
+def _build_evidence_previews(
+    *,
+    result: dict[str, Any],
+    result_path: Path,
+    event_log_path: Path,
+    runtime_log_path: Path,
+) -> list[dict[str, Any]]:
+    previews: list[dict[str, Any]] = []
+    result_snapshot = dict(result)
+    result_snapshot.pop("evidence_previews", None)
+    previews.append(
+        _preview_payload(
+            path=str(result_path),
+            raw=json.dumps(result_snapshot, indent=2) + "\n",
+        )
+    )
+    for artifact_path in (event_log_path, runtime_log_path):
+        if not artifact_path.exists():
+            continue
+        previews.append(
+            _preview_payload(
+                path=str(artifact_path),
+                raw=artifact_path.read_text(encoding="utf-8"),
+            )
+        )
+    return previews
+
+
+def _proposal_missing_reason(task_findings: str, runtime_detail: str) -> str:
+    detail = task_findings or runtime_detail
+    for line in detail.splitlines():
+        text = line.strip()
+        if text:
+            return text[:500]
+    return "structured write_scope_proposal was requested but the runner did not emit one"
+
+
 def _write_terminal_result(
     *,
     result_path: Path,
@@ -377,6 +475,12 @@ def _write_terminal_result(
             runtime_log_path,
             result.get("final_text") or result.get("stop_reason") or "terminal result written",
         )
+    result["evidence_previews"] = _build_evidence_previews(
+        result=result,
+        result_path=result_path,
+        event_log_path=event_log_path,
+        runtime_log_path=runtime_log_path,
+    )
     result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     _append_event(
         event_log_path,
@@ -1140,7 +1244,9 @@ def run(
 
     read_only_replan_used = False
     prompt = _build_prompt(goal, selection, workspace, manifest)
+    proposal_required = _goal_requests_write_scope_proposal(goal)
     write_scope_proposal: dict[str, Any] | None = None
+    proposal_missing_reason: str | None = None
     task_findings = ""
     runtime_detail = ""
     validation_status = "not_run"
@@ -1211,6 +1317,11 @@ def run(
         write_scope_proposal, task_findings = _extract_write_scope_proposal_output(
             raw_task_findings
         )
+        proposal_missing_reason = (
+            _proposal_missing_reason(task_findings, runtime_detail)
+            if proposal_required and write_scope_proposal is None
+            else None
+        )
         validation_status = _infer_validation_status(task_findings or runtime_detail)
         if status == "completed" and validation_status == "failed":
             status = "failed"
@@ -1267,6 +1378,7 @@ def run(
         requested_model=remote_ial.model,
         effective_model=remote_ial.model,
         write_scope_proposal=write_scope_proposal,
+        proposal_missing_reason=proposal_missing_reason,
     )
     _write_terminal_result(
         result_path=result_path,
@@ -1306,6 +1418,7 @@ def _result_payload(
     effective_model: str = "unverified",
     task_findings: str | None = None,
     write_scope_proposal: dict[str, Any] | None = None,
+    proposal_missing_reason: str | None = None,
 ) -> dict[str, Any]:
     return {
         "result_kind": "agent_run_result",
@@ -1320,6 +1433,11 @@ def _result_payload(
         **(
             {"write_scope_proposal": write_scope_proposal}
             if write_scope_proposal is not None
+            else {}
+        ),
+        **(
+            {"proposal_missing_reason": proposal_missing_reason}
+            if proposal_missing_reason is not None
             else {}
         ),
         "runner_id": selection.runner_id,

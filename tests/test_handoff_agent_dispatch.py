@@ -450,7 +450,7 @@ class HandoffAgentDispatchTests(unittest.TestCase):
                     "reason": "Documentation-only follow-up is safe and bounded.",
                     "expected_checks": ["git diff --check"],
                     "docs_only": True,
-                    "source_mutation": True,
+                    "source_mutation": False,
                 },
                 "approved_capabilities": list(selection.capabilities),
                 "effective_capabilities": list(selection.capabilities),
@@ -478,6 +478,23 @@ class HandoffAgentDispatchTests(unittest.TestCase):
                 result["write_scope_proposal"]["allowed_roots"],
                 ["docs/launch-readiness/simple-ai-shop-launch-readiness.md"],
             )
+            self.assertEqual(result["write_scope_proposal"]["source_mutation"], False)
+
+    def test_canonical_packet_result_requirement_requests_structured_write_scope(self) -> None:
+        canonical_payload = _canonical_mission_packet(
+            goal="Inspect launch readiness and propose a bounded documentation-only follow-up.",
+            objective="Return a governed read-only discovery result for launch readiness.",
+            result_requirements={"structured_write_scope_proposal": True},
+        )
+        packet, _ = handoff._parse_canonical_mission_packet_text(
+            handoff._canonical_json(canonical_payload),
+            field_name="test canonical packet",
+            require_canonical_text=True,
+        )
+        derived_goal = packet.derived_goal()
+        self.assertTrue(packet.structured_write_scope_proposal_required)
+        self.assertIn("structured write_scope_proposal", derived_goal)
+        self.assertIn("proposal_missing", derived_goal)
 
     def test_explicit_unsupported_runner_fails_closed_without_builtin_substitution(self) -> None:
         with TemporaryDirectory(prefix="amof-handoff-runner-fail-closed-") as td:

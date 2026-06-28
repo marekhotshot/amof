@@ -84,7 +84,7 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
             '"reason":"A focused documentation follow-up is justified by the inspected launch-readiness evidence.",'
             '"expected_checks":["git diff --check"],'
             '"docs_only":true,'
-            '"source_mutation":true}\n'
+            '"source_mutation":false}\n'
             f"{hermes_opensandbox.WRITE_SCOPE_PROPOSAL_END}\n\n"
             "# Launch readiness summary\n\n- Deployment docs are stale.\n"
         )
@@ -144,7 +144,7 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
                 "reason": "A focused documentation follow-up is justified by the inspected launch-readiness evidence.",
                 "expected_checks": ["git diff --check"],
                 "docs_only": True,
-                "source_mutation": True,
+                "source_mutation": False,
             },
         )
         self.assertEqual(
@@ -196,6 +196,14 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertNotIn("write_scope_proposal", result)
         self.assertIn("no structured proposal is attached", result["task_findings"])
+        self.assertEqual(
+            result["proposal_missing_reason"],
+            "Consider docs/launch-readiness/simple-ai-shop-launch-readiness.md for a later bounded write, but no structured proposal is attached here.",
+        )
+        preview_paths = {item["path"] for item in result["evidence_previews"]}
+        self.assertIn(str(Path(td) / "share" / "runs" / "hermes-opensandbox" / result["session_id"] / "result.json"), preview_paths)
+        self.assertIn(str(Path(td) / "share" / "runs" / "hermes-opensandbox" / result["session_id"] / "events.jsonl"), preview_paths)
+        self.assertIn(str(Path(td) / "share" / "runs" / "hermes-opensandbox" / result["session_id"] / "runtime.log"), preview_paths)
 
     def test_changed_paths_delta_ignores_preexisting_dirtiness(self) -> None:
         before = ["src/components/CookieConsent.tsx", "src/components/PodcastPage.tsx"]

@@ -130,9 +130,11 @@ class AgentRunResult:
     changed_paths: list[str] | None = None
     validation_summary: dict[str, Any] | None = None
     write_scope_proposal: dict[str, Any] | None = None
+    proposal_missing_reason: str | None = None
     approved_capabilities: list[str] | None = None
     effective_capabilities: list[str] | None = None
     evidence_refs: dict[str, Any] | None = None
+    evidence_previews: list[dict[str, Any]] | None = None
     schema_version: int = 1
     result_kind: str = "agent_run_result"
     contract_version: str = "agent-run-v1"
@@ -216,7 +218,17 @@ class AgentRunResult:
                 if self.write_scope_proposal is not None
                 else {}
             ),
+            **(
+                {"proposal_missing_reason": self.proposal_missing_reason}
+                if self.proposal_missing_reason is not None
+                else {}
+            ),
             **({"approved_capabilities": list(self.approved_capabilities)} if self.approved_capabilities is not None else {}),
             **({"effective_capabilities": list(self.effective_capabilities)} if self.effective_capabilities is not None else {}),
             **({"evidence_refs": dict(self.evidence_refs)} if self.evidence_refs is not None else {}),
+            **(
+                {"evidence_previews": [dict(item) for item in self.evidence_previews]}
+                if self.evidence_previews is not None
+                else {}
+            ),
         }

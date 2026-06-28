@@ -144,6 +144,25 @@
       },
       "additionalProperties": true
     },
+    "proposal_missing_reason": {
+      "type": ["string", "null"]
+    },
+    "evidence_previews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "title", "kind", "preview_text", "raw_text"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "minLength": 1 },
+          "preview_text": { "type": "string" },
+          "raw_text": { "type": "string" },
+          "load_error": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    },
     "budget_summary": {
       "type": "object",
       "required": ["limit", "spent", "remaining"],

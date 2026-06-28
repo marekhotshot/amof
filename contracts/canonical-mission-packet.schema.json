@@ -197,6 +197,15 @@
         }
       },
       "additionalProperties": false
+    },
+    "result_requirements": {
+      "type": "object",
+      "properties": {
+        "structured_write_scope_proposal": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "allOf": [

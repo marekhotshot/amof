@@ -168,6 +168,7 @@ class CanonicalMissionPacket:
     studio_session_id: str | None = None
     runtime_environment: str | None = None
     runtime_namespace: str | None = None
+    structured_write_scope_proposal_required: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         mission: dict[str, Any] = {
@@ -197,6 +198,10 @@ class CanonicalMissionPacket:
             },
             "validation_gates": list(self.validation_gates),
         }
+        if self.structured_write_scope_proposal_required:
+            payload["result_requirements"] = {
+                "structured_write_scope_proposal": True,
+            }
         if self.studio_session_id is not None:
             payload["studio_session_id"] = self.studio_session_id
         if self.runtime_environment is not None or self.runtime_namespace is not None:
@@ -223,6 +228,10 @@ class CanonicalMissionPacket:
             f"{indent}  forbidden_mutation_count: {len(self.forbidden_mutations)}",
             f"{indent}  validation_gate_count: {len(self.validation_gates)}",
         ]
+        if self.structured_write_scope_proposal_required:
+            lines.append(
+                f"{indent}  result_requirement: structured_write_scope_proposal"
+            )
         if self.repo_owner is not None:
             lines.insert(8, f"{indent}  target_repository_owner: {self.repo_owner}")
         if self.studio_session_id is not None:
@@ -252,6 +261,10 @@ class CanonicalMissionPacket:
             payload["target_repository"]["repo_owner"] = self.repo_owner
         if self.studio_session_id is not None:
             payload["studio_session_id"] = self.studio_session_id
+        if self.structured_write_scope_proposal_required:
+            payload["result_requirements"] = {
+                "structured_write_scope_proposal": True
+            }
         if self.runtime_environment is not None and self.runtime_namespace is not None:
             payload["runtime"] = {
                 "environment": self.runtime_environment,
@@ -280,6 +293,10 @@ class CanonicalMissionPacket:
             f"Forbidden mutations: {', '.join(self.forbidden_mutations)}.",
             f"Validation gates: {', '.join(self.validation_gates)}.",
         ]
+        if self.structured_write_scope_proposal_required:
+            parts.append(
+                "Result requirements: emit a structured write_scope_proposal when the inspected evidence justifies a bounded follow-up; otherwise omit the proposal object and explain why so AMOF can mark proposal_missing."
+            )
         if self.runtime_environment is not None and self.runtime_namespace is not None:
             parts.append(
                 f"Runtime scope: environment {self.runtime_environment}, namespace {self.runtime_namespace}."
@@ -541,6 +558,7 @@ def _parse_canonical_mission_packet_object(payload: Any) -> CanonicalMissionPack
             "validation_gates",
             "runtime",
             "studio_session_id",
+            "result_requirements",
         },
         required={
             "schema_version",
@@ -575,6 +593,12 @@ def _parse_canonical_mission_packet_object(payload: Any) -> CanonicalMissionPack
         allowed={"repo_name", "repo_owner", "branch_ref"},
         required={"repo_name", "branch_ref"},
     )
+    result_requirements = _require_strict_object(
+        root.get("result_requirements"),
+        field_name="canonical mission packet result_requirements",
+        allowed={"structured_write_scope_proposal"},
+        required=set(),
+    ) if root.get("result_requirements") is not None else {}
     mutations = _require_strict_object(
         root.get("mutations"),
         field_name="canonical mission packet mutations",
@@ -677,6 +701,11 @@ def _parse_canonical_mission_packet_object(payload: Any) -> CanonicalMissionPack
     )
     runtime_environment: str | None = None
     runtime_namespace: str | None = None
+    structured_write_scope_proposal_required = result_requirements.get(
+        "structured_write_scope_proposal"
+    )
+    if not isinstance(structured_write_scope_proposal_required, bool):
+        structured_write_scope_proposal_required = False
     runtime = root.get("runtime")
     if runtime is not None:
         runtime_obj = _require_strict_object(
@@ -727,6 +756,7 @@ def _parse_canonical_mission_packet_object(payload: Any) -> CanonicalMissionPack
         studio_session_id=studio_session_id,
         runtime_environment=runtime_environment,
         runtime_namespace=runtime_namespace,
+        structured_write_scope_proposal_required=structured_write_scope_proposal_required,
     )
     _validate_schema_if_available(
         packet.to_payload(), _canonical_mission_packet_schema_path()

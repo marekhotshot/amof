@@ -25,8 +25,18 @@
       "markdown lint if configured"
     ],
     "docs_only": true,
-    "source_mutation": true
+    "source_mutation": false
   },
+  "proposal_missing_reason": null,
+  "evidence_previews": [
+    {
+      "path": "/tmp/amof/events.jsonl",
+      "title": "events",
+      "kind": "jsonl",
+      "preview_text": "{\n  \"event\": \"run_created\"\n}",
+      "raw_text": "{\"event\":\"run_created\"}"
+    }
+  ],
   "budget_summary": {
     "limit": 2.0,
     "spent": 0.42,
