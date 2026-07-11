@@ -8,11 +8,43 @@
   "exit_code": 0,
   "stop_reason": "completed",
   "final_text": "Execution complete: 3/3 completed, 0 failed, 0 skipped",
+  "runner_id": "hermes-local-ticket-write",
+  "backend": "hermes_opensandbox",
+  "requested_provider": "remote-ial",
+  "effective_provider": "remote-ial",
+  "requested_model": "openai/gpt-4o-mini",
+  "effective_model": "openai/gpt-4o-mini",
+  "transport": "remote_ial",
+  "fallback_used": false,
   "plan_path": "/tmp/amof/plan.md",
   "checkpoint_path": null,
   "event_log_path": "/tmp/amof/events.jsonl",
+  "runtime_log_path": "/tmp/amof/runtime.log",
+  "result_path": "/tmp/amof/result.json",
   "journal_path": "/tmp/amof/journal.md",
   "write_scope_proposal": {
+    "scope_id": "documentation-only-bounded-write-scope-docs-launch-readiness-simple-ai-shop-launch-readiness-md-67f8526b",
+    "title": "Documentation-only bounded write scope",
+    "mutation_mode": "docs_write",
+    "target_repo": "marekhotshot/simple-ai-shop",
+    "intent": "Update the launch-readiness report without changing application code.",
+    "allowed_files": [
+      "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+    ],
+    "allowed_paths": [
+      "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+    ],
+    "forbidden_actions": [
+      "deploy",
+      "Kubernetes mutation",
+      "DB migration",
+      "secret access"
+    ],
+    "risk": "low",
+    "rationale": "A focused documentation-only follow-up can update the launch-readiness report without changing application code.",
+    "source_evidence_refs": [
+      "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+    ],
     "target_id": "github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",
     "base_sha": "67f8526b254d8839c025423b6bfda36895881160",
     "allowed_roots": [
@@ -27,7 +59,70 @@
     "docs_only": true,
     "source_mutation": false
   },
+  "write_scope_proposals": [
+    {
+      "scope_id": "documentation-only-bounded-write-scope-docs-launch-readiness-simple-ai-shop-launch-readiness-md-67f8526b",
+      "title": "Documentation-only bounded write scope",
+      "mutation_mode": "docs_write",
+      "target_repo": "marekhotshot/simple-ai-shop",
+      "intent": "Update the launch-readiness report without changing application code.",
+      "allowed_files": [
+        "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+      ],
+      "allowed_paths": [
+        "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+      ],
+      "forbidden_actions": [
+        "deploy",
+        "Kubernetes mutation",
+        "DB migration",
+        "secret access"
+      ],
+      "risk": "low",
+      "rationale": "A focused documentation-only follow-up can update the launch-readiness report without changing application code.",
+      "source_evidence_refs": [
+        "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+      ],
+      "target_id": "github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",
+      "base_sha": "67f8526b254d8839c025423b6bfda36895881160",
+      "allowed_roots": [
+        "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+      ],
+      "denied_roots": [],
+      "reason": "A focused documentation-only follow-up can update the launch-readiness report without changing application code.",
+      "expected_checks": [
+        "git diff --check",
+        "markdown lint if configured"
+      ],
+      "docs_only": true,
+      "source_mutation": false
+    }
+  ],
   "proposal_missing_reason": null,
+  "evidence_refs": {
+    "backend_contract_version": "hermes-cli-remote-ial-v1",
+    "runtime_contract": "Hermes CLI + Remote IAL",
+    "isolation_model": "runtime_owner_workspace",
+    "dispatch_probe": {
+      "status": "ready",
+      "exit_code": 0,
+      "probe_command": [
+        "/tmp/amof/hermes",
+        "chat",
+        "--help"
+      ],
+      "dispatch_command_preview": [
+        "/tmp/amof/hermes",
+        "chat",
+        "--cli",
+        "--quiet",
+        "--model",
+        "openai/gpt-4o-mini",
+        "--query",
+        "<amof-contract-probe>"
+      ]
+    }
+  },
   "evidence_previews": [
     {
       "path": "/tmp/amof/events.jsonl",
@@ -37,6 +132,8 @@
       "raw_text": "{\"event\":\"run_created\"}"
     }
   ],
+  "started_at": "2026-06-08T00:41:50Z",
+  "completed_at": "2026-06-08T00:42:10Z",
   "budget_summary": {
     "limit": 2.0,
     "spent": 0.42,

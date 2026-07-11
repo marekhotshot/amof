@@ -68,7 +68,9 @@ def _health() -> dict[str, object]:
 
 
 class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
-    def test_structured_write_scope_proposal_is_parsed_from_runner_output(self) -> None:
+    def test_structured_write_scope_proposals_are_parsed_from_runner_output(
+        self,
+    ) -> None:
         config = hermes_opensandbox.RemoteIALConfig(
             base_url="https://ial.example.test",
             api_key="unit-test-token",
@@ -77,22 +79,37 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         )
         stdout = (
             f"{hermes_opensandbox.WRITE_SCOPE_PROPOSAL_START}\n"
-            '{"target_id":"github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",'
+            '[{"scope_id":"scope-hidden-product-detail-protection",'
+            '"title":"Hidden product detail protection",'
+            '"mutation_mode":"repo_write",'
+            '"target_repo":"marekhotshot/simple-ai-shop",'
+            '"intent":"Public product slug lookup should exclude HIDDEN products.",'
+            '"allowed_files":["src/routes/public.ts"],'
+            '"allowed_paths":["src/routes/public.ts"],'
+            '"forbidden_actions":["deploy","Kubernetes mutation","DB migration","secret access","admin auth implementation","product visibility refactor"],'
+            '"risk":"moderate",'
+            '"rationale":"Public product slug lookup should exclude HIDDEN products without a broader visibility refactor.",'
+            '"source_evidence_refs":["src/routes/public.ts"],'
+            '"target_id":"github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",'
             '"base_sha":"67f8526b254d8839c025423b6bfda36895881160",'
-            '"allowed_roots":["docs/launch-readiness/simple-ai-shop-launch-readiness.md"],'
+            '"allowed_roots":["src/routes/public.ts"],'
             '"denied_roots":[],'
-            '"reason":"A focused documentation follow-up is justified by the inspected launch-readiness evidence.",'
+            '"reason":"Public product slug lookup should exclude HIDDEN products without a broader visibility refactor.",'
             '"expected_checks":["git diff --check"],'
-            '"docs_only":true,'
-            '"source_mutation":false}\n'
+            '"docs_only":false,'
+            '"source_mutation":true}]\n'
             f"{hermes_opensandbox.WRITE_SCOPE_PROPOSAL_END}\n\n"
-            "# Launch readiness summary\n\n- Deployment docs are stale.\n"
+            "# Launch readiness summary\n\n- Hidden products can still resolve by public slug.\n"
         )
         with tempfile.TemporaryDirectory(prefix="amof-hermes-write-scope-") as td:
             with (
                 patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
-                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
-                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
+                patch.object(
+                    hermes_opensandbox, "runtime_health", return_value=_health()
+                ),
+                patch.object(
+                    hermes_opensandbox, "_remote_ial_config", return_value=config
+                ),
                 patch.object(
                     hermes_opensandbox,
                     "_remote_ial_health",
@@ -123,8 +140,8 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
                         ]
                     },
                     goal=(
-                        "Inspect launch readiness and return a structured "
-                        "write_scope_proposal for docs/launch-readiness/simple-ai-shop-launch-readiness.md."
+                        "Inspect the public catalog routes and return structured "
+                        "write_scope_proposals for any justified bounded follow-up."
                     ),
                     request_id="write-scope",
                     studio_session_id=None,
@@ -133,26 +150,22 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(
-            result["write_scope_proposal"],
-            {
-                "target_id": "github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",
-                "base_sha": "67f8526b254d8839c025423b6bfda36895881160",
-                "allowed_roots": [
-                    "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
-                ],
-                "denied_roots": [],
-                "reason": "A focused documentation follow-up is justified by the inspected launch-readiness evidence.",
-                "expected_checks": ["git diff --check"],
-                "docs_only": True,
-                "source_mutation": False,
-            },
+            result["write_scope_proposal"]["title"], "Hidden product detail protection"
+        )
+        self.assertEqual(
+            result["write_scope_proposal"]["target_repo"], "marekhotshot/simple-ai-shop"
+        )
+        self.assertEqual(
+            result["write_scope_proposals"], [result["write_scope_proposal"]]
         )
         self.assertEqual(
             result["task_findings"],
-            "# Launch readiness summary\n\n- Deployment docs are stale.",
+            "# Launch readiness summary\n\n- Hidden products can still resolve by public slug.",
         )
 
-    def test_prose_only_write_scope_text_does_not_become_structured_proposal(self) -> None:
+    def test_prose_only_write_scope_text_does_not_become_structured_proposal(
+        self,
+    ) -> None:
         config = hermes_opensandbox.RemoteIALConfig(
             base_url="https://ial.example.test",
             api_key="unit-test-token",
@@ -166,8 +179,12 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="amof-hermes-write-scope-prose-") as td:
             with (
                 patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
-                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
-                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
+                patch.object(
+                    hermes_opensandbox, "runtime_health", return_value=_health()
+                ),
+                patch.object(
+                    hermes_opensandbox, "_remote_ial_config", return_value=config
+                ),
                 patch.object(
                     hermes_opensandbox,
                     "_remote_ial_health",
@@ -201,9 +218,39 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
             "Consider docs/launch-readiness/simple-ai-shop-launch-readiness.md for a later bounded write, but no structured proposal is attached here.",
         )
         preview_paths = {item["path"] for item in result["evidence_previews"]}
-        self.assertIn(str(Path(td) / "share" / "runs" / "hermes-opensandbox" / result["session_id"] / "result.json"), preview_paths)
-        self.assertIn(str(Path(td) / "share" / "runs" / "hermes-opensandbox" / result["session_id"] / "events.jsonl"), preview_paths)
-        self.assertIn(str(Path(td) / "share" / "runs" / "hermes-opensandbox" / result["session_id"] / "runtime.log"), preview_paths)
+        self.assertIn(
+            str(
+                Path(td)
+                / "share"
+                / "runs"
+                / "hermes-opensandbox"
+                / result["session_id"]
+                / "result.json"
+            ),
+            preview_paths,
+        )
+        self.assertIn(
+            str(
+                Path(td)
+                / "share"
+                / "runs"
+                / "hermes-opensandbox"
+                / result["session_id"]
+                / "events.jsonl"
+            ),
+            preview_paths,
+        )
+        self.assertIn(
+            str(
+                Path(td)
+                / "share"
+                / "runs"
+                / "hermes-opensandbox"
+                / result["session_id"]
+                / "runtime.log"
+            ),
+            preview_paths,
+        )
 
     def test_changed_paths_delta_ignores_preexisting_dirtiness(self) -> None:
         before = ["src/components/CookieConsent.tsx", "src/components/PodcastPage.tsx"]
@@ -249,10 +296,22 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="amof-hermes-readonly-replan-") as td:
             with (
                 patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
-                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
-                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
-                patch.object(hermes_opensandbox, "_remote_ial_health", return_value={"inference_health": "ready"}),
-                patch.object(hermes_opensandbox, "_RemoteIALOpenAIAdapter", return_value=_Adapter()),
+                patch.object(
+                    hermes_opensandbox, "runtime_health", return_value=_health()
+                ),
+                patch.object(
+                    hermes_opensandbox, "_remote_ial_config", return_value=config
+                ),
+                patch.object(
+                    hermes_opensandbox,
+                    "_remote_ial_health",
+                    return_value={"inference_health": "ready"},
+                ),
+                patch.object(
+                    hermes_opensandbox,
+                    "_RemoteIALOpenAIAdapter",
+                    return_value=_Adapter(),
+                ),
                 patch.object(hermes_opensandbox, "_base_env", return_value={}),
                 patch.object(
                     hermes_opensandbox,
@@ -267,7 +326,12 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
                 patch.object(
                     hermes_opensandbox,
                     "hermes_dispatch_command",
-                    side_effect=lambda model, prompt: ["hermes", "chat", "--query", prompt],
+                    side_effect=lambda model, prompt: [
+                        "hermes",
+                        "chat",
+                        "--query",
+                        prompt,
+                    ],
                 ) as dispatch_command,
                 patch(
                     "subprocess.run",
@@ -310,13 +374,27 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
             def __exit__(self, *_exc: object) -> None:
                 return None
 
-        with tempfile.TemporaryDirectory(prefix="amof-hermes-readonly-replan-fail-") as td:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-hermes-readonly-replan-fail-"
+        ) as td:
             with (
                 patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
-                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
-                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
-                patch.object(hermes_opensandbox, "_remote_ial_health", return_value={"inference_health": "ready"}),
-                patch.object(hermes_opensandbox, "_RemoteIALOpenAIAdapter", return_value=_Adapter()),
+                patch.object(
+                    hermes_opensandbox, "runtime_health", return_value=_health()
+                ),
+                patch.object(
+                    hermes_opensandbox, "_remote_ial_config", return_value=config
+                ),
+                patch.object(
+                    hermes_opensandbox,
+                    "_remote_ial_health",
+                    return_value={"inference_health": "ready"},
+                ),
+                patch.object(
+                    hermes_opensandbox,
+                    "_RemoteIALOpenAIAdapter",
+                    return_value=_Adapter(),
+                ),
                 patch.object(hermes_opensandbox, "_base_env", return_value={}),
                 patch.object(
                     hermes_opensandbox,
@@ -331,7 +409,12 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
                 patch.object(
                     hermes_opensandbox,
                     "hermes_dispatch_command",
-                    side_effect=lambda model, prompt: ["hermes", "chat", "--query", prompt],
+                    side_effect=lambda model, prompt: [
+                        "hermes",
+                        "chat",
+                        "--query",
+                        prompt,
+                    ],
                 ),
                 patch(
                     "subprocess.run",
@@ -367,9 +450,17 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="amof-hermes-readonly-dirty-") as td:
             with (
                 patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
-                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
-                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
-                patch.object(hermes_opensandbox, "_remote_ial_health", return_value={"inference_health": "ready"}),
+                patch.object(
+                    hermes_opensandbox, "runtime_health", return_value=_health()
+                ),
+                patch.object(
+                    hermes_opensandbox, "_remote_ial_config", return_value=config
+                ),
+                patch.object(
+                    hermes_opensandbox,
+                    "_remote_ial_health",
+                    return_value={"inference_health": "ready"},
+                ),
                 patch.object(
                     hermes_opensandbox,
                     "_changed_paths",
@@ -407,7 +498,9 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
                     },
                     clear=False,
                 ),
-                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
+                patch.object(
+                    hermes_opensandbox, "runtime_health", return_value=_health()
+                ),
                 patch("subprocess.run") as run_process,
             ):
                 result = hermes_opensandbox.run(
@@ -434,9 +527,17 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="amof-hermes-direct-provider-") as td:
             with (
                 patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
-                patch.object(hermes_opensandbox, "runtime_health", return_value=_health()),
-                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
-                patch.object(hermes_opensandbox, "_remote_ial_health", return_value={"inference_health": "ready"}),
+                patch.object(
+                    hermes_opensandbox, "runtime_health", return_value=_health()
+                ),
+                patch.object(
+                    hermes_opensandbox, "_remote_ial_config", return_value=config
+                ),
+                patch.object(
+                    hermes_opensandbox,
+                    "_remote_ial_health",
+                    return_value={"inference_health": "ready"},
+                ),
                 patch("subprocess.run") as run_process,
             ):
                 result = hermes_opensandbox.run(
@@ -467,12 +568,20 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         health["dispatch_available"] = False
         health["runtime_health"] = "unavailable"
         health["hermes_runtime"] = "unavailable"
-        with tempfile.TemporaryDirectory(prefix="amof-hermes-dispatch-unavailable-") as td:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-hermes-dispatch-unavailable-"
+        ) as td:
             with (
                 patch.dict(os.environ, {"AMOF_HOME": td}, clear=False),
                 patch.object(hermes_opensandbox, "runtime_health", return_value=health),
-                patch.object(hermes_opensandbox, "_remote_ial_config", return_value=config),
-                patch.object(hermes_opensandbox, "_remote_ial_health", return_value={"inference_health": "ready"}),
+                patch.object(
+                    hermes_opensandbox, "_remote_ial_config", return_value=config
+                ),
+                patch.object(
+                    hermes_opensandbox,
+                    "_remote_ial_health",
+                    return_value={"inference_health": "ready"},
+                ),
                 patch("subprocess.run") as run_process,
             ):
                 result = hermes_opensandbox.run(
@@ -491,14 +600,18 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
             "hermes-cli-remote-ial-v1",
         )
         self.assertEqual(
-            ((result.get("evidence_refs") or {}).get("dispatch_probe") or {}).get("status"),
+            ((result.get("evidence_refs") or {}).get("dispatch_probe") or {}).get(
+                "status"
+            ),
             "ready",
         )
         run_process.assert_not_called()
 
     def test_runtime_health_reports_missing_hermes_cli_truthfully(self) -> None:
         missing = Path("/tmp/amof-missing-hermes/bin/hermes")
-        with patch.object(hermes_opensandbox, "hermes_executable", return_value=missing):
+        with patch.object(
+            hermes_opensandbox, "hermes_executable", return_value=missing
+        ):
             health = hermes_opensandbox.runtime_health()
 
         self.assertFalse(health["dispatch_available"])
@@ -518,7 +631,11 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
 
         self.assertEqual(
             root,
-            Path(td).resolve(strict=False) / "share" / "runners" / "hermes-agent" / "v2026.6.5",
+            Path(td).resolve(strict=False)
+            / "share"
+            / "runners"
+            / "hermes-agent"
+            / "v2026.6.5",
         )
 
     def test_probe_and_dispatch_use_same_hermes_command_contract(self) -> None:
@@ -526,8 +643,12 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
             hermes_bin = Path(td) / "hermes"
             hermes_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             hermes_bin.chmod(0o755)
-            with patch.object(hermes_opensandbox, "hermes_executable", return_value=hermes_bin):
-                probe = hermes_opensandbox._probe_hermes_cli_contract("remote-ial/test-worker")
+            with patch.object(
+                hermes_opensandbox, "hermes_executable", return_value=hermes_bin
+            ):
+                probe = hermes_opensandbox._probe_hermes_cli_contract(
+                    "remote-ial/test-worker"
+                )
                 dispatch = hermes_opensandbox.hermes_dispatch_command(
                     model="remote-ial/test-worker",
                     prompt="inspect only",
@@ -559,7 +680,9 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
             model="remote-ial/test-worker",
             timeout_seconds=30,
         )
-        adapter = type("Adapter", (), {"base_url": "http://127.0.0.1:1/v1", "config": config})()
+        adapter = type(
+            "Adapter", (), {"base_url": "http://127.0.0.1:1/v1", "config": config}
+        )()
         with tempfile.TemporaryDirectory(prefix="amof-hermes-config-") as td:
             run_dir = Path(td)
             env = hermes_opensandbox._base_env(adapter, run_dir)

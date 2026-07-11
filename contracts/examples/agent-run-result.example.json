@@ -23,6 +23,28 @@
   "result_path": "/tmp/amof/result.json",
   "journal_path": "/tmp/amof/journal.md",
   "write_scope_proposal": {
+    "scope_id": "documentation-only-bounded-write-scope-docs-launch-readiness-simple-ai-shop-launch-readiness-md-67f8526b",
+    "title": "Documentation-only bounded write scope",
+    "mutation_mode": "docs_write",
+    "target_repo": "marekhotshot/simple-ai-shop",
+    "intent": "Update the launch-readiness report without changing application code.",
+    "allowed_files": [
+      "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+    ],
+    "allowed_paths": [
+      "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+    ],
+    "forbidden_actions": [
+      "deploy",
+      "Kubernetes mutation",
+      "DB migration",
+      "secret access"
+    ],
+    "risk": "low",
+    "rationale": "A focused documentation-only follow-up can update the launch-readiness report without changing application code.",
+    "source_evidence_refs": [
+      "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+    ],
     "target_id": "github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",
     "base_sha": "67f8526b254d8839c025423b6bfda36895881160",
     "allowed_roots": [
@@ -37,6 +59,45 @@
     "docs_only": true,
     "source_mutation": false
   },
+  "write_scope_proposals": [
+    {
+      "scope_id": "documentation-only-bounded-write-scope-docs-launch-readiness-simple-ai-shop-launch-readiness-md-67f8526b",
+      "title": "Documentation-only bounded write scope",
+      "mutation_mode": "docs_write",
+      "target_repo": "marekhotshot/simple-ai-shop",
+      "intent": "Update the launch-readiness report without changing application code.",
+      "allowed_files": [
+        "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+      ],
+      "allowed_paths": [
+        "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+      ],
+      "forbidden_actions": [
+        "deploy",
+        "Kubernetes mutation",
+        "DB migration",
+        "secret access"
+      ],
+      "risk": "low",
+      "rationale": "A focused documentation-only follow-up can update the launch-readiness report without changing application code.",
+      "source_evidence_refs": [
+        "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+      ],
+      "target_id": "github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",
+      "base_sha": "67f8526b254d8839c025423b6bfda36895881160",
+      "allowed_roots": [
+        "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+      ],
+      "denied_roots": [],
+      "reason": "A focused documentation-only follow-up can update the launch-readiness report without changing application code.",
+      "expected_checks": [
+        "git diff --check",
+        "markdown lint if configured"
+      ],
+      "docs_only": true,
+      "source_mutation": false
+    }
+  ],
   "proposal_missing_reason": null,
   "evidence_refs": {
     "backend_contract_version": "hermes-cli-remote-ial-v1",

@@ -73,16 +73,24 @@ class PlanBundle:
             objective=str(payload.get("objective") or ""),
             repo_scope=str(payload.get("repo_scope") or ""),
             files_to_inspect=[
-                str(item) for item in payload.get("files_to_inspect", []) if str(item).strip()
+                str(item)
+                for item in payload.get("files_to_inspect", [])
+                if str(item).strip()
             ],
             proposed_steps=[
-                str(item) for item in payload.get("proposed_steps", []) if str(item).strip()
+                str(item)
+                for item in payload.get("proposed_steps", [])
+                if str(item).strip()
             ],
             risks=[str(item) for item in payload.get("risks", []) if str(item).strip()],
             validation_plan=[
-                str(item) for item in payload.get("validation_plan", []) if str(item).strip()
+                str(item)
+                for item in payload.get("validation_plan", [])
+                if str(item).strip()
             ],
-            execution_prompt_for_director=str(payload.get("execution_prompt_for_director") or ""),
+            execution_prompt_for_director=str(
+                payload.get("execution_prompt_for_director") or ""
+            ),
             requires_user_approval=bool(payload.get("requires_user_approval", True)),
             execution_allowed=bool(payload.get("execution_allowed", False)),
             ticket_id=str(payload.get("ticket_id")).strip() or None
@@ -130,6 +138,7 @@ class AgentRunResult:
     changed_paths: list[str] | None = None
     validation_summary: dict[str, Any] | None = None
     write_scope_proposal: dict[str, Any] | None = None
+    write_scope_proposals: list[dict[str, Any]] | None = None
     proposal_missing_reason: str | None = None
     approved_capabilities: list[str] | None = None
     effective_capabilities: list[str] | None = None
@@ -143,7 +152,9 @@ class AgentRunResult:
         if self.schema_version != 1:
             raise ContractError("AgentRunResult schema_version must be 1.")
         if self.result_kind != "agent_run_result":
-            raise ContractError("AgentRunResult result_kind must be 'agent_run_result'.")
+            raise ContractError(
+                "AgentRunResult result_kind must be 'agent_run_result'."
+            )
         if not self.contract_version.strip():
             raise ContractError("AgentRunResult contract_version is required.")
 
@@ -162,7 +173,11 @@ class AgentRunResult:
             "event_log_path": self.event_log_path,
             "journal_path": self.journal_path,
             "budget_summary": dict(self.budget_summary),
-            **({"task_findings": self.task_findings} if self.task_findings is not None else {}),
+            **(
+                {"task_findings": self.task_findings}
+                if self.task_findings is not None
+                else {}
+            ),
             **(
                 {"studio_session_id": self.studio_session_id}
                 if self.studio_session_id is not None
@@ -196,26 +211,55 @@ class AgentRunResult:
                 if self.fallback_used is not None
                 else {}
             ),
-            **({"runtime_log_path": self.runtime_log_path} if self.runtime_log_path is not None else {}),
-            **({"result_path": self.result_path} if self.result_path is not None else {}),
+            **(
+                {"runtime_log_path": self.runtime_log_path}
+                if self.runtime_log_path is not None
+                else {}
+            ),
+            **(
+                {"result_path": self.result_path}
+                if self.result_path is not None
+                else {}
+            ),
             **(
                 {"runtime_log_unavailable_reason": self.runtime_log_unavailable_reason}
                 if self.runtime_log_unavailable_reason is not None
                 else {}
             ),
             **({"started_at": self.started_at} if self.started_at is not None else {}),
-            **({"completed_at": self.completed_at} if self.completed_at is not None else {}),
+            **(
+                {"completed_at": self.completed_at}
+                if self.completed_at is not None
+                else {}
+            ),
             **(
                 {"failure_classification": self.failure_classification}
                 if self.failure_classification is not None
                 else {}
             ),
             **({"failure": dict(self.failure)} if self.failure is not None else {}),
-            **({"changed_paths": list(self.changed_paths)} if self.changed_paths is not None else {}),
-            **({"validation_summary": dict(self.validation_summary)} if self.validation_summary is not None else {}),
+            **(
+                {"changed_paths": list(self.changed_paths)}
+                if self.changed_paths is not None
+                else {}
+            ),
+            **(
+                {"validation_summary": dict(self.validation_summary)}
+                if self.validation_summary is not None
+                else {}
+            ),
             **(
                 {"write_scope_proposal": dict(self.write_scope_proposal)}
                 if self.write_scope_proposal is not None
+                else {}
+            ),
+            **(
+                {
+                    "write_scope_proposals": [
+                        dict(item) for item in self.write_scope_proposals
+                    ]
+                }
+                if self.write_scope_proposals is not None
                 else {}
             ),
             **(
@@ -223,9 +267,21 @@ class AgentRunResult:
                 if self.proposal_missing_reason is not None
                 else {}
             ),
-            **({"approved_capabilities": list(self.approved_capabilities)} if self.approved_capabilities is not None else {}),
-            **({"effective_capabilities": list(self.effective_capabilities)} if self.effective_capabilities is not None else {}),
-            **({"evidence_refs": dict(self.evidence_refs)} if self.evidence_refs is not None else {}),
+            **(
+                {"approved_capabilities": list(self.approved_capabilities)}
+                if self.approved_capabilities is not None
+                else {}
+            ),
+            **(
+                {"effective_capabilities": list(self.effective_capabilities)}
+                if self.effective_capabilities is not None
+                else {}
+            ),
+            **(
+                {"evidence_refs": dict(self.evidence_refs)}
+                if self.evidence_refs is not None
+                else {}
+            ),
             **(
                 {"evidence_previews": [dict(item) for item in self.evidence_previews]}
                 if self.evidence_previews is not None

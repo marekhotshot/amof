@@ -45,12 +45,46 @@
       "type": "string"
     },
     "exit_code": {
-      "type": "integer"
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
     },
     "studio_session_id": {
       "type": ["string", "null"],
       "description": "Optional Studio Session parent correlation for runs launched under Studio.",
       "pattern": "^studio-[0-9]{8}-[0-9]{6}(?:-[0-9]{2})?$"
+    },
+    "runner_id": {
+      "type": ["string", "null"],
+      "description": "Optional explicit runner identity used for execution."
+    },
+    "backend": {
+      "type": ["string", "null"],
+      "description": "Optional execution backend type, for example hermes_opensandbox."
+    },
+    "requested_provider": {
+      "type": ["string", "null"]
+    },
+    "effective_provider": {
+      "type": ["string", "null"]
+    },
+    "requested_model": {
+      "type": ["string", "null"]
+    },
+    "effective_model": {
+      "type": ["string", "null"]
+    },
+    "transport": {
+      "type": ["string", "null"]
+    },
+    "fallback_used": {
+      "type": ["boolean", "null"]
     },
     "stop_reason": {
       "type": "string",
@@ -58,10 +92,12 @@
     },
     "final_text": {
       "type": "string",
+      "description": "AMOF-authored runtime summary. Agent-observed task findings belong in task_findings and must not override runtime envelope fields.",
       "minLength": 1
     },
     "task_findings": {
-      "type": ["string", "null"]
+      "type": ["string", "null"],
+      "description": "Agent-observed task findings captured from the runner output. This field is not authoritative for AMOF runtime envelope metadata."
     },
     "plan_path": {
       "type": ["string", "null"]
@@ -75,8 +111,54 @@
     "journal_path": {
       "type": ["string", "null"]
     },
+    "runtime_log_path": {
+      "type": ["string", "null"]
+    },
+    "result_path": {
+      "type": ["string", "null"]
+    },
+    "runtime_log_unavailable_reason": {
+      "type": ["string", "null"]
+    },
+    "started_at": {
+      "type": ["string", "null"]
+    },
+    "completed_at": {
+      "type": ["string", "null"]
+    },
+    "failure_classification": {
+      "type": ["string", "null"]
+    },
     "failure": {
       "type": ["object", "null"],
+      "properties": {
+        "failure_phase": { "type": ["string", "null"] },
+        "failure_class": { "type": ["string", "null"] },
+        "failure_type": { "type": ["string", "null"] },
+        "failure_reason": { "type": ["string", "null"] },
+        "retry_eligible": { "type": ["boolean", "null"] },
+        "safe_next_action": { "type": ["string", "null"] },
+        "evidence_ref": { "type": ["string", "null"] },
+        "raw_error_excerpt": { "type": ["string", "null"] },
+        "missing_tool": { "type": ["string", "null"] },
+        "required_by": { "type": ["string", "null"] },
+        "required_for": { "type": ["string", "null"] },
+        "failing_tool_id": { "type": ["string", "null"] },
+        "failing_tool_name": { "type": ["string", "null"] },
+        "failing_tool_call_index": { "type": ["integer", "null"] },
+        "tool_failure_class": { "type": ["string", "null"] },
+        "tool_failure_summary": { "type": ["string", "null"] },
+        "tool_failure_required": { "type": ["boolean", "null"] },
+        "tool_failure_evidence_ref": { "type": ["string", "null"] },
+        "required_or_optional": { "type": ["string", "null"] },
+        "subtask_id": { "type": ["string", "null"] },
+        "available_alternatives": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "runner_id": { "type": ["string", "null"] },
+        "tool_inventory_ref": { "type": ["string", "null"] }
+      },
       "additionalProperties": true
     },
     "changed_paths": {
@@ -90,59 +172,13 @@
       "additionalProperties": true
     },
     "write_scope_proposal": {
-      "type": ["object", "null"],
-      "required": [
-        "target_id",
-        "base_sha",
-        "allowed_roots",
-        "denied_roots",
-        "reason",
-        "expected_checks",
-        "docs_only",
-        "source_mutation"
-      ],
-      "properties": {
-        "target_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "base_sha": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{40}$"
-        },
-        "allowed_roots": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "denied_roots": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "reason": {
-          "type": "string",
-          "minLength": 1
-        },
-        "expected_checks": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "docs_only": {
-          "type": "boolean"
-        },
-        "source_mutation": {
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": true
+      "$ref": "#/$defs/writeScopeProposalOrNull"
+    },
+    "write_scope_proposals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/writeScopeProposal"
+      }
     },
     "proposal_missing_reason": {
       "type": ["string", "null"]
@@ -162,6 +198,22 @@
         },
         "additionalProperties": false
       }
+    },
+    "approved_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "effective_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence_refs": {
+      "type": "object",
+      "additionalProperties": true
     },
     "budget_summary": {
       "type": "object",
@@ -183,6 +235,83 @@
         }
       },
       "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "writeScopeProposal": {
+      "type": "object",
+      "required": [
+        "scope_id",
+        "title",
+        "mutation_mode",
+        "target_repo",
+        "intent",
+        "forbidden_actions",
+        "risk",
+        "rationale",
+        "source_evidence_refs",
+        "target_id",
+        "base_sha",
+        "allowed_roots",
+        "denied_roots",
+        "reason",
+        "expected_checks",
+        "docs_only",
+        "source_mutation"
+      ],
+      "properties": {
+        "scope_id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "mutation_mode": { "type": "string", "minLength": 1 },
+        "target_repo": { "type": "string", "minLength": 1 },
+        "intent": { "type": "string", "minLength": 1 },
+        "allowed_files": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "allowed_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "forbidden_actions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "risk": { "type": "string", "minLength": 1 },
+        "rationale": { "type": "string", "minLength": 1 },
+        "source_evidence_refs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "target_id": { "type": "string", "minLength": 1 },
+        "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "allowed_roots": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "denied_roots": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "reason": { "type": "string", "minLength": 1 },
+        "expected_checks": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "docs_only": { "type": "boolean" },
+        "source_mutation": { "type": "boolean" }
+      },
+      "anyOf": [
+        { "required": ["allowed_files"] },
+        { "required": ["allowed_paths"] }
+      ],
+      "additionalProperties": true
+    },
+    "writeScopeProposalOrNull": {
+      "oneOf": [
+        { "$ref": "#/$defs/writeScopeProposal" },
+        { "type": "null" }
+      ]
     }
   },
   "additionalProperties": false
