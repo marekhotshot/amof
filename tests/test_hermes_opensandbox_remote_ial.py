@@ -321,6 +321,30 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         )
         self.assertIn("MUST NOT be executed in this run", prompt)
 
+    def test_approved_bounded_write_prompt_executes_without_reproposing(self) -> None:
+        expected = "docs/amof-bounded-write-proof.md"
+        selection = hermes_opensandbox.HermesBackendSelection(
+            runner_id="hermes-local-ticket-write",
+            capabilities=["read", "write"],
+            writable_roots=[expected],
+            timeout_seconds=30,
+            readable_root=None,
+        )
+        prompt = hermes_opensandbox._build_prompt(
+            (
+                f"Earlier discovery returned structured_write_scope_proposal for {expected}. "
+                f"Execution phase: approved_write_scope is exactly {expected}."
+            ),
+            selection,
+            Path("/tmp/amof-hermes-approved-write"),
+        )
+
+        self.assertNotIn(hermes_opensandbox.WRITE_SCOPE_PROPOSAL_START, prompt)
+        self.assertIn("CURRENT PHASE OVERRIDE — APPROVED BOUNDED WRITE", prompt)
+        self.assertIn("already validated explicit operator approval", prompt)
+        self.assertIn("Create missing parent directories", prompt)
+        self.assertIn("Do not ask for another confirmation", prompt)
+
     def test_required_proposal_is_evaluated_after_read_only_mutation_replan(
         self,
     ) -> None:

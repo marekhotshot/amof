@@ -950,6 +950,9 @@ def _build_prompt(
     *,
     read_only_replan: bool = False,
 ) -> str:
+    proposal_requested = (
+        _goal_requests_write_scope_proposal(goal) and not selection.writable_roots
+    )
     lines = [
         "You are executing as Hermes under AMOF authority.",
         f"AMOF runner_id: {selection.runner_id}",
@@ -982,7 +985,7 @@ def _build_prompt(
             lines.append(
                 "Read-only mutation was detected once; this constrained replan must remain read-only within the same workspace boundary."
             )
-    if _goal_requests_write_scope_proposal(goal):
+    if proposal_requested:
         target = _primary_manifest_target(manifest or {})
         expected_allowed_roots = _explicit_required_proposal_paths(goal)
         docs_only = bool(expected_allowed_roots) and all(
@@ -1036,7 +1039,7 @@ def _build_prompt(
                 ]
             )
     lines.extend(["", "Mission:", goal])
-    if _goal_requests_write_scope_proposal(goal):
+    if proposal_requested:
         lines.extend(
             [
                 "",
@@ -1051,6 +1054,17 @@ def _build_prompt(
             lines.append(
                 "A prior mutation attempt was restored. Do not repeat it; return only the required proposal block and human-readable findings."
             )
+    elif selection.writable_roots:
+        lines.extend(
+            [
+                "",
+                "CURRENT PHASE OVERRIDE — APPROVED BOUNDED WRITE:",
+                "AMOF has already validated explicit operator approval for the listed writable roots.",
+                "Execute the mission's requested create_or_update operation now. Create missing parent directories when required.",
+                "Do not ask for another confirmation and do not emit a write-scope proposal.",
+                "The approval remains bounded: do not modify any path outside Writable roots.",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -1348,7 +1362,9 @@ def run(
 
     read_only_replan_used = False
     prompt = _build_prompt(goal, selection, workspace, manifest)
-    proposal_required = _goal_requests_write_scope_proposal(goal)
+    proposal_required = (
+        _goal_requests_write_scope_proposal(goal) and not selection.writable_roots
+    )
     expected_proposal_paths = _explicit_required_proposal_paths(goal)
     write_scope_proposal: dict[str, Any] | None = None
     proposal_missing_reason: str | None = None
