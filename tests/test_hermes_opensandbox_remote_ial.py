@@ -285,6 +285,43 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
             ["src/contexts/PodcastPlayerContext.tsx"],
         )
 
+    def test_changed_paths_expands_untracked_directories_to_exact_files(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-exact-untracked-") as td:
+            workspace = Path(td)
+            subprocess.run(
+                ["git", "init", "--quiet"],
+                cwd=workspace,
+                check=True,
+            )
+            proof = workspace / "docs" / "amof-bounded-write-proof.md"
+            proof.parent.mkdir()
+            proof.write_text("# proof\n", encoding="utf-8")
+
+            self.assertEqual(
+                hermes_opensandbox._changed_paths(workspace),
+                ["docs/amof-bounded-write-proof.md"],
+            )
+
+    def test_selection_keeps_nonexistent_exact_file_scope_inside_readable_root(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-hermes-file-scope-") as td:
+            workspace = Path(td).resolve()
+            exact_path = workspace / "docs" / "amof-bounded-write-proof.md"
+            selection = hermes_opensandbox.build_selection(
+                runner_id="hermes-local-ticket-write",
+                requested_capabilities=["bounded_write"],
+                approve_writable_roots=[str(exact_path)],
+                timeout_seconds=30,
+                readable_root=str(workspace),
+            )
+
+            self.assertEqual(selection.writable_roots, [str(exact_path)])
+            self.assertEqual(
+                hermes_opensandbox._workspace_for(selection, {}),
+                workspace,
+            )
+
     def test_read_only_prompt_enforces_workspace_boundary_and_mutation_forbiddance(
         self,
     ) -> None:

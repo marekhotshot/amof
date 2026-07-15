@@ -524,15 +524,26 @@ def _attach_studio_run(
     )
 
 
-def _resolve_roots(values: list[str]) -> list[Path]:
+def _resolve_roots(values: list[str], *, readable_root: str | None) -> list[Path]:
     roots: list[Path] = []
+    workspace = (
+        Path(readable_root).expanduser().resolve(strict=True)
+        if readable_root
+        else None
+    )
+    if workspace is not None and not workspace.is_dir():
+        raise HermesBackendError(f"readable root is not a directory: {readable_root}")
     for raw in values:
         text = str(raw or "").strip()
         if not text:
             continue
         path = Path(text).expanduser().resolve(strict=False)
-        if not path.is_dir():
-            raise HermesBackendError(f"approved writable root is not a directory: {text}")
+        if workspace is not None and not path.is_relative_to(workspace):
+            raise HermesBackendError(
+                f"approved writable root is outside the readable workspace: {text}"
+            )
+        if path.exists() and not (path.is_dir() or path.is_file()):
+            raise HermesBackendError(f"approved writable root is not a file or directory: {text}")
         roots.append(path)
     return roots
 
@@ -553,7 +564,13 @@ def build_selection(
 ) -> HermesBackendSelection:
     normalized_caps = [str(item).strip() for item in requested_capabilities if str(item).strip()]
     _assert_no_dangerous_caps(normalized_caps)
-    writable_roots = [str(path) for path in _resolve_roots(approve_writable_roots)]
+    writable_roots = [
+        str(path)
+        for path in _resolve_roots(
+            approve_writable_roots,
+            readable_root=readable_root,
+        )
+    ]
     effective_caps = ["read"]
     if writable_roots:
         if "bounded_write" not in normalized_caps:
@@ -571,12 +588,17 @@ def build_selection(
 
 
 def _workspace_for(selection: HermesBackendSelection, manifest: dict[str, Any]) -> Path:
-    if selection.writable_roots:
-        return Path(selection.writable_roots[0]).resolve(strict=True)
     if selection.readable_root:
         path = Path(selection.readable_root).expanduser().resolve(strict=False)
         if path.is_dir():
             return path
+    if selection.writable_roots:
+        first_scope = Path(selection.writable_roots[0]).resolve(strict=False)
+        if first_scope.is_dir():
+            return first_scope
+        for parent in first_scope.parents:
+            if parent.is_dir():
+                return parent
     repos = manifest.get("repos")
     if isinstance(repos, list):
         for item in repos:
@@ -1072,7 +1094,7 @@ def _changed_paths(workspace: Path) -> list[str]:
     if not (workspace / ".git").exists():
         return []
     completed = subprocess.run(
-        ["git", "status", "--short"],
+        ["git", "status", "--short", "--untracked-files=all"],
         cwd=str(workspace),
         text=True,
         capture_output=True,
