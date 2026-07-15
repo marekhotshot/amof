@@ -985,6 +985,24 @@ def _build_prompt(
     if _goal_requests_write_scope_proposal(goal):
         target = _primary_manifest_target(manifest or {})
         expected_allowed_roots = _explicit_required_proposal_paths(goal)
+        docs_only = bool(expected_allowed_roots) and all(
+            root == "docs" or root.startswith("docs/")
+            for root in expected_allowed_roots
+        )
+        proposal_example = {
+            "target_id": target.get("target_id") or "",
+            "base_sha": target.get("base_sha") or "",
+            "allowed_roots": expected_allowed_roots,
+            "denied_roots": [],
+            "reason": (
+                "bounded write proof artifact"
+                if expected_allowed_roots == ["docs/amof-bounded-write-proof.md"]
+                else "bounded follow-up justified by inspected evidence"
+            ),
+            "expected_checks": ["git diff --check"],
+            "docs_only": docs_only,
+            "source_mutation": not docs_only,
+        }
         lines.extend(
             [
                 "",
@@ -992,7 +1010,7 @@ def _build_prompt(
                 "This mission requires machine-readable structured write_scope_proposal output. A prose-only answer is a contract failure.",
                 "You MUST emit exactly one non-empty JSON object between these markers before any human-readable summary.",
                 WRITE_SCOPE_PROPOSAL_START,
-                '{"target_id":"","base_sha":"","allowed_roots":[],"denied_roots":[],"reason":"","expected_checks":[],"docs_only":false,"source_mutation":false}',
+                json.dumps(proposal_example, separators=(",", ":")),
                 WRITE_SCOPE_PROPOSAL_END,
                 "Use exactly those JSON field names. Do not wrap them in another object.",
                 "Populate target_id and base_sha from the canonical target context. Empty or partial proposal objects are invalid.",

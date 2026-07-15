@@ -310,6 +310,9 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
 
         self.assertIn("A prose-only answer is a contract failure", prompt)
         self.assertIn(json.dumps([expected]), prompt)
+        self.assertIn('"reason":"bounded write proof artifact"', prompt)
+        self.assertIn('"expected_checks":["git diff --check"]', prompt)
+        self.assertIn('"docs_only":true', prompt)
         self.assertIn("Wildcard roots and additional unrequested roots are forbidden", prompt)
         self.assertIn("do not include approved_write_scope", prompt)
         self.assertGreater(
