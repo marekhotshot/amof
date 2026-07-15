@@ -313,7 +313,9 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         self.assertIn("Wildcard roots and additional unrequested roots are forbidden", prompt)
         self.assertIn("must not contain approved_write_scope", prompt)
 
-    def test_read_only_first_mutation_triggers_constrained_replan(self) -> None:
+    def test_required_proposal_is_evaluated_after_read_only_mutation_replan(
+        self,
+    ) -> None:
         config = hermes_opensandbox.RemoteIALConfig(
             base_url="https://ial.example.test",
             api_key="unit-test-token",
@@ -353,17 +355,30 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
                 ) as dispatch_command,
                 patch(
                     "subprocess.run",
-                    return_value=subprocess.CompletedProcess(
-                        args=["hermes"],
-                        returncode=0,
-                        stdout="validation_ok\n",
-                        stderr="",
-                    ),
+                    side_effect=[
+                        subprocess.CompletedProcess(
+                            args=["hermes"],
+                            returncode=0,
+                            stdout="prose only after an attempted mutation\n",
+                            stderr="",
+                        ),
+                        subprocess.CompletedProcess(
+                            args=["hermes"],
+                            returncode=0,
+                            stdout=_proposal_output(
+                                ["docs/amof-bounded-write-proof.md"]
+                            ),
+                            stderr="",
+                        ),
+                    ],
                 ) as run_process,
             ):
                 result = hermes_opensandbox.run(
                     manifest={"repos": [{"path": td}]},
-                    goal="inspect only",
+                    goal=(
+                        "Return structured_write_scope_proposal for exactly "
+                        "docs/amof-bounded-write-proof.md."
+                    ),
                     request_id="readonly-replan",
                     studio_session_id=None,
                     selection=_selection(),
@@ -371,6 +386,10 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["stop_reason"], "completed")
+        self.assertEqual(
+            result["write_scope_proposal"]["allowed_roots"],
+            ["docs/amof-bounded-write-proof.md"],
+        )
         self.assertEqual(run_process.call_count, 2)
         restore_paths.assert_called_once_with(Path(td), ["scratch.txt"])
         self.assertEqual(dispatch_command.call_count, 2)

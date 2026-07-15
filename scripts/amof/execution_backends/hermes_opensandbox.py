@@ -1400,11 +1400,6 @@ def run(
             status = "failed"
             stop_reason = "validation_failed"
             exit_code = 1
-        if status == "completed" and proposal_required and write_scope_proposal is None:
-            status = "blocked"
-            stop_reason = WRITE_SCOPE_PROPOSAL_REQUIRED
-            exit_code = 1
-            validation_status = "failed"
         changed = _changed_paths_delta(preexisting_changed_paths, _changed_paths(workspace))
         if status == "completed" and not selection.writable_roots and changed:
             if read_only_replan_used:
@@ -1428,6 +1423,11 @@ def run(
                 read_only_replan=True,
             )
             continue
+        if status == "completed" and proposal_required and write_scope_proposal is None:
+            status = "blocked"
+            stop_reason = WRITE_SCOPE_PROPOSAL_REQUIRED
+            exit_code = 1
+            validation_status = "failed"
         break
     final_text = _runtime_summary_text(
         status=status,
