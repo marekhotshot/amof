@@ -53,6 +53,7 @@ DANGEROUS_CAPABILITIES = {
 }
 WRITE_SCOPE_PROPOSAL_START = "AMOF_WRITE_SCOPE_PROPOSAL_JSON_START"
 WRITE_SCOPE_PROPOSAL_END = "AMOF_WRITE_SCOPE_PROPOSAL_JSON_END"
+WRITE_SCOPE_PROPOSAL_REQUIRED = "WRITE_SCOPE_PROPOSAL_REQUIRED"
 WRITE_SCOPE_PROPOSAL_FIELDS = (
     "target_id",
     "base_sha",
@@ -799,6 +800,36 @@ def _goal_requests_write_scope_proposal(goal: str) -> bool:
     return "write_scope_proposal" in lowered or "write scope proposal" in lowered
 
 
+def _normalize_repository_relative_scope_path(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    path = value.strip()
+    if (
+        not path
+        or "\x00" in path
+        or "\\" in path
+        or path.startswith("/")
+        or any(char in path for char in "*?[]{}")
+    ):
+        return None
+    directory_root = path.endswith("/")
+    parts = path.rstrip("/").split("/")
+    if any(not part or part in {".", ".."} for part in parts):
+        return None
+    normalized = "/".join(parts)
+    return f"{normalized}/" if directory_root else normalized
+
+
+def _explicit_required_proposal_paths(goal: str) -> list[str]:
+    paths: list[str] = []
+    for match in re.finditer(r"\bexactly\s*:?\s*`?([^\s,;`]+)", goal, re.IGNORECASE):
+        candidate = match.group(1).rstrip(".'\"),:")
+        normalized = _normalize_repository_relative_scope_path(candidate)
+        if normalized and "/" in normalized and normalized not in paths:
+            paths.append(normalized)
+    return paths
+
+
 def _primary_manifest_target(manifest: dict[str, Any]) -> dict[str, str]:
     repos = manifest.get("repos")
     if not isinstance(repos, list) or not repos:
@@ -817,7 +848,11 @@ def _primary_manifest_target(manifest: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _normalize_write_scope_proposal(value: Any) -> dict[str, Any] | None:
+def _normalize_write_scope_proposal(
+    value: Any,
+    *,
+    expected_allowed_roots: list[str] | None = None,
+) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     proposal = dict(value)
@@ -834,29 +869,51 @@ def _normalize_write_scope_proposal(value: Any) -> dict[str, Any] | None:
         raw = proposal.get(name)
         if not isinstance(raw, list):
             return None
-        values = [str(item).strip() for item in raw]
+        if any(not isinstance(item, str) for item in raw):
+            return None
+        values = [item.strip() for item in raw]
         if any(not item for item in values):
             return None
         return values
 
-    allowed_roots = _string_list("allowed_roots")
-    denied_roots = _string_list("denied_roots")
+    raw_allowed_roots = _string_list("allowed_roots")
+    raw_denied_roots = _string_list("denied_roots")
     expected_checks = _string_list("expected_checks")
+    allowed_roots = (
+        [_normalize_repository_relative_scope_path(item) for item in raw_allowed_roots]
+        if raw_allowed_roots is not None
+        else None
+    )
+    denied_roots = (
+        [_normalize_repository_relative_scope_path(item) for item in raw_denied_roots]
+        if raw_denied_roots is not None
+        else None
+    )
     docs_only = proposal.get("docs_only")
     source_mutation = proposal.get("source_mutation")
     if (
         allowed_roots is None
+        or not allowed_roots
+        or any(item is None for item in allowed_roots)
         or denied_roots is None
+        or any(item is None for item in denied_roots)
         or expected_checks is None
         or not isinstance(docs_only, bool)
         or not isinstance(source_mutation, bool)
     ):
         return None
+    normalized_allowed_roots = [str(item) for item in allowed_roots]
+    normalized_denied_roots = [str(item) for item in denied_roots]
+    if (
+        expected_allowed_roots
+        and normalized_allowed_roots != expected_allowed_roots
+    ):
+        return None
     proposal["target_id"] = target_id
     proposal["base_sha"] = base_sha
     proposal["reason"] = reason
-    proposal["allowed_roots"] = allowed_roots
-    proposal["denied_roots"] = denied_roots
+    proposal["allowed_roots"] = normalized_allowed_roots
+    proposal["denied_roots"] = normalized_denied_roots
     proposal["expected_checks"] = expected_checks
     proposal["docs_only"] = docs_only
     proposal["source_mutation"] = source_mutation
@@ -865,6 +922,8 @@ def _normalize_write_scope_proposal(value: Any) -> dict[str, Any] | None:
 
 def _extract_write_scope_proposal_output(
     text: str,
+    *,
+    expected_allowed_roots: list[str] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     pattern = re.compile(
         rf"{WRITE_SCOPE_PROPOSAL_START}\s*(\{{.*?\}})\s*{WRITE_SCOPE_PROPOSAL_END}",
@@ -877,7 +936,10 @@ def _extract_write_scope_proposal_output(
         parsed = json.loads(match.group(1))
     except json.JSONDecodeError:
         parsed = None
-    proposal = _normalize_write_scope_proposal(parsed)
+    proposal = _normalize_write_scope_proposal(
+        parsed,
+        expected_allowed_roots=expected_allowed_roots,
+    )
     summary = (text[: match.start()] + text[match.end() :]).strip()
     return proposal, summary
 def _build_prompt(
@@ -922,20 +984,29 @@ def _build_prompt(
             )
     if _goal_requests_write_scope_proposal(goal):
         target = _primary_manifest_target(manifest or {})
+        expected_allowed_roots = _explicit_required_proposal_paths(goal)
         lines.extend(
             [
                 "",
-                "Structured write-scope contract:",
-                "If the mission asks for a structured write_scope_proposal, emit exactly one JSON object between these markers before any human-readable summary.",
+                "Required structured write-scope contract:",
+                "This mission requires machine-readable structured write_scope_proposal output. A prose-only answer is a contract failure.",
+                "You MUST emit exactly one non-empty JSON object between these markers before any human-readable summary.",
                 WRITE_SCOPE_PROPOSAL_START,
                 '{"target_id":"","base_sha":"","allowed_roots":[],"denied_roots":[],"reason":"","expected_checks":[],"docs_only":false,"source_mutation":false}',
                 WRITE_SCOPE_PROPOSAL_END,
                 "Use exactly those JSON field names. Do not wrap them in another object.",
+                "Populate target_id and base_sha from the canonical target context. Empty or partial proposal objects are invalid.",
                 "Keep allowed_roots and denied_roots repository-relative.",
+                "Wildcard roots and additional unrequested roots are forbidden.",
+                "The proposal describes create_or_update semantics only; it must not contain approved_write_scope or any approval claim.",
                 "After the JSON block, emit a Markdown summary for humans. Do not restate the JSON block in prose.",
-                "If evidence does not justify a bounded follow-up, omit the JSON block and emit only the Markdown summary.",
             ]
         )
+        if expected_allowed_roots:
+            lines.append(
+                "Required allowed_roots (exact; no additional paths): "
+                + json.dumps(expected_allowed_roots)
+            )
         if target:
             lines.extend(
                 [
@@ -1245,6 +1316,7 @@ def run(
     read_only_replan_used = False
     prompt = _build_prompt(goal, selection, workspace, manifest)
     proposal_required = _goal_requests_write_scope_proposal(goal)
+    expected_proposal_paths = _explicit_required_proposal_paths(goal)
     write_scope_proposal: dict[str, Any] | None = None
     proposal_missing_reason: str | None = None
     task_findings = ""
@@ -1315,7 +1387,8 @@ def run(
         raw_task_findings = stdout_path.read_text(encoding="utf-8").strip()
         runtime_detail = stderr_path.read_text(encoding="utf-8").strip()
         write_scope_proposal, task_findings = _extract_write_scope_proposal_output(
-            raw_task_findings
+            raw_task_findings,
+            expected_allowed_roots=expected_proposal_paths,
         )
         proposal_missing_reason = (
             _proposal_missing_reason(task_findings, runtime_detail)
@@ -1327,6 +1400,11 @@ def run(
             status = "failed"
             stop_reason = "validation_failed"
             exit_code = 1
+        if status == "completed" and proposal_required and write_scope_proposal is None:
+            status = "blocked"
+            stop_reason = WRITE_SCOPE_PROPOSAL_REQUIRED
+            exit_code = 1
+            validation_status = "failed"
         changed = _changed_paths_delta(preexisting_changed_paths, _changed_paths(workspace))
         if status == "completed" and not selection.writable_roots and changed:
             if read_only_replan_used:

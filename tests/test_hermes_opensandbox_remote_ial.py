@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -67,6 +68,29 @@ def _health() -> dict[str, object]:
     }
 
 
+def _proposal_output(
+    allowed_roots: list[str],
+    *,
+    reason: str = "bounded write proof artifact",
+) -> str:
+    proposal = {
+        "target_id": "github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",
+        "base_sha": "67f8526b254d8839c025423b6bfda36895881160",
+        "allowed_roots": allowed_roots,
+        "denied_roots": [],
+        "reason": reason,
+        "expected_checks": ["git diff --check"],
+        "docs_only": True,
+        "source_mutation": False,
+    }
+    return (
+        f"{hermes_opensandbox.WRITE_SCOPE_PROPOSAL_START}\n"
+        f"{json.dumps(proposal)}\n"
+        f"{hermes_opensandbox.WRITE_SCOPE_PROPOSAL_END}\n\n"
+        "# Bounded write proof\n"
+    )
+
+
 class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
     def test_structured_write_scope_proposal_is_parsed_from_runner_output(self) -> None:
         config = hermes_opensandbox.RemoteIALConfig(
@@ -124,7 +148,8 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
                     },
                     goal=(
                         "Inspect launch readiness and return a structured "
-                        "write_scope_proposal for docs/launch-readiness/simple-ai-shop-launch-readiness.md."
+                        "write_scope_proposal for exactly "
+                        "docs/launch-readiness/simple-ai-shop-launch-readiness.md."
                     ),
                     request_id="write-scope",
                     studio_session_id=None,
@@ -151,6 +176,43 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
             result["task_findings"],
             "# Launch readiness summary\n\n- Deployment docs are stale.",
         )
+        self.assertNotIn("approved_write_scope", result)
+
+    def test_exact_required_proposal_path_is_preserved(self) -> None:
+        expected = "docs/amof-bounded-write-proof.md"
+        proposal, summary = hermes_opensandbox._extract_write_scope_proposal_output(
+            _proposal_output([expected]),
+            expected_allowed_roots=[expected],
+        )
+
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal["allowed_roots"], [expected])
+        self.assertEqual(proposal["reason"], "bounded write proof artifact")
+        self.assertEqual(summary, "# Bounded write proof")
+        self.assertNotIn("approved_write_scope", proposal)
+
+    def test_partial_empty_and_wildcard_proposals_are_rejected(self) -> None:
+        expected = "docs/amof-bounded-write-proof.md"
+        partial, _ = hermes_opensandbox._extract_write_scope_proposal_output(
+            _proposal_output([]),
+            expected_allowed_roots=[expected],
+        )
+        wildcard, _ = hermes_opensandbox._extract_write_scope_proposal_output(
+            _proposal_output(["docs/*"]),
+            expected_allowed_roots=[expected],
+        )
+
+        self.assertIsNone(partial)
+        self.assertIsNone(wildcard)
+
+    def test_required_proposal_with_extra_path_is_rejected(self) -> None:
+        expected = "docs/amof-bounded-write-proof.md"
+        proposal, _ = hermes_opensandbox._extract_write_scope_proposal_output(
+            _proposal_output([expected, "docs/unrequested.md"]),
+            expected_allowed_roots=[expected],
+        )
+
+        self.assertIsNone(proposal)
 
     def test_prose_only_write_scope_text_does_not_become_structured_proposal(self) -> None:
         config = hermes_opensandbox.RemoteIALConfig(
@@ -193,8 +255,14 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
                     selection=_selection(),
                 )
 
-        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(
+            result["stop_reason"],
+            hermes_opensandbox.WRITE_SCOPE_PROPOSAL_REQUIRED,
+        )
+        self.assertEqual(result["exit_code"], 1)
         self.assertNotIn("write_scope_proposal", result)
+        self.assertNotIn("approved_write_scope", result)
         self.assertIn("no structured proposal is attached", result["task_findings"])
         self.assertEqual(
             result["proposal_missing_reason"],
@@ -230,6 +298,20 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         self.assertIn(f"Read-only workspace boundary (exact path): {workspace}", prompt)
         self.assertIn("Do not run git clone, git init, git worktree", prompt)
         self.assertIn("Do not create, modify, or delete files", prompt)
+        self.assertNotIn(hermes_opensandbox.WRITE_SCOPE_PROPOSAL_START, prompt)
+
+    def test_required_proposal_prompt_forbids_prose_only_and_extra_paths(self) -> None:
+        expected = "docs/amof-bounded-write-proof.md"
+        prompt = hermes_opensandbox._build_prompt(
+            f"Return structured_write_scope_proposal for exactly {expected}.",
+            _selection(),
+            Path("/tmp/amof-hermes-required-proposal"),
+        )
+
+        self.assertIn("A prose-only answer is a contract failure", prompt)
+        self.assertIn(json.dumps([expected]), prompt)
+        self.assertIn("Wildcard roots and additional unrequested roots are forbidden", prompt)
+        self.assertIn("must not contain approved_write_scope", prompt)
 
     def test_read_only_first_mutation_triggers_constrained_replan(self) -> None:
         config = hermes_opensandbox.RemoteIALConfig(
