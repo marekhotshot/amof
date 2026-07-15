@@ -998,7 +998,7 @@ def _build_prompt(
                 "Populate target_id and base_sha from the canonical target context. Empty or partial proposal objects are invalid.",
                 "Keep allowed_roots and denied_roots repository-relative.",
                 "Wildcard roots and additional unrequested roots are forbidden.",
-                "The proposal describes create_or_update semantics only; it must not contain approved_write_scope or any approval claim.",
+                "The proposal may describe a future create_or_update operation; do not perform that operation now and do not include approved_write_scope or any approval claim.",
                 "After the JSON block, emit a Markdown summary for humans. Do not restate the JSON block in prose.",
             ]
         )
@@ -1018,6 +1018,21 @@ def _build_prompt(
                 ]
             )
     lines.extend(["", "Mission:", goal])
+    if _goal_requests_write_scope_proposal(goal):
+        lines.extend(
+            [
+                "",
+                "CURRENT PHASE OVERRIDE — PROPOSAL ONLY:",
+                "Any mission instruction to create, update, or output a file is conditional on later operator approval and MUST NOT be executed in this run.",
+                "Inspect read-only. Do not create, modify, rename, or delete any file.",
+                f"Your final answer MUST begin with {WRITE_SCOPE_PROPOSAL_START}, followed by the required non-empty JSON object and {WRITE_SCOPE_PROPOSAL_END}.",
+                "Prose-only output is invalid.",
+            ]
+        )
+        if read_only_replan:
+            lines.append(
+                "A prior mutation attempt was restored. Do not repeat it; return only the required proposal block and human-readable findings."
+            )
     return "\n".join(lines)
 
 
@@ -1402,12 +1417,19 @@ def run(
             exit_code = 1
         changed = _changed_paths_delta(preexisting_changed_paths, _changed_paths(workspace))
         if status == "completed" and not selection.writable_roots and changed:
+            restored_paths = _restore_read_only_paths(workspace, changed)
             if read_only_replan_used:
                 status = "failed"
                 stop_reason = "read_only_mutation_detected"
                 exit_code = 1
+                _append_event(
+                    event_log_path,
+                    "read_only_mutation_blocked",
+                    changed_paths=list(changed),
+                    restored_paths=list(restored_paths),
+                )
+                changed = []
                 break
-            restored_paths = _restore_read_only_paths(workspace, changed)
             _append_event(
                 event_log_path,
                 "read_only_mutation_replan",

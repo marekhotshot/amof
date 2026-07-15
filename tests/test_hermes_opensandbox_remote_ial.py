@@ -311,7 +311,12 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         self.assertIn("A prose-only answer is a contract failure", prompt)
         self.assertIn(json.dumps([expected]), prompt)
         self.assertIn("Wildcard roots and additional unrequested roots are forbidden", prompt)
-        self.assertIn("must not contain approved_write_scope", prompt)
+        self.assertIn("do not include approved_write_scope", prompt)
+        self.assertGreater(
+            prompt.rfind("CURRENT PHASE OVERRIDE"),
+            prompt.rfind("Mission:"),
+        )
+        self.assertIn("MUST NOT be executed in this run", prompt)
 
     def test_required_proposal_is_evaluated_after_read_only_mutation_replan(
         self,
@@ -427,7 +432,10 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
                 patch.object(
                     hermes_opensandbox,
                     "_restore_read_only_paths",
-                    return_value=["first-change.txt"],
+                    side_effect=[
+                        ["first-change.txt"],
+                        ["second-change.txt"],
+                    ],
                 ) as restore_paths,
                 patch.object(
                     hermes_opensandbox,
@@ -454,9 +462,15 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["stop_reason"], "read_only_mutation_detected")
-        self.assertEqual(result["changed_paths"], ["second-change.txt"])
+        self.assertEqual(result["changed_paths"], [])
         self.assertEqual(run_process.call_count, 2)
-        restore_paths.assert_called_once_with(Path(td), ["first-change.txt"])
+        self.assertEqual(
+            restore_paths.call_args_list,
+            [
+                unittest.mock.call(Path(td), ["first-change.txt"]),
+                unittest.mock.call(Path(td), ["second-change.txt"]),
+            ],
+        )
 
     def test_read_only_dirty_workspace_blocks_before_subprocess(self) -> None:
         config = hermes_opensandbox.RemoteIALConfig(
