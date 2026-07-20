@@ -971,6 +971,7 @@ def _build_prompt(
     manifest: dict[str, Any] | None = None,
     *,
     read_only_replan: bool = False,
+    proposal_replan: bool = False,
 ) -> str:
     proposal_requested = (
         _goal_requests_write_scope_proposal(goal) and not selection.writable_roots
@@ -1017,7 +1018,8 @@ def _build_prompt(
         proposal_example = {
             "target_id": target.get("target_id") or "",
             "base_sha": target.get("base_sha") or "",
-            "allowed_roots": expected_allowed_roots,
+            "allowed_roots": expected_allowed_roots
+            or ["<repository-relative-path-your-evidence-justifies>"],
             "denied_roots": [],
             "reason": (
                 "bounded write proof artifact"
@@ -1039,6 +1041,7 @@ def _build_prompt(
                 WRITE_SCOPE_PROPOSAL_END,
                 "Use exactly those JSON field names. Do not wrap them in another object.",
                 "Populate target_id and base_sha from the canonical target context. Empty or partial proposal objects are invalid.",
+                "allowed_roots must list the exact repository-relative file or directory paths your inspected evidence justifies changing; an empty allowed_roots array is invalid.",
                 "Keep allowed_roots and denied_roots repository-relative.",
                 "Wildcard roots and additional unrequested roots are forbidden.",
                 "The proposal may describe a future create_or_update operation; do not perform that operation now and do not include approved_write_scope or any approval claim.",
@@ -1075,6 +1078,11 @@ def _build_prompt(
         if read_only_replan:
             lines.append(
                 "A prior mutation attempt was restored. Do not repeat it; return only the required proposal block and human-readable findings."
+            )
+        if proposal_replan:
+            lines.append(
+                "CONTRACT RETRY: your previous answer omitted the required JSON block or its fields were invalid (for example an empty allowed_roots array). "
+                "Re-run the inspection conclusion and emit the JSON block again with every required field populated and allowed_roots listing the exact repository-relative paths your evidence justifies."
             )
     elif selection.writable_roots:
         lines.extend(
@@ -1383,6 +1391,7 @@ def run(
         )
 
     read_only_replan_used = False
+    proposal_replan_used = False
     prompt = _build_prompt(goal, selection, workspace, manifest)
     proposal_required = (
         _goal_requests_write_scope_proposal(goal) and not selection.writable_roots
@@ -1502,6 +1511,23 @@ def run(
             )
             continue
         if status == "completed" and proposal_required and write_scope_proposal is None:
+            if not proposal_replan_used:
+                # One bounded corrective retry: most misses are formatting
+                # (missing markers, empty allowed_roots), not judgment.
+                _append_event(
+                    event_log_path,
+                    "proposal_contract_replan",
+                    reason=proposal_missing_reason or "structured proposal missing",
+                )
+                proposal_replan_used = True
+                prompt = _build_prompt(
+                    goal,
+                    selection,
+                    workspace,
+                    manifest,
+                    proposal_replan=True,
+                )
+                continue
             status = "blocked"
             stop_reason = WRITE_SCOPE_PROPOSAL_REQUIRED
             exit_code = 1

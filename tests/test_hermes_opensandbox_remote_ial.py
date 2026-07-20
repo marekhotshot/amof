@@ -235,10 +235,12 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
                     "_remote_ial_health",
                     return_value={"inference_health": "ready"},
                 ),
+                # One corrective proposal replan is allowed before blocking,
+                # so the loop inspects changed paths for two iterations.
                 patch.object(
                     hermes_opensandbox,
                     "_changed_paths",
-                    side_effect=[[], []],
+                    side_effect=[[], [], []],
                 ),
                 patch("subprocess.run") as run_process,
             ):
@@ -253,6 +255,11 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
                     request_id="write-scope-prose-only",
                     studio_session_id=None,
                     selection=_selection(),
+                )
+                self.assertEqual(
+                    run_process.call_count,
+                    2,
+                    "prose-only output must trigger exactly one corrective proposal replan",
                 )
 
         self.assertEqual(result["status"], "blocked")
