@@ -826,12 +826,16 @@ def _normalize_repository_relative_scope_path(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     path = value.strip()
+    # Literal "[" and "]" are legitimate path characters (Next.js dynamic
+    # routes such as app/[locale]/page.tsx); scope paths are always consumed
+    # literally (Path resolution / exact-prefix comparison), never globbed,
+    # so only true wildcards remain forbidden.
     if (
         not path
         or "\x00" in path
         or "\\" in path
         or path.startswith("/")
-        or any(char in path for char in "*?[]{}")
+        or any(char in path for char in "*?{}")
     ):
         return None
     directory_root = path.endswith("/")

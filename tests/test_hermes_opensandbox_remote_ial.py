@@ -205,6 +205,29 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
         self.assertIsNone(partial)
         self.assertIsNone(wildcard)
 
+    def test_bracketed_dynamic_route_paths_are_accepted(self) -> None:
+        # Next.js dynamic-route directories are literal path segments; a real
+        # repository proposal like commerce/app/[locale]/about/page.tsx must
+        # not be rejected as glob syntax.
+        roots = [
+            "commerce/app/[locale]/about/page.tsx",
+            "commerce/app/[...slug]/page.tsx",
+            "commerce/components/layout/footer.tsx",
+        ]
+        proposal, _ = hermes_opensandbox._extract_write_scope_proposal_output(
+            _proposal_output(roots),
+        )
+
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal["allowed_roots"], roots)
+
+    def test_wildcards_and_traversal_remain_rejected(self) -> None:
+        for bad in ["commerce/app/*", "commerce/app/?", "commerce/{a,b}", "../etc"]:
+            proposal, _ = hermes_opensandbox._extract_write_scope_proposal_output(
+                _proposal_output([bad]),
+            )
+            self.assertIsNone(proposal, bad)
+
     def test_required_proposal_with_extra_path_is_rejected(self) -> None:
         expected = "docs/amof-bounded-write-proof.md"
         proposal, _ = hermes_opensandbox._extract_write_scope_proposal_output(
