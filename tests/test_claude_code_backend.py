@@ -200,6 +200,20 @@ class ClaudeCodeRunnerRegistryTests(unittest.TestCase):
         self.assertIn(claude_code.BACKEND_TYPE, runner_cmd.SUPPORTED_BACKENDS)
         self.assertIn("claude-code", runner_cmd.SUPPORTED_TEMPLATE_KINDS)
 
+    def test_cli_parser_accepts_claude_code_template_kind(self) -> None:
+        # Regression: the argparse choices in cli.py must stay in sync with
+        # SUPPORTED_TEMPLATE_KINDS or `amof runner template --kind claude-code`
+        # fails at parse time even though the command layer supports it.
+        from unittest import mock
+
+        from amof import cli as amof_cli
+
+        with mock.patch.object(
+            sys, "argv", ["amof", "runner", "template", "--kind", "claude-code"]
+        ):
+            args = amof_cli.parse_args()
+        self.assertEqual(args.kind, "claude-code")
+
     def test_dangerous_capabilities_rejected(self) -> None:
         payload = runner_cmd._template_payload("claude-code")
         with self.assertRaises(runner_cmd.RunnerCliError):
