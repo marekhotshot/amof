@@ -29,7 +29,7 @@ def _selection(writable_roots: list[str] | None = None) -> hermes_opensandbox.He
 class ClaudeCodeDispatchCommandTests(unittest.TestCase):
     def test_read_only_command_excludes_edit_tools_and_permission_mode(self) -> None:
         command = claude_code.claude_dispatch_command(
-            model="claude-sonnet-4-5", prompt="probe", writable=False
+            model="claude-sonnet-4-5", writable=False
         )
         self.assertIn("--print", command)
         self.assertIn("--output-format", command)
@@ -38,11 +38,24 @@ class ClaudeCodeDispatchCommandTests(unittest.TestCase):
         self.assertNotIn("Edit", tools.split(","))
         self.assertNotIn("Write", tools.split(","))
         self.assertNotIn("--permission-mode", command)
-        self.assertEqual(command[-1], "probe")
+
+    def test_prompt_is_never_a_positional_argument(self) -> None:
+        # --allowedTools is variadic in the Claude CLI: a trailing positional
+        # prompt gets swallowed into the tool list and the run fails with
+        # "Input must be provided either through stdin or as a prompt
+        # argument". The mission prompt must therefore go over stdin only.
+        for writable in (False, True):
+            command = claude_code.claude_dispatch_command(
+                model="claude-sonnet-4-5", writable=writable
+            )
+            self.assertTrue(
+                command[-1] == "acceptEdits" or command[-1].startswith("Read,"),
+                f"unexpected trailing positional argument: {command[-1]!r}",
+            )
 
     def test_bounded_write_command_grants_edit_tools_with_accept_edits(self) -> None:
         command = claude_code.claude_dispatch_command(
-            model="claude-sonnet-4-5", prompt="probe", writable=True
+            model="claude-sonnet-4-5", writable=True
         )
         tools = command[command.index("--allowedTools") + 1].split(",")
         self.assertIn("Edit", tools)

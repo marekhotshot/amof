@@ -113,9 +113,10 @@ def is_claude_code_runner(record: dict[str, Any]) -> bool:
     return _shared.runner_backend_type(record) == BACKEND_TYPE
 
 
-def claude_dispatch_command(
-    *, model: str, prompt: str, writable: bool
-) -> list[str]:
+def claude_dispatch_command(*, model: str, writable: bool) -> list[str]:
+    # The mission prompt is delivered on stdin, never as a positional
+    # argument: --allowedTools is variadic in the Claude CLI and would
+    # swallow a trailing positional prompt, leaving the run with no input.
     tools = BOUNDED_WRITE_ALLOWED_TOOLS if writable else READ_ONLY_ALLOWED_TOOLS
     command = [
         str(claude_executable()),
@@ -129,15 +130,12 @@ def claude_dispatch_command(
     ]
     if writable:
         command.extend(["--permission-mode", "acceptEdits"])
-    command.append(prompt)
     return command
 
 
 def _probe_claude_cli_contract(model: str) -> dict[str, Any]:
     executable = claude_executable()
-    dispatch_preview = claude_dispatch_command(
-        model=model, prompt="<amof-contract-probe>", writable=False
-    )
+    dispatch_preview = claude_dispatch_command(model=model, writable=False)
     if not executable.is_file():
         return {
             "status": "unavailable",
@@ -491,7 +489,6 @@ def run(
     while True:
         command = claude_dispatch_command(
             model=requested_model,
-            prompt=prompt,
             writable=bool(selection.writable_roots),
         )
         (run_dir / "request.json").write_text(
@@ -525,6 +522,7 @@ def run(
                 command,
                 cwd=str(workspace),
                 env=_base_env(run_dir),
+                input=prompt,
                 text=True,
                 capture_output=True,
                 check=False,
