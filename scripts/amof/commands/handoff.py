@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from ..app_paths import ensure_app_roots, get_app_paths
 from ..commands import agent_cmd
-from ..execution_backends import hermes_opensandbox
+from ..execution_backends import claude_code, hermes_opensandbox
 from ..manifest import list_available_ecosystems, load_manifest
 from ..state import get_state
 from ..utils import get_ecosystem_from_branch, get_ecosystem_from_path, get_git_toplevel
@@ -1583,13 +1583,14 @@ def _writable_root_approvals(args: Any) -> list[str]:
     ]
 
 
-def _dispatch_hermes_handoff(
+def _dispatch_backend_handoff(
     *,
     args: Any,
     packet: PreparedHandoffPacket,
     manifest: dict[str, Any],
     runner_record: dict[str, Any],
     request_payload: dict[str, Any],
+    backend_module: Any = hermes_opensandbox,
 ) -> dict[str, Any]:
     runner_id = str(runner_record.get("runner_id") or "").strip()
     if not runner_id:
@@ -1606,14 +1607,14 @@ def _dispatch_hermes_handoff(
         first = manifest_repos[0]
         if isinstance(first, dict):
             readable_root = str(first.get("path") or "").strip() or None
-    selection = hermes_opensandbox.build_selection(
+    selection = backend_module.build_selection(
         runner_id=runner_id,
         requested_capabilities=_capability_approvals(args),
         approve_writable_roots=_writable_root_approvals(args),
         timeout_seconds=timeout_seconds,
         readable_root=readable_root,
     )
-    return hermes_opensandbox.run(
+    return backend_module.run(
         manifest=manifest,
         goal=str(request_payload.get("goal") or packet.payload.text),
         request_id=str(request_payload.get("request_id") or packet.handoff_id),
@@ -1622,6 +1623,12 @@ def _dispatch_hermes_handoff(
         provider=_optional_text(request_payload.get("provider")),
         model=_optional_text(request_payload.get("model")),
     )
+
+
+# Backwards-compatible alias (Hermes was the only dispatch backend before
+# the Claude Code runner landed).
+def _dispatch_hermes_handoff(**kwargs: Any) -> dict[str, Any]:
+    return _dispatch_backend_handoff(**kwargs, backend_module=hermes_opensandbox)
 
 
 def _execute_agent_from_handoff(
@@ -1682,16 +1689,23 @@ def _execute_agent_from_handoff(
         else:
             runner_record = _load_runner_record(runner_id)
             backend = hermes_opensandbox.runner_backend_type(runner_record)
-            if backend != hermes_opensandbox.BACKEND_TYPE:
+            dispatch_backends = {
+                hermes_opensandbox.BACKEND_TYPE: hermes_opensandbox,
+                claude_code.BACKEND_TYPE: claude_code,
+            }
+            backend_module = dispatch_backends.get(backend)
+            if backend_module is None:
                 raise ValueError(
-                    f"selected runner {runner_id!r} does not provide dispatch backend {hermes_opensandbox.BACKEND_TYPE}"
+                    f"selected runner {runner_id!r} does not provide a supported dispatch backend "
+                    f"({', '.join(sorted(dispatch_backends))}); found {backend!r}"
                 )
-            result_payload = _dispatch_hermes_handoff(
+            result_payload = _dispatch_backend_handoff(
                 args=args,
                 packet=packet,
                 manifest=manifest,
                 runner_record=runner_record,
                 request_payload=request_payload,
+                backend_module=backend_module,
             )
     except Exception as exc:
         completed_at = _now_iso()

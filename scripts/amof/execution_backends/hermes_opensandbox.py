@@ -976,14 +976,16 @@ def _build_prompt(
     *,
     read_only_replan: bool = False,
     proposal_replan: bool = False,
+    agent_label: str = "Hermes",
+    backend_name: str = BACKEND_TYPE,
 ) -> str:
     proposal_requested = (
         _goal_requests_write_scope_proposal(goal) and not selection.writable_roots
     )
     lines = [
-        "You are executing as Hermes under AMOF authority.",
+        f"You are executing as {agent_label} under AMOF authority.",
         f"AMOF runner_id: {selection.runner_id}",
-        f"AMOF backend: {BACKEND_TYPE}",
+        f"AMOF backend: {backend_name}",
         f"Workspace root: {workspace}",
         f"Approved capabilities: {', '.join(selection.capabilities)}",
         "Denied: Kubernetes mutation, deployment, secrets, unrestricted network, push, promotion, tags, releases.",

@@ -16,7 +16,7 @@ import yaml
 
 from ..app_config import load_contexts, resolve_active_context_name
 from ..app_paths import get_app_paths, runs_dir
-from ..execution_backends import hermes_opensandbox
+from ..execution_backends import claude_code, hermes_opensandbox
 from ..orchestrator.events import EventLog
 from .intake import IntakeCliError, _is_read_only_intake, _validate_packet
 
@@ -51,9 +51,13 @@ RUNNER_STATUS_ALLOWED = {
 RUNNER_ELIGIBLE_STATUSES = {"available", "registered", "ready"}
 ALLOWED_MUTATION_MODES = {"read_only", "bounded_worktree"}
 REQUIRED_MATCH_CAPABILITIES = {"intake.validate", "intake.plan"}
-SUPPORTED_TEMPLATE_KINDS = ("local-planning", "hermes-opensandbox")
+SUPPORTED_TEMPLATE_KINDS = ("local-planning", "hermes-opensandbox", "claude-code")
 LOCAL_FORENSIC_TIMEOUT_SECONDS = 15.0
-SUPPORTED_BACKENDS = {"planning_only", hermes_opensandbox.BACKEND_TYPE}
+SUPPORTED_BACKENDS = {
+    "planning_only",
+    hermes_opensandbox.BACKEND_TYPE,
+    claude_code.BACKEND_TYPE,
+}
 HERMES_ALLOWED_EXECUTION_CAPABILITIES = {"read", "bounded_write", "shell_limited", "focused_tests"}
 HERMES_DENIED_CAPABILITIES = {
     "kubernetes",
@@ -264,10 +268,10 @@ def _validate_backend_payload(payload: dict[str, Any], *, mutation_modes: list[s
                 f"planning-only runners may include read_only mutation mode only; found: {', '.join(sorted(set(unsupported_modes)))}"
             )
         return
-    if backend == hermes_opensandbox.BACKEND_TYPE:
+    if backend in {hermes_opensandbox.BACKEND_TYPE, claude_code.BACKEND_TYPE}:
         dangerous = sorted({item for item in capabilities if item in HERMES_DENIED_CAPABILITIES})
         if dangerous:
-            raise RunnerCliError(f"Hermes backend does not support dangerous capabilities: {', '.join(dangerous)}")
+            raise RunnerCliError(f"{backend} backend does not support dangerous capabilities: {', '.join(dangerous)}")
         declared_execution_caps = [
             item.removeprefix("capability.")
             for item in capabilities
@@ -278,12 +282,12 @@ def _validate_backend_payload(payload: dict[str, Any], *, mutation_modes: list[s
         )
         if unknown_execution_caps:
             raise RunnerCliError(
-                f"Hermes backend supports only: {', '.join(sorted(HERMES_ALLOWED_EXECUTION_CAPABILITIES))}; found: {', '.join(unknown_execution_caps)}"
+                f"{backend} backend supports only: {', '.join(sorted(HERMES_ALLOWED_EXECUTION_CAPABILITIES))}; found: {', '.join(unknown_execution_caps)}"
             )
         if "bounded_worktree" in mutation_modes:
             authority = payload.get("authority")
             if not isinstance(authority, dict) or authority.get("writable_roots_required") is not True:
-                raise RunnerCliError("Hermes bounded_worktree runners must set authority.writable_roots_required: true")
+                raise RunnerCliError(f"{backend} bounded_worktree runners must set authority.writable_roots_required: true")
 
 
 def _validate_context(name: str) -> str:
@@ -386,6 +390,60 @@ def _template_payload(kind: str) -> dict[str, Any]:
             "trust_level": "local",
             "registration_source": "amof.runner.template.hermes-opensandbox",
             "endpoint_ref": "hermes-local",
+            "execution": {
+                "mode": "ticket_write",
+                "max_runtime_seconds": 2700,
+            },
+            "authority": {
+                "mutation": "bounded_worktree",
+                "writable_roots_required": True,
+                "commit": "denied",
+                "push": "denied",
+                "promote": "denied",
+                "deploy": "denied",
+            },
+            "evidence": {
+                "canonical_result_required": True,
+                "event_log_required": True,
+            },
+        }
+    if kind == "claude-code":
+        return {
+            "version": "1.0.0",
+            "runner_id": "claude-code-ticket-write",
+            "name": "Claude Code CLI Ticket Write",
+            "context": "local",
+            "status": "available",
+            "backend": claude_code.BACKEND_TYPE,
+            "backend_contract_version": claude_code.BACKEND_CONTRACT_VERSION,
+            "runtime_contract": claude_code.RUNTIME_CONTRACT,
+            "isolation_model": claude_code.ISOLATION_MODEL,
+            "capabilities": [
+                "intake.validate",
+                "intake.plan",
+                "execution.scan_report",
+                "read",
+                "bounded_write",
+                "shell_limited",
+                "focused_tests",
+            ],
+            "supported_task_kinds": [
+                "other",
+                "documentation",
+            ],
+            "allowed_mutation_modes": [
+                "read_only",
+                "bounded_worktree",
+            ],
+            "max_concurrency": 1,
+            "labels": [
+                "local",
+                "claude-code",
+                "anthropic",
+            ],
+            "trust_level": "local",
+            "registration_source": "amof.runner.template.claude-code",
+            "endpoint_ref": "claude-code-local",
             "execution": {
                 "mode": "ticket_write",
                 "max_runtime_seconds": 2700,
@@ -526,14 +584,22 @@ def _cmd_register(args: argparse.Namespace) -> int:
         print(json.dumps(record, indent=2))
     else:
         backend = str(record.get("backend") or "planning_only")
-        dispatch = "yes" if backend == hermes_opensandbox.BACKEND_TYPE and hermes_opensandbox.runtime_health()["dispatch_available"] else "no"
+        backend_module = (
+            claude_code if backend == claude_code.BACKEND_TYPE else hermes_opensandbox
+        )
+        dispatch = (
+            "yes"
+            if backend in {hermes_opensandbox.BACKEND_TYPE, claude_code.BACKEND_TYPE}
+            and backend_module.runtime_health()["dispatch_available"]
+            else "no"
+        )
         suffix = (
             "planning_only=yes no_dispatch=yes"
             if backend == "planning_only"
             else (
                 f"backend={backend} "
-                f"backend_contract_version={hermes_opensandbox.BACKEND_CONTRACT_VERSION} "
-                f"runtime_contract={hermes_opensandbox.RUNTIME_CONTRACT} "
+                f"backend_contract_version={backend_module.BACKEND_CONTRACT_VERSION} "
+                f"runtime_contract={backend_module.RUNTIME_CONTRACT} "
                 f"dispatch_available={dispatch}"
             )
         )
@@ -610,6 +676,8 @@ def _doctor_backend_records() -> list[dict[str, Any]]:
         backend = hermes_opensandbox.runner_backend_type(record)
         if backend == hermes_opensandbox.BACKEND_TYPE:
             records.append(hermes_opensandbox.doctor_record(record))
+        elif backend == claude_code.BACKEND_TYPE:
+            records.append(claude_code.doctor_record(record))
         else:
             records.append(
                 {
