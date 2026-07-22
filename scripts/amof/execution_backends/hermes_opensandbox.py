@@ -50,6 +50,29 @@ DANGEROUS_CAPABILITIES = {
     "tags",
     "releases",
 }
+WRITE_SCOPE_PROPOSAL_START = "AMOF_WRITE_SCOPE_PROPOSAL_JSON_START"
+WRITE_SCOPE_PROPOSAL_END = "AMOF_WRITE_SCOPE_PROPOSAL_JSON_END"
+WRITE_SCOPE_PROPOSAL_FIELDS = (
+    "target_id",
+    "base_sha",
+    "allowed_roots",
+    "denied_roots",
+    "reason",
+    "expected_checks",
+    "docs_only",
+    "source_mutation",
+)
+WRITE_SCOPE_STRUCTURED_FIELDS = (
+    "scope_id",
+    "title",
+    "mutation_mode",
+    "target_repo",
+    "intent",
+    "forbidden_actions",
+    "risk",
+    "rationale",
+    "source_evidence_refs",
+)
 
 
 class HermesBackendError(RuntimeError):
@@ -99,7 +122,9 @@ def _normalize_remote_ial_base_url(value: str) -> str:
     normalized = str(value or "").strip().rstrip("/")
     parsed = urlparse(normalized)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise HermesBackendError("Remote IAL base URL is not configured as a valid http(s) URL")
+        raise HermesBackendError(
+            "Remote IAL base URL is not configured as a valid http(s) URL"
+        )
     return normalized
 
 
@@ -110,14 +135,18 @@ def _remote_ial_timeout_seconds() -> float:
     try:
         value = float(raw)
     except ValueError as exc:
-        raise HermesBackendError("Remote IAL timeout must be a positive number") from exc
+        raise HermesBackendError(
+            "Remote IAL timeout must be a positive number"
+        ) from exc
     if value <= 0:
         raise HermesBackendError("Remote IAL timeout must be a positive number")
     return value
 
 
 def _remote_ial_config(model_override: str | None = None) -> RemoteIALConfig:
-    base_url = _normalize_remote_ial_base_url(str(os.environ.get("AMOF_REMOTE_IAL_BASE_URL") or ""))
+    base_url = _normalize_remote_ial_base_url(
+        str(os.environ.get("AMOF_REMOTE_IAL_BASE_URL") or "")
+    )
     api_key = str(os.environ.get("AMOF_REMOTE_IAL_API_KEY") or "").strip()
     if not api_key:
         raise HermesBackendError("Remote IAL API key is not configured")
@@ -174,7 +203,10 @@ def is_hermes_runner(record: dict[str, Any]) -> bool:
 
 
 def _requested_model(model_override: str | None = None) -> str:
-    return str(model_override or os.environ.get("AMOF_REMOTE_IAL_MODEL") or "").strip() or "unconfigured"
+    return (
+        str(model_override or os.environ.get("AMOF_REMOTE_IAL_MODEL") or "").strip()
+        or "unconfigured"
+    )
 
 
 def hermes_dispatch_command(*, model: str, prompt: str) -> list[str]:
@@ -192,7 +224,9 @@ def hermes_dispatch_command(*, model: str, prompt: str) -> list[str]:
 
 def _probe_hermes_cli_contract(model: str) -> dict[str, Any]:
     executable = hermes_executable()
-    dispatch_preview = hermes_dispatch_command(model=model, prompt="<amof-contract-probe>")
+    dispatch_preview = hermes_dispatch_command(
+        model=model, prompt="<amof-contract-probe>"
+    )
     if not executable.is_file():
         return {
             "status": "unavailable",
@@ -247,8 +281,12 @@ def runtime_health() -> dict[str, Any]:
         "isolation_model": ISOLATION_MODEL,
         "future_isolation_models": list(FUTURE_ISOLATION_MODELS),
         "dispatch_available": False,
-        "runtime_health": "ready" if dispatch_probe["status"] == "ready" else "unavailable",
-        "hermes_runtime": "ready" if dispatch_probe["status"] == "ready" else "unavailable",
+        "runtime_health": "ready"
+        if dispatch_probe["status"] == "ready"
+        else "unavailable",
+        "hermes_runtime": "ready"
+        if dispatch_probe["status"] == "ready"
+        else "unavailable",
         "inference_transport": "remote_ial",
         "inference_health": "blocked",
         "requested_provider": REMOTE_IAL_PROVIDER,
@@ -266,8 +304,12 @@ def runtime_health() -> dict[str, Any]:
             "hermes_executable": str(hermes),
             "hermes_runtime_root": str(hermes_runtime_root()),
             "dispatch_probe": dict(dispatch_probe),
-            "runner_source_sha": str((receipt.get("upstream") or {}).get("commit") or ""),
-            "runner_version": str((receipt.get("upstream") or {}).get("package_version") or ""),
+            "runner_source_sha": str(
+                (receipt.get("upstream") or {}).get("commit") or ""
+            ),
+            "runner_version": str(
+                (receipt.get("upstream") or {}).get("package_version") or ""
+            ),
         },
         "supported_capabilities": list(SUPPORTED_CAPABILITIES),
         "writable_root_required": True,
@@ -283,7 +325,9 @@ def runtime_health() -> dict[str, Any]:
                 and remote_health.get("inference_health") == "ready",
                 "inference_health": remote_health.get("inference_health", "blocked"),
                 "requested_model": config.model,
-                "effective_model": str(remote_health.get("selected_model") or "unverified"),
+                "effective_model": str(
+                    remote_health.get("selected_model") or "unverified"
+                ),
                 "effective_provider": REMOTE_IAL_PROVIDER
                 if remote_health.get("inference_health") == "ready"
                 else "unverified",
@@ -298,8 +342,14 @@ def runtime_health() -> dict[str, Any]:
 
 def doctor_record(record: dict[str, Any]) -> dict[str, Any]:
     health = runtime_health()
-    capabilities = [str(item) for item in record.get("capabilities", []) if str(item).strip()]
-    mutation_modes = [str(item) for item in record.get("allowed_mutation_modes", []) if str(item).strip()]
+    capabilities = [
+        str(item) for item in record.get("capabilities", []) if str(item).strip()
+    ]
+    mutation_modes = [
+        str(item)
+        for item in record.get("allowed_mutation_modes", [])
+        if str(item).strip()
+    ]
     return {
         "runner_id": str(record.get("runner_id") or ""),
         "backend_type": runner_backend_type(record),
@@ -341,7 +391,9 @@ def _append_event(path: Path, event: str, **payload: Any) -> None:
 
 
 def _write_runtime_log(path: Path, message: str) -> None:
-    path.write_text(message if message.endswith("\n") else f"{message}\n", encoding="utf-8")
+    path.write_text(
+        message if message.endswith("\n") else f"{message}\n", encoding="utf-8"
+    )
 
 
 def _write_terminal_result(
@@ -358,11 +410,16 @@ def _write_terminal_result(
     result.setdefault("completed_at", _now_iso())
     result.setdefault("result_path", str(result_path))
     result.setdefault("runtime_log_unavailable_reason", None)
-    result.setdefault("failure_classification", reason if result.get("status") != "completed" else None)
+    result.setdefault(
+        "failure_classification",
+        reason if result.get("status") != "completed" else None,
+    )
     if not runtime_log_path.exists():
         _write_runtime_log(
             runtime_log_path,
-            result.get("final_text") or result.get("stop_reason") or "terminal result written",
+            result.get("final_text")
+            or result.get("stop_reason")
+            or "terminal result written",
         )
     result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     _append_event(
@@ -414,7 +471,9 @@ def _resolve_roots(values: list[str]) -> list[Path]:
             continue
         path = Path(text).expanduser().resolve(strict=False)
         if not path.is_dir():
-            raise HermesBackendError(f"approved writable root is not a directory: {text}")
+            raise HermesBackendError(
+                f"approved writable root is not a directory: {text}"
+            )
         roots.append(path)
     return roots
 
@@ -422,7 +481,9 @@ def _resolve_roots(values: list[str]) -> list[Path]:
 def _assert_no_dangerous_caps(capabilities: list[str]) -> None:
     dangerous = sorted({cap for cap in capabilities if cap in DANGEROUS_CAPABILITIES})
     if dangerous:
-        raise HermesBackendError(f"dangerous capabilities are not available for Hermes backend: {', '.join(dangerous)}")
+        raise HermesBackendError(
+            f"dangerous capabilities are not available for Hermes backend: {', '.join(dangerous)}"
+        )
 
 
 def build_selection(
@@ -433,16 +494,25 @@ def build_selection(
     timeout_seconds: int,
     readable_root: str | None,
 ) -> HermesBackendSelection:
-    normalized_caps = [str(item).strip() for item in requested_capabilities if str(item).strip()]
+    normalized_caps = [
+        str(item).strip() for item in requested_capabilities if str(item).strip()
+    ]
     _assert_no_dangerous_caps(normalized_caps)
     writable_roots = [str(path) for path in _resolve_roots(approve_writable_roots)]
     effective_caps = ["read"]
     if writable_roots:
         if "bounded_write" not in normalized_caps:
-            raise HermesBackendError("bounded_write capability approval is required when writable roots are approved")
+            raise HermesBackendError(
+                "bounded_write capability approval is required when writable roots are approved"
+            )
         effective_caps.extend(["bounded_write", "shell_limited", "focused_tests"])
-    elif any(cap in {"bounded_write", "shell_limited", "focused_tests"} for cap in normalized_caps):
-        raise HermesBackendError("bounded write/test capabilities require at least one explicit writable root")
+    elif any(
+        cap in {"bounded_write", "shell_limited", "focused_tests"}
+        for cap in normalized_caps
+    ):
+        raise HermesBackendError(
+            "bounded write/test capabilities require at least one explicit writable root"
+        )
     return HermesBackendSelection(
         runner_id=runner_id,
         capabilities=effective_caps,
@@ -463,13 +533,17 @@ def _workspace_for(selection: HermesBackendSelection, manifest: dict[str, Any]) 
     if isinstance(repos, list):
         for item in repos:
             if isinstance(item, dict):
-                path = Path(str(item.get("path") or "")).expanduser().resolve(strict=False)
+                path = (
+                    Path(str(item.get("path") or "")).expanduser().resolve(strict=False)
+                )
                 if path.is_dir():
                     return path
     return Path.cwd().resolve(strict=False)
 
 
-def _extract_remote_ial_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+def _extract_remote_ial_messages(
+    messages: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
     system_parts: list[str] = []
     remote_messages: list[dict[str, Any]] = []
     for item in messages:
@@ -482,16 +556,25 @@ def _extract_remote_ial_messages(messages: list[dict[str, Any]]) -> tuple[str, l
                 system_parts.append(str(content))
             continue
         if role == "assistant":
-            message: dict[str, Any] = {"role": "assistant", "content": item.get("content")}
+            message: dict[str, Any] = {
+                "role": "assistant",
+                "content": item.get("content"),
+            }
             tool_calls = []
             for tool_call in item.get("tool_calls") or []:
                 if not isinstance(tool_call, dict):
                     continue
-                function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+                function = (
+                    tool_call.get("function")
+                    if isinstance(tool_call.get("function"), dict)
+                    else {}
+                )
                 name = str(function.get("name") or "").strip()
                 raw_args = function.get("arguments")
                 try:
-                    arguments = json.loads(raw_args) if isinstance(raw_args, str) else {}
+                    arguments = (
+                        json.loads(raw_args) if isinstance(raw_args, str) else {}
+                    )
                 except json.JSONDecodeError:
                     arguments = {}
                 if name:
@@ -499,7 +582,9 @@ def _extract_remote_ial_messages(messages: list[dict[str, Any]]) -> tuple[str, l
                         {
                             "id": str(tool_call.get("id") or ""),
                             "name": name,
-                            "arguments": arguments if isinstance(arguments, dict) else {},
+                            "arguments": arguments
+                            if isinstance(arguments, dict)
+                            else {},
                         }
                     )
             if tool_calls:
@@ -571,7 +656,13 @@ class _RemoteIALOpenAIAdapter:
 
             def do_GET(self) -> None:
                 if self.path == "/v1/models":
-                    self._json(200, {"object": "list", "data": [{"id": adapter.config.model, "object": "model"}]})
+                    self._json(
+                        200,
+                        {
+                            "object": "list",
+                            "data": [{"id": adapter.config.model, "object": "model"}],
+                        },
+                    )
                     return
                 self._json(404, {"error": {"message": "not found"}})
 
@@ -585,7 +676,9 @@ class _RemoteIALOpenAIAdapter:
                 except json.JSONDecodeError:
                     self._json(400, {"error": {"message": "invalid json"}})
                     return
-                system, messages = _extract_remote_ial_messages(list(body.get("messages") or []))
+                system, messages = _extract_remote_ial_messages(
+                    list(body.get("messages") or [])
+                )
                 payload = {
                     "system": system,
                     "messages": messages,
@@ -601,37 +694,60 @@ class _RemoteIALOpenAIAdapter:
                     method="POST",
                 )
                 try:
-                    with urlopen(request, timeout=adapter.config.timeout_seconds) as response:
+                    with urlopen(
+                        request, timeout=adapter.config.timeout_seconds
+                    ) as response:
                         remote = json.loads(response.read().decode("utf-8") or "{}")
                 except HTTPError as exc:
-                    self._json(exc.code, {"error": {"message": "remote IAL request failed"}})
+                    self._json(
+                        exc.code, {"error": {"message": "remote IAL request failed"}}
+                    )
                     return
                 except (OSError, URLError, ValueError):
                     self._json(502, {"error": {"message": "remote IAL request failed"}})
                     return
                 tool_calls = [
                     _remote_ial_tool_to_openai(item, index)
-                    for index, item in enumerate(remote.get("tool_calls") or [], start=1)
+                    for index, item in enumerate(
+                        remote.get("tool_calls") or [], start=1
+                    )
                     if isinstance(item, dict)
                 ]
-                message: dict[str, Any] = {"role": "assistant", "content": remote.get("text") or ""}
+                message: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": remote.get("text") or "",
+                }
                 if tool_calls:
                     message["tool_calls"] = tool_calls
                 choice = {
                     "index": 0,
                     "message": message,
-                    "finish_reason": _finish_reason(remote.get("stop_reason"), tool_calls),
+                    "finish_reason": _finish_reason(
+                        remote.get("stop_reason"), tool_calls
+                    ),
                 }
                 response_payload = {
-                    "id": str(remote.get("request_id") or f"chatcmpl-{int(time.time())}"),
+                    "id": str(
+                        remote.get("request_id") or f"chatcmpl-{int(time.time())}"
+                    ),
                     "object": "chat.completion",
                     "created": int(time.time()),
-                    "model": str(remote.get("model") or remote.get("upstream_model") or adapter.config.model),
+                    "model": str(
+                        remote.get("model")
+                        or remote.get("upstream_model")
+                        or adapter.config.model
+                    ),
                     "choices": [choice],
                     "usage": {
-                        "prompt_tokens": int((remote.get("tokens") or {}).get("input") or 0),
-                        "completion_tokens": int((remote.get("tokens") or {}).get("output") or 0),
-                        "total_tokens": int((remote.get("tokens") or {}).get("input") or 0)
+                        "prompt_tokens": int(
+                            (remote.get("tokens") or {}).get("input") or 0
+                        ),
+                        "completion_tokens": int(
+                            (remote.get("tokens") or {}).get("output") or 0
+                        ),
+                        "total_tokens": int(
+                            (remote.get("tokens") or {}).get("input") or 0
+                        )
                         + int((remote.get("tokens") or {}).get("output") or 0),
                     },
                 }
@@ -645,14 +761,22 @@ class _RemoteIALOpenAIAdapter:
                         "object": "chat.completion.chunk",
                         "created": response_payload["created"],
                         "model": response_payload["model"],
-                        "choices": [{"index": 0, "delta": message, "finish_reason": None}],
+                        "choices": [
+                            {"index": 0, "delta": message, "finish_reason": None}
+                        ],
                     }
                     final = {
                         "id": response_payload["id"],
                         "object": "chat.completion.chunk",
                         "created": response_payload["created"],
                         "model": response_payload["model"],
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": choice["finish_reason"]}],
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": choice["finish_reason"],
+                            }
+                        ],
                     }
                     self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
                     self.wfile.write(f"data: {json.dumps(final)}\n\n".encode("utf-8"))
@@ -677,7 +801,170 @@ class _RemoteIALOpenAIAdapter:
             self.thread.join(timeout=2)
 
 
-def _build_prompt(goal: str, selection: HermesBackendSelection, workspace: Path) -> str:
+def _goal_requests_write_scope_proposal(goal: str) -> bool:
+    lowered = goal.lower()
+    return "write_scope_proposal" in lowered or "write scope proposal" in lowered
+
+
+def _primary_manifest_target(manifest: dict[str, Any]) -> dict[str, str]:
+    repos = manifest.get("repos")
+    if not isinstance(repos, list) or not repos:
+        return {}
+    first = repos[0]
+    if not isinstance(first, dict):
+        return {}
+    base_sha = str(first.get("sha") or first.get("branch") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", base_sha):
+        base_sha = ""
+    return {
+        "target_id": str(first.get("target_id") or "").strip(),
+        "base_sha": base_sha,
+        "repository_url": str(first.get("url") or "").strip(),
+        "workspace_path": str(first.get("path") or "").strip(),
+    }
+
+
+def _stable_scope_id(
+    title: str, target_id: str, base_sha: str, allowed_roots: list[str]
+) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "bounded-write-scope"
+    roots_key = "-".join(
+        re.sub(r"[^a-z0-9]+", "-", item.lower()).strip("-")
+        for item in allowed_roots[:2]
+    )
+    roots_key = roots_key[:48].strip("-")
+    tail = base_sha[:8]
+    return "-".join(part for part in [slug[:48].strip("-"), roots_key, tail] if part)
+
+
+def _target_repo_from_target_id(target_id: str) -> str:
+    parts = [item for item in target_id.split(":") if item]
+    if len(parts) >= 3:
+        owner = parts[-2].strip()
+        repo = parts[-1].strip()
+        if owner and repo:
+            return f"{owner}/{repo}"
+    return "unknown/unknown"
+
+
+def _normalize_write_scope_proposal(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    proposal = dict(value)
+    required = set(WRITE_SCOPE_PROPOSAL_FIELDS)
+    if not required.issubset(proposal):
+        return None
+    target_id = str(proposal.get("target_id") or "").strip()
+    base_sha = str(proposal.get("base_sha") or "").strip().lower()
+    reason = str(proposal.get("reason") or "").strip()
+    if not target_id or not re.fullmatch(r"[0-9a-f]{40}", base_sha) or not reason:
+        return None
+
+    def _string_list(name: str) -> list[str] | None:
+        raw = proposal.get(name)
+        if not isinstance(raw, list):
+            return None
+        values = [str(item).strip() for item in raw]
+        if any(not item for item in values):
+            return None
+        return values
+
+    allowed_roots = _string_list("allowed_roots")
+    denied_roots = _string_list("denied_roots")
+    expected_checks = _string_list("expected_checks")
+    docs_only = proposal.get("docs_only")
+    source_mutation = proposal.get("source_mutation")
+    if (
+        allowed_roots is None
+        or denied_roots is None
+        or expected_checks is None
+        or not isinstance(docs_only, bool)
+        or not isinstance(source_mutation, bool)
+    ):
+        return None
+    title = str(proposal.get("title") or "").strip() or "Bounded write scope proposal"
+    scope_id = str(proposal.get("scope_id") or "").strip() or _stable_scope_id(
+        title, target_id, base_sha, allowed_roots
+    )
+    mutation_mode = str(proposal.get("mutation_mode") or "").strip() or (
+        "docs_write" if docs_only else "repo_write" if source_mutation else "read_only"
+    )
+    target_repo = str(
+        proposal.get("target_repo") or ""
+    ).strip() or _target_repo_from_target_id(target_id)
+    intent = str(proposal.get("intent") or reason).strip()
+    forbidden_actions = _string_list("forbidden_actions") or []
+    risk = str(proposal.get("risk") or "").strip() or (
+        "low" if docs_only else "moderate" if source_mutation else "low"
+    )
+    rationale = str(proposal.get("rationale") or reason).strip()
+    source_evidence_refs = _string_list("source_evidence_refs") or []
+    allowed_files = _string_list("allowed_files") or list(allowed_roots)
+    allowed_paths = _string_list("allowed_paths") or list(allowed_roots)
+    proposal["target_id"] = target_id
+    proposal["base_sha"] = base_sha
+    proposal["reason"] = reason
+    proposal["allowed_roots"] = allowed_roots
+    proposal["denied_roots"] = denied_roots
+    proposal["expected_checks"] = expected_checks
+    proposal["docs_only"] = docs_only
+    proposal["source_mutation"] = source_mutation
+    proposal["scope_id"] = scope_id
+    proposal["title"] = title
+    proposal["mutation_mode"] = mutation_mode
+    proposal["target_repo"] = target_repo
+    proposal["intent"] = intent
+    proposal["forbidden_actions"] = forbidden_actions
+    proposal["risk"] = risk
+    proposal["rationale"] = rationale
+    proposal["source_evidence_refs"] = source_evidence_refs
+    proposal["allowed_files"] = allowed_files
+    proposal["allowed_paths"] = allowed_paths
+    return proposal
+
+
+def _normalize_write_scope_proposals(value: Any) -> list[dict[str, Any]]:
+    items = value if isinstance(value, list) else [value]
+    proposals: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        proposal = _normalize_write_scope_proposal(item)
+        if proposal is None:
+            continue
+        scope_id = str(proposal.get("scope_id") or "").strip()
+        if scope_id and scope_id in seen:
+            continue
+        if scope_id:
+            seen.add(scope_id)
+        proposals.append(proposal)
+    return proposals
+
+
+def _extract_write_scope_proposal_output(
+    text: str,
+) -> tuple[list[dict[str, Any]], str]:
+    pattern = re.compile(
+        rf"{WRITE_SCOPE_PROPOSAL_START}\s*(.*?)\s*{WRITE_SCOPE_PROPOSAL_END}",
+        re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        return [], text.strip()
+    try:
+        parsed = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        parsed = None
+    proposals = _normalize_write_scope_proposals(parsed)
+    summary = (text[: match.start()] + text[match.end() :]).strip()
+    return proposals, summary
+
+
+def _build_prompt(
+    goal: str,
+    selection: HermesBackendSelection,
+    workspace: Path,
+    manifest: dict[str, Any],
+) -> str:
     lines = [
         "You are executing as Hermes under AMOF authority.",
         f"AMOF runner_id: {selection.runner_id}",
@@ -696,9 +983,37 @@ def _build_prompt(goal: str, selection: HermesBackendSelection, workspace: Path)
     if selection.writable_roots:
         roots = ", ".join(selection.writable_roots)
         lines.append(f"Writable roots: {roots}")
-        lines.append("Modify files only inside the listed writable roots. Do not commit, push, promote, deploy, tag, or release.")
+        lines.append(
+            "Modify files only inside the listed writable roots. Do not commit, push, promote, deploy, tag, or release."
+        )
     else:
         lines.append("Read-only run: do not modify files.")
+    if _goal_requests_write_scope_proposal(goal):
+        target = _primary_manifest_target(manifest)
+        lines.extend(
+            [
+                "",
+                "Structured write-scope contract:",
+                "If the mission asks for structured write_scope_proposals, emit exactly one JSON array between these markers before any human-readable summary.",
+                WRITE_SCOPE_PROPOSAL_START,
+                '[{"scope_id":"","title":"","mutation_mode":"repo_write","target_repo":"","intent":"","allowed_files":[],"allowed_paths":[],"forbidden_actions":[],"risk":"","rationale":"","source_evidence_refs":[],"target_id":"","base_sha":"","allowed_roots":[],"denied_roots":[],"reason":"","expected_checks":[],"docs_only":false,"source_mutation":false}]',
+                WRITE_SCOPE_PROPOSAL_END,
+                "Each array item must include scope_id, title, mutation_mode, target_repo, intent, allowed_files or allowed_paths, forbidden_actions, risk, rationale, source_evidence_refs, target_id, base_sha, allowed_roots, denied_roots, reason, expected_checks, docs_only, and source_mutation.",
+                "Keep allowed_files, allowed_paths, allowed_roots, and denied_roots repository-relative.",
+                "If there is exactly one justified bounded follow-up, still emit an array with one item. If none are justified, omit the JSON block and emit only the Markdown summary.",
+                "After the JSON block, emit a Markdown summary for humans. Do not restate the JSON block in prose.",
+            ]
+        )
+        if target:
+            lines.extend(
+                [
+                    "Canonical proposal target context:",
+                    f"- target_id: {target.get('target_id') or 'unknown'}",
+                    f"- base_sha: {target.get('base_sha') or 'unknown'}",
+                    f"- repository_url: {target.get('repository_url') or 'unknown'}",
+                    f"- workspace_path: {target.get('workspace_path') or workspace}",
+                ]
+            )
     lines.extend(["", "Mission:", goal])
     return "\n".join(lines)
 
@@ -730,7 +1045,9 @@ def _changed_paths_delta(before: list[str], after: list[str]) -> list[str]:
     return sorted(after_set - before_set)
 
 
-def _write_run_hermes_config(run_dir: Path, adapter: _RemoteIALOpenAIAdapter, model: str) -> Path:
+def _write_run_hermes_config(
+    run_dir: Path, adapter: _RemoteIALOpenAIAdapter, model: str
+) -> Path:
     hermes_home = run_dir / "hermes-home"
     hermes_home.mkdir(mode=0o700, parents=True, exist_ok=True)
     config_path = hermes_home / "config.yaml"
@@ -756,13 +1073,17 @@ def _write_run_hermes_config(run_dir: Path, adapter: _RemoteIALOpenAIAdapter, mo
     return hermes_home
 
 
-def _base_env(adapter: _RemoteIALOpenAIAdapter | None = None, run_dir: Path | None = None) -> dict[str, str]:
+def _base_env(
+    adapter: _RemoteIALOpenAIAdapter | None = None, run_dir: Path | None = None
+) -> dict[str, str]:
     env = dict(os.environ)
     state_home = hermes_runtime_root() / "state" / "home"
     if state_home.is_dir():
         env["HOME"] = str(state_home)
     if adapter is not None and run_dir is not None:
-        env["HERMES_HOME"] = str(_write_run_hermes_config(run_dir, adapter, adapter.config.model))
+        env["HERMES_HOME"] = str(
+            _write_run_hermes_config(run_dir, adapter, adapter.config.model)
+        )
     else:
         env.setdefault("HERMES_HOME", str(state_home / ".hermes"))
     env["HERMES_QUIET"] = "1"
@@ -810,7 +1131,9 @@ def run(
         result_path=result_path,
         status="running",
     )
-    dispatch_probe = dict(health.get("process_identity", {}).get("dispatch_probe") or {})
+    dispatch_probe = dict(
+        health.get("process_identity", {}).get("dispatch_probe") or {}
+    )
     if not dispatch_probe:
         dispatch_probe = _probe_hermes_cli_contract(_requested_model(model))
     _append_event(event_log_path, "hermes_dispatch_probe", **dispatch_probe)
@@ -832,11 +1155,15 @@ def run(
             selection=selection,
             health=health,
             dispatch_probe=dispatch_probe,
-            requested_model=str(model or os.environ.get("AMOF_REMOTE_IAL_MODEL") or "unconfigured"),
+            requested_model=str(
+                model or os.environ.get("AMOF_REMOTE_IAL_MODEL") or "unconfigured"
+            ),
             effective_model="unverified",
         )
         result["evidence_refs"]["inference_transport_error"] = type(exc).__name__
-        _append_event(event_log_path, "run_blocked", reason="inference_transport_unavailable")
+        _append_event(
+            event_log_path, "run_blocked", reason="inference_transport_unavailable"
+        )
         return _write_terminal_result(
             result_path=result_path,
             event_log_path=event_log_path,
@@ -863,7 +1190,9 @@ def run(
             requested_model=remote_ial.model,
             effective_model="unverified",
         )
-        _append_event(event_log_path, "run_blocked", reason="inference_transport_unavailable")
+        _append_event(
+            event_log_path, "run_blocked", reason="inference_transport_unavailable"
+        )
         return _write_terminal_result(
             result_path=result_path,
             event_log_path=event_log_path,
@@ -890,7 +1219,9 @@ def run(
             requested_model=remote_ial.model,
             effective_model="unverified",
         )
-        _append_event(event_log_path, "run_blocked", reason="direct_provider_override_rejected")
+        _append_event(
+            event_log_path, "run_blocked", reason="direct_provider_override_rejected"
+        )
         return _write_terminal_result(
             result_path=result_path,
             event_log_path=event_log_path,
@@ -944,7 +1275,9 @@ def run(
             requested_model=remote_ial.model,
             effective_model="unverified",
         )
-        result["evidence_refs"]["preexisting_changed_paths"] = list(preexisting_changed_paths)
+        result["evidence_refs"]["preexisting_changed_paths"] = list(
+            preexisting_changed_paths
+        )
         _append_event(
             event_log_path,
             "run_blocked",
@@ -960,7 +1293,7 @@ def run(
             started_at=started_at,
         )
 
-    prompt = _build_prompt(goal, selection, workspace)
+    prompt = _build_prompt(goal, selection, workspace, manifest)
     command = hermes_dispatch_command(model=remote_ial.model, prompt=prompt)
     (run_dir / "request.json").write_text(
         json.dumps(
@@ -1001,7 +1334,11 @@ def run(
             )
         stdout_path.write_text(completed.stdout or "", encoding="utf-8")
         stderr_path.write_text(completed.stderr or "", encoding="utf-8")
-        runtime_log_path.write_text((completed.stdout or "") + ("\n--- STDERR ---\n" + completed.stderr if completed.stderr else ""), encoding="utf-8")
+        runtime_log_path.write_text(
+            (completed.stdout or "")
+            + ("\n--- STDERR ---\n" + completed.stderr if completed.stderr else ""),
+            encoding="utf-8",
+        )
         exit_code = int(completed.returncode)
         if exit_code != 0:
             status = "failed"
@@ -1021,8 +1358,12 @@ def run(
         stderr_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
         _write_runtime_log(runtime_log_path, f"{type(exc).__name__}: {exc}")
 
-    task_findings = stdout_path.read_text(encoding="utf-8").strip()
+    raw_task_findings = stdout_path.read_text(encoding="utf-8").strip()
     runtime_detail = stderr_path.read_text(encoding="utf-8").strip()
+    write_scope_proposals, task_findings = _extract_write_scope_proposal_output(
+        raw_task_findings
+    )
+    write_scope_proposal = write_scope_proposals[0] if write_scope_proposals else None
     validation_status = _infer_validation_status(task_findings or runtime_detail)
     if status == "completed" and validation_status == "failed":
         status = "failed"
@@ -1059,6 +1400,8 @@ def run(
         validation_status=validation_status,
         requested_model=remote_ial.model,
         effective_model=remote_ial.model,
+        write_scope_proposal=write_scope_proposal,
+        write_scope_proposals=write_scope_proposals,
     )
     _write_terminal_result(
         result_path=result_path,
@@ -1097,6 +1440,8 @@ def _result_payload(
     requested_model: str = "unconfigured",
     effective_model: str = "unverified",
     task_findings: str | None = None,
+    write_scope_proposal: dict[str, Any] | None = None,
+    write_scope_proposals: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "result_kind": "agent_run_result",
@@ -1108,10 +1453,22 @@ def _result_payload(
         "stop_reason": stop_reason,
         "final_text": final_text,
         "task_findings": task_findings,
+        **(
+            {"write_scope_proposal": write_scope_proposal}
+            if write_scope_proposal is not None
+            else {}
+        ),
+        **(
+            {"write_scope_proposals": [dict(item) for item in write_scope_proposals]}
+            if write_scope_proposals
+            else {}
+        ),
         "runner_id": selection.runner_id,
         "backend": BACKEND_TYPE,
         "requested_provider": REMOTE_IAL_PROVIDER,
-        "effective_provider": REMOTE_IAL_PROVIDER if effective_model != "unverified" else "unverified",
+        "effective_provider": REMOTE_IAL_PROVIDER
+        if effective_model != "unverified"
+        else "unverified",
         "requested_model": requested_model,
         "effective_model": effective_model,
         "transport": "remote_ial",
@@ -1139,7 +1496,9 @@ def _result_payload(
             "dispatch_probe": dict(dispatch_probe),
             "inference": {
                 "requested_provider": REMOTE_IAL_PROVIDER,
-                "effective_provider": REMOTE_IAL_PROVIDER if effective_model != "unverified" else "unverified",
+                "effective_provider": REMOTE_IAL_PROVIDER
+                if effective_model != "unverified"
+                else "unverified",
                 "requested_model": requested_model,
                 "effective_model": effective_model,
                 "transport": "remote_ial",
@@ -1158,7 +1517,11 @@ def _runtime_summary_text(
     run_id: str,
     task_findings_available: bool,
 ) -> str:
-    findings_state = "task findings captured" if task_findings_available else "no task findings captured"
+    findings_state = (
+        "task findings captured"
+        if task_findings_available
+        else "no task findings captured"
+    )
     return (
         f"AMOF Hermes run {run_id} finished with status={status}, "
         f"stop_reason={stop_reason}; {findings_state}. "

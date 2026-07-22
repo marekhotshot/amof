@@ -227,7 +227,12 @@ def _write_packet(
         return handoff._write_packet(packet)
 
 
-def _write_runner_record(amof_home: Path, runner_id: str = "hermes-local-ticket-write", *, backend: str = "hermes_opensandbox") -> Path:
+def _write_runner_record(
+    amof_home: Path,
+    runner_id: str = "hermes-local-ticket-write",
+    *,
+    backend: str = "hermes_opensandbox",
+) -> Path:
     path = amof_home / "share" / "runners" / "registry" / f"{runner_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -238,7 +243,13 @@ def _write_runner_record(amof_home: Path, runner_id: str = "hermes-local-ticket-
                 "context": "local",
                 "status": "available",
                 "backend": backend,
-                "capabilities": ["intake.validate", "intake.plan", "execution.scan_report", "read", "bounded_write"],
+                "capabilities": [
+                    "intake.validate",
+                    "intake.plan",
+                    "execution.scan_report",
+                    "read",
+                    "bounded_write",
+                ],
                 "supported_task_kinds": ["other"],
                 "allowed_mutation_modes": ["read_only", "bounded_worktree"],
                 "max_concurrency": 1,
@@ -403,12 +414,21 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             _write_packet(amof_home)
             _write_runner_record(amof_home)
             with (
-                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
-                patch("amof.commands.handoff.hermes_opensandbox.run", side_effect=_fake_hermes),
-                patch("amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope") as builtin,
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.hermes_opensandbox.run",
+                    side_effect=_fake_hermes,
+                ),
+                patch(
+                    "amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope"
+                ) as builtin,
             ):
                 code, stdout, stderr = _run_execute(
-                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"), amof_home
+                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"),
+                    amof_home,
                 )
 
             receipt = json.loads(stdout)
@@ -420,21 +440,167 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             self.assertEqual(captured["request_id"], "handoff-test-001")
             self.assertIn("selected_execution_configuration", stderr)
 
-    def test_explicit_unsupported_runner_fails_closed_without_builtin_substitution(self) -> None:
+    def test_explicit_hermes_result_preserves_structured_write_scope_proposal(
+        self,
+    ) -> None:
+        def _fake_hermes(**kwargs: object) -> dict[str, object]:
+            selection = kwargs["selection"]
+            return {
+                "schema_version": 1,
+                "result_kind": "agent_run_result",
+                "contract_version": "agent-run-v1",
+                "status": "completed",
+                "session_id": "hermes-session-write-scope",
+                "exit_code": 0,
+                "stop_reason": "completed",
+                "final_text": "hermes ok",
+                "task_findings": "Documentation drift confirmed.",
+                "runner_id": selection.runner_id,
+                "backend": "hermes_opensandbox",
+                "plan_path": None,
+                "checkpoint_path": None,
+                "event_log_path": "/tmp/hermes-events.jsonl",
+                "runtime_log_path": "/tmp/hermes-runtime.log",
+                "journal_path": None,
+                "changed_paths": [],
+                "validation_summary": {"status": "passed"},
+                "write_scope_proposal": {
+                    "scope_id": "documentation-only-bounded-write-scope-docs-launch-readiness-simple-ai-shop-launch-readiness-md-67f8526b",
+                    "title": "Documentation-only bounded write scope",
+                    "mutation_mode": "docs_write",
+                    "target_repo": "marekhotshot/simple-ai-shop",
+                    "intent": "Update the launch-readiness report without changing application code.",
+                    "allowed_files": [
+                        "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+                    ],
+                    "allowed_paths": [
+                        "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+                    ],
+                    "forbidden_actions": [
+                        "deploy",
+                        "Kubernetes mutation",
+                        "DB migration",
+                        "secret access",
+                    ],
+                    "risk": "low",
+                    "rationale": "Documentation-only follow-up is safe and bounded.",
+                    "source_evidence_refs": [
+                        "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+                    ],
+                    "target_id": "github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",
+                    "base_sha": "67f8526b254d8839c025423b6bfda36895881160",
+                    "allowed_roots": [
+                        "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+                    ],
+                    "denied_roots": [],
+                    "reason": "Documentation-only follow-up is safe and bounded.",
+                    "expected_checks": ["git diff --check"],
+                    "docs_only": True,
+                    "source_mutation": True,
+                },
+                "write_scope_proposals": [
+                    {
+                        "scope_id": "documentation-only-bounded-write-scope-docs-launch-readiness-simple-ai-shop-launch-readiness-md-67f8526b",
+                        "title": "Documentation-only bounded write scope",
+                        "mutation_mode": "docs_write",
+                        "target_repo": "marekhotshot/simple-ai-shop",
+                        "intent": "Update the launch-readiness report without changing application code.",
+                        "allowed_files": [
+                            "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+                        ],
+                        "allowed_paths": [
+                            "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+                        ],
+                        "forbidden_actions": [
+                            "deploy",
+                            "Kubernetes mutation",
+                            "DB migration",
+                            "secret access",
+                        ],
+                        "risk": "low",
+                        "rationale": "Documentation-only follow-up is safe and bounded.",
+                        "source_evidence_refs": [
+                            "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+                        ],
+                        "target_id": "github_app:marekhotshot/simple-ai-shop:67f8526b254d8839c025423b6bfda36895881160",
+                        "base_sha": "67f8526b254d8839c025423b6bfda36895881160",
+                        "allowed_roots": [
+                            "docs/launch-readiness/simple-ai-shop-launch-readiness.md"
+                        ],
+                        "denied_roots": [],
+                        "reason": "Documentation-only follow-up is safe and bounded.",
+                        "expected_checks": ["git diff --check"],
+                        "docs_only": True,
+                        "source_mutation": True,
+                    }
+                ],
+                "approved_capabilities": list(selection.capabilities),
+                "effective_capabilities": list(selection.capabilities),
+                "evidence_refs": {},
+                "budget_summary": {"limit": None, "spent": 0.0, "remaining": None},
+            }
+
+        with TemporaryDirectory(
+            prefix="amof-handoff-hermes-write-scope-preserve-"
+        ) as td:
+            amof_home = Path(td)
+            _write_packet(amof_home)
+            _write_runner_record(amof_home)
+            with (
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.hermes_opensandbox.run",
+                    side_effect=_fake_hermes,
+                ),
+            ):
+                code, stdout, _stderr = _run_execute(
+                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"),
+                    amof_home,
+                )
+
+            receipt = json.loads(stdout)
+            result = json.loads(
+                Path(receipt["result_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(receipt["status"], "completed")
+            self.assertEqual(
+                result["write_scope_proposal"]["allowed_roots"],
+                ["docs/launch-readiness/simple-ai-shop-launch-readiness.md"],
+            )
+            self.assertEqual(
+                result["write_scope_proposals"][0]["scope_id"],
+                "documentation-only-bounded-write-scope-docs-launch-readiness-simple-ai-shop-launch-readiness-md-67f8526b",
+            )
+
+    def test_explicit_unsupported_runner_fails_closed_without_builtin_substitution(
+        self,
+    ) -> None:
         with TemporaryDirectory(prefix="amof-handoff-runner-fail-closed-") as td:
             amof_home = Path(td)
             _write_packet(amof_home)
             _write_runner_record(amof_home, backend="planning_only")
             with (
-                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
-                patch("amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope") as builtin,
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope"
+                ) as builtin,
             ):
                 code, stdout, _stderr = _run_execute(
-                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"), amof_home
+                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"),
+                    amof_home,
                 )
 
             receipt = json.loads(stdout)
-            result = json.loads(Path(receipt["result_path"]).read_text(encoding="utf-8"))
+            result = json.loads(
+                Path(receipt["result_path"]).read_text(encoding="utf-8")
+            )
             builtin.assert_not_called()
             self.assertEqual(code, 1)
             self.assertEqual(receipt["status"], "failed")
@@ -468,11 +634,18 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             _write_packet(amof_home)
             _write_runner_record(amof_home)
             with (
-                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
-                patch("amof.commands.handoff.hermes_opensandbox.run", side_effect=_fake_hermes),
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.hermes_opensandbox.run",
+                    side_effect=_fake_hermes,
+                ),
             ):
                 code, _stdout, _stderr = _run_execute(
-                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"), amof_home
+                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"),
+                    amof_home,
                 )
             self.assertEqual(code, 0)
             self.assertEqual(captured["capabilities"], ["read"])
@@ -483,8 +656,13 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             _write_packet(amof_home)
             _write_runner_record(amof_home)
             with (
-                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
-                patch("amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope") as builtin,
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope"
+                ) as builtin,
             ):
                 code, stdout, _stderr = _run_execute(
                     _execute_args(
@@ -495,19 +673,30 @@ class HandoffAgentDispatchTests(unittest.TestCase):
                     amof_home,
                 )
             receipt = json.loads(stdout)
-            result = json.loads(Path(receipt["result_path"]).read_text(encoding="utf-8"))
+            result = json.loads(
+                Path(receipt["result_path"]).read_text(encoding="utf-8")
+            )
             builtin.assert_not_called()
             self.assertEqual(code, 1)
-            self.assertIn("require at least one explicit writable root", result["final_text"])
+            self.assertIn(
+                "require at least one explicit writable root", result["final_text"]
+            )
 
     def test_explicit_hermes_dangerous_capability_fails_closed(self) -> None:
-        with TemporaryDirectory(prefix="amof-handoff-hermes-dangers-fail-closed-") as td:
+        with TemporaryDirectory(
+            prefix="amof-handoff-hermes-dangers-fail-closed-"
+        ) as td:
             amof_home = Path(td)
             _write_packet(amof_home)
             _write_runner_record(amof_home)
             with (
-                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
-                patch("amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope") as builtin,
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope"
+                ) as builtin,
             ):
                 code, stdout, _stderr = _run_execute(
                     _execute_args(
@@ -518,7 +707,9 @@ class HandoffAgentDispatchTests(unittest.TestCase):
                     amof_home,
                 )
             receipt = json.loads(stdout)
-            result = json.loads(Path(receipt["result_path"]).read_text(encoding="utf-8"))
+            result = json.loads(
+                Path(receipt["result_path"]).read_text(encoding="utf-8")
+            )
             builtin.assert_not_called()
             self.assertEqual(code, 1)
             self.assertEqual(receipt["status"], "failed")
@@ -554,14 +745,23 @@ class HandoffAgentDispatchTests(unittest.TestCase):
                 return result
 
             with (
-                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
-                patch("amof.commands.handoff.hermes_opensandbox.run", side_effect=_fake_hermes),
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.hermes_opensandbox.run",
+                    side_effect=_fake_hermes,
+                ),
             ):
                 code, stdout, _stderr = _run_execute(
-                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"), amof_home
+                    _execute_args(confirm=True, runner_id="hermes-local-ticket-write"),
+                    amof_home,
                 )
             receipt = json.loads(stdout)
-            result = json.loads(Path(receipt["result_path"]).read_text(encoding="utf-8"))
+            result = json.loads(
+                Path(receipt["result_path"]).read_text(encoding="utf-8")
+            )
             self.assertEqual(code, 0)
             self.assertEqual(receipt["studio_session_id"], studio_session_id)
             self.assertEqual(result["studio_session_id"], studio_session_id)
@@ -586,7 +786,9 @@ class HandoffAgentDispatchTests(unittest.TestCase):
 
     def test_accept_agent_is_idempotent_for_canonical_packet(self) -> None:
         packet = _canonical_mission_packet()
-        with TemporaryDirectory(prefix="amof-handoff-accept-canonical-idempotent-") as td:
+        with TemporaryDirectory(
+            prefix="amof-handoff-accept-canonical-idempotent-"
+        ) as td:
             amof_home = Path(td)
             canonical_text = handoff._canonical_json(packet)
             _write_packet(
@@ -613,7 +815,9 @@ class HandoffAgentDispatchTests(unittest.TestCase):
         self.assertEqual(json.loads(second_stdout)["status"], "accepted")
         self.assertEqual(first_state, second_state)
 
-    def test_status_projects_planning_waiting_executing_and_result_missing(self) -> None:
+    def test_status_projects_planning_waiting_executing_and_result_missing(
+        self,
+    ) -> None:
         with TemporaryDirectory(prefix="amof-handoff-status-projection-") as td:
             amof_home = Path(td)
             _write_packet(amof_home)
@@ -764,7 +968,9 @@ class HandoffAgentDispatchTests(unittest.TestCase):
                 )
 
             receipt = json.loads(stdout)
-            result = json.loads(Path(receipt["result_path"]).read_text(encoding="utf-8"))
+            result = json.loads(
+                Path(receipt["result_path"]).read_text(encoding="utf-8")
+            )
 
         self.assertEqual(code, 1)
         self.assertEqual(receipt["status"], "blocked")
@@ -859,7 +1065,9 @@ class HandoffAgentDispatchTests(unittest.TestCase):
     def test_real_runtime_dispatch_reuses_existing_studio_attachment_path(self) -> None:
         from amof.orchestrator.planner import ExecutionPlan
 
-        with tempfile.TemporaryDirectory(prefix="amof-handoff-dispatch-studio-real-") as td:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-handoff-dispatch-studio-real-"
+        ) as td:
             temp = Path(td)
             repo = temp / "demo-repo"
             amof_home = temp / "amof-home"
@@ -921,7 +1129,9 @@ class HandoffAgentDispatchTests(unittest.TestCase):
         self.assertTrue(_FakeRunnerAgent.instances)
 
     def test_invalid_studio_session_fails_truthfully(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="amof-handoff-dispatch-studio-invalid-") as td:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-handoff-dispatch-studio-invalid-"
+        ) as td:
             temp = Path(td)
             repo = temp / "demo-repo"
             amof_home = temp / "amof-home"
@@ -955,7 +1165,9 @@ class HandoffAgentDispatchTests(unittest.TestCase):
         self.assertFalse(openai_client.called)
 
     def test_ended_studio_session_fails_truthfully(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="amof-handoff-dispatch-studio-ended-") as td:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-handoff-dispatch-studio-ended-"
+        ) as td:
             temp = Path(td)
             repo = temp / "demo-repo"
             amof_home = temp / "amof-home"
@@ -1294,7 +1506,9 @@ class HandoffAgentDispatchTests(unittest.TestCase):
         self.assertNotEqual(payload["goal"], canonical_text)
         self.assertNotIn('{"schema_version"', payload["goal"])
         self.assertIn("goal_source: canonical mission packet fields", stderr)
-        self.assertIn("mission_id: AMOF-HANDOFF-CANONICAL-MISSION-PACKET-PUBLIC-001", stderr)
+        self.assertIn(
+            "mission_id: AMOF-HANDOFF-CANONICAL-MISSION-PACKET-PUBLIC-001", stderr
+        )
         self.assertNotIn("Implement only the public transport handoff slice.", stderr)
         self.assertNotIn(
             "Add strict public handoff transport support for the canonical mission packet path only.",
@@ -1305,7 +1519,9 @@ class HandoffAgentDispatchTests(unittest.TestCase):
         canonical_text = handoff._canonical_json(
             _canonical_mission_packet(execution_allowed=False)
         )
-        with TemporaryDirectory(prefix="amof-handoff-dispatch-canonical-disabled-") as td:
+        with TemporaryDirectory(
+            prefix="amof-handoff-dispatch-canonical-disabled-"
+        ) as td:
             amof_home = Path(td)
             _write_packet(
                 amof_home,
@@ -1333,7 +1549,9 @@ class HandoffAgentDispatchTests(unittest.TestCase):
                 objective=f"Implement the slice without exposing {secret_value}."
             )
         )
-        with TemporaryDirectory(prefix="amof-handoff-dispatch-canonical-redacted-") as td:
+        with TemporaryDirectory(
+            prefix="amof-handoff-dispatch-canonical-redacted-"
+        ) as td:
             amof_home = Path(td)
             _write_packet(
                 amof_home,

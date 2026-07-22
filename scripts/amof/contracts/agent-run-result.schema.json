@@ -89,6 +89,15 @@
       "type": "object",
       "additionalProperties": true
     },
+    "write_scope_proposal": {
+      "$ref": "#/$defs/writeScopeProposalOrNull"
+    },
+    "write_scope_proposals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/writeScopeProposal"
+      }
+    },
     "budget_summary": {
       "type": "object",
       "required": ["limit", "spent", "remaining"],
@@ -109,6 +118,138 @@
         }
       },
       "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "writeScopeProposal": {
+      "type": "object",
+      "required": [
+        "scope_id",
+        "title",
+        "mutation_mode",
+        "target_repo",
+        "intent",
+        "forbidden_actions",
+        "risk",
+        "rationale",
+        "source_evidence_refs",
+        "target_id",
+        "base_sha",
+        "allowed_roots",
+        "denied_roots",
+        "reason",
+        "expected_checks",
+        "docs_only",
+        "source_mutation"
+      ],
+      "properties": {
+        "scope_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mutation_mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_repo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowed_files": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "allowed_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "forbidden_actions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "risk": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "target_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "allowed_roots": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "denied_roots": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_checks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "docs_only": {
+          "type": "boolean"
+        },
+        "source_mutation": {
+          "type": "boolean"
+        }
+      },
+      "anyOf": [
+        { "required": ["allowed_files"] },
+        { "required": ["allowed_paths"] }
+      ],
+      "additionalProperties": true
+    },
+    "writeScopeProposalOrNull": {
+      "oneOf": [
+        { "$ref": "#/$defs/writeScopeProposal" },
+        { "type": "null" }
+      ]
     }
   },
   "additionalProperties": false
