@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -94,6 +95,27 @@ class HermesBackendSelection:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _finite_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _duration_ms_from_timestamps(started_at: Any, completed_at: Any) -> int | None:
+    if not isinstance(started_at, str) or not isinstance(completed_at, str):
+        return None
+    try:
+        duration_ms = int(
+            (datetime.fromisoformat(completed_at) - datetime.fromisoformat(started_at)).total_seconds()
+            * 1000
+        )
+    except ValueError:
+        return None
+    return duration_ms if duration_ms >= 0 else None
 
 
 def _safe_id(value: str) -> str:
@@ -468,6 +490,12 @@ def _write_terminal_result(
     if started_at is not None:
         result.setdefault("started_at", started_at)
     result.setdefault("completed_at", _now_iso())
+    duration_ms = _duration_ms_from_timestamps(
+        result.get("started_at"),
+        result.get("completed_at"),
+    )
+    if duration_ms is not None:
+        result.setdefault("duration_ms", duration_ms)
     result.setdefault("result_path", str(result_path))
     result.setdefault("runtime_log_unavailable_reason", None)
     result.setdefault("failure_classification", reason if result.get("status") != "completed" else None)
@@ -691,6 +719,10 @@ class _RemoteIALOpenAIAdapter:
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
         self.base_url = ""
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.estimated_cost_usd: float | None = None
+        self.chat_calls = 0
 
     def __enter__(self) -> "_RemoteIALOpenAIAdapter":
         adapter = self
@@ -749,6 +781,18 @@ class _RemoteIALOpenAIAdapter:
                 except (OSError, URLError, ValueError):
                     self._json(502, {"error": {"message": "remote IAL request failed"}})
                     return
+                remote_tokens = remote.get("tokens")
+                if isinstance(remote_tokens, dict):
+                    prompt_tokens = _finite_number(remote_tokens.get("input"))
+                    completion_tokens = _finite_number(remote_tokens.get("output"))
+                    if prompt_tokens is not None and prompt_tokens >= 0:
+                        adapter.prompt_tokens += int(prompt_tokens)
+                    if completion_tokens is not None and completion_tokens >= 0:
+                        adapter.completion_tokens += int(completion_tokens)
+                estimated_cost = _finite_number(remote.get("estimated_cost"))
+                if estimated_cost is not None and estimated_cost > 0:
+                    adapter.estimated_cost_usd = (adapter.estimated_cost_usd or 0.0) + estimated_cost
+                adapter.chat_calls += 1
                 tool_calls = [
                     _remote_ial_tool_to_openai(item, index)
                     for index, item in enumerate(remote.get("tool_calls") or [], start=1)
@@ -1512,6 +1556,12 @@ def run(
     runtime_detail = ""
     validation_status = "not_run"
     changed: list[str] = []
+    usage: dict[str, Any] = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "estimated_cost_usd": None,
+        "chat_calls": 0,
+    }
     while True:
         command = hermes_dispatch_command(model=remote_ial.model, prompt=prompt)
         (run_dir / "request.json").write_text(
@@ -1540,8 +1590,9 @@ def run(
         status = "completed"
         stop_reason = "completed"
         exit_code = 0
+        adapter = _RemoteIALOpenAIAdapter(remote_ial)
         try:
-            with _RemoteIALOpenAIAdapter(remote_ial) as adapter:
+            with adapter:
                 completed = subprocess.run(
                     command,
                     cwd=str(workspace),
@@ -1572,6 +1623,15 @@ def run(
             stdout_path.write_text("", encoding="utf-8")
             stderr_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
             _write_runtime_log(runtime_log_path, f"{type(exc).__name__}: {exc}")
+        finally:
+            usage["prompt_tokens"] += int(getattr(adapter, "prompt_tokens", 0) or 0)
+            usage["completion_tokens"] += int(getattr(adapter, "completion_tokens", 0) or 0)
+            usage["chat_calls"] += int(getattr(adapter, "chat_calls", 0) or 0)
+            adapter_cost = getattr(adapter, "estimated_cost_usd", None)
+            if adapter_cost is not None:
+                usage["estimated_cost_usd"] = (
+                    float(usage["estimated_cost_usd"] or 0.0) + float(adapter_cost)
+                )
 
         raw_task_findings = stdout_path.read_text(encoding="utf-8").strip()
         runtime_detail = stderr_path.read_text(encoding="utf-8").strip()
@@ -1670,6 +1730,7 @@ def run(
         effective_model=remote_ial.model,
         write_scope_proposals=write_scope_proposals,
         proposal_missing_reason=proposal_missing_reason,
+        usage=usage,
     )
     _write_terminal_result(
         result_path=result_path,
@@ -1711,9 +1772,31 @@ def _result_payload(
     write_scope_proposal: dict[str, Any] | None = None,
     write_scope_proposals: list[dict[str, Any]] | None = None,
     proposal_missing_reason: str | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if write_scope_proposal is None and write_scope_proposals:
         write_scope_proposal = write_scope_proposals[0]
+    usage = usage or {}
+    prompt_tokens = int(_finite_number(usage.get("prompt_tokens")) or 0)
+    completion_tokens = int(_finite_number(usage.get("completion_tokens")) or 0)
+    chat_calls = int(_finite_number(usage.get("chat_calls")) or 0)
+    estimated_cost_usd = _finite_number(usage.get("estimated_cost_usd"))
+    if estimated_cost_usd is not None and estimated_cost_usd <= 0:
+        estimated_cost_usd = None
+    cost_status = (
+        "observed"
+        if estimated_cost_usd is not None
+        else "tokens_only"
+        if prompt_tokens or completion_tokens
+        else "unknown"
+    )
+    remote_ial_usage = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "estimated_cost_usd": estimated_cost_usd,
+        "chat_calls": chat_calls,
+        "cost_status": cost_status,
+    }
     return {
         "result_kind": "agent_run_result",
         "contract_version": "agent-run-v1",
@@ -1754,6 +1837,7 @@ def _result_payload(
         "runtime_log_path": str(runtime_log_path),
         "journal_path": None,
         "changed_paths": changed_paths,
+        **({"num_turns": chat_calls} if usage else {}),
         "validation_summary": {
             "status": validation_status,
             "reason": "Hermes backend returns process status; focused validation must be requested in mission text.",
@@ -1777,8 +1861,14 @@ def _result_payload(
                 "fallback_used": False,
                 "direct_provider_fallback": "disabled",
             },
+            "remote_ial_usage": remote_ial_usage,
         },
-        "budget_summary": {"limit": None, "spent": 0.0, "remaining": None},
+        "budget_summary": {
+            "limit": None,
+            "spent": estimated_cost_usd,
+            "remaining": None,
+            "cost_status": cost_status,
+        },
     }
 
 

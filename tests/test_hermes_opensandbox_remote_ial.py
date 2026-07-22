@@ -92,6 +92,63 @@ def _proposal_output(
 
 
 class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
+    def test_result_payload_reports_observed_remote_ial_usage_and_cost(self) -> None:
+        result = hermes_opensandbox._result_payload(
+            run_id="hermes-usage",
+            status="completed",
+            exit_code=0,
+            stop_reason="completed",
+            final_text="done",
+            studio_session_id=None,
+            event_log_path=Path("/tmp/events.jsonl"),
+            runtime_log_path=Path("/tmp/runtime.log"),
+            changed_paths=[],
+            selection=_selection(),
+            health=_health(),
+            dispatch_probe={},
+            usage={
+                "prompt_tokens": 120,
+                "completion_tokens": 45,
+                "estimated_cost_usd": 0.0123,
+                "chat_calls": 3,
+            },
+        )
+
+        usage = result["evidence_refs"]["remote_ial_usage"]
+        self.assertEqual(usage["prompt_tokens"], 120)
+        self.assertEqual(usage["completion_tokens"], 45)
+        self.assertEqual(usage["estimated_cost_usd"], 0.0123)
+        self.assertEqual(usage["chat_calls"], 3)
+        self.assertEqual(usage["cost_status"], "observed")
+        self.assertEqual(result["budget_summary"]["spent"], 0.0123)
+        self.assertEqual(result["budget_summary"]["cost_status"], "observed")
+        self.assertEqual(result["num_turns"], 3)
+
+    def test_result_payload_marks_token_only_usage_unpriced(self) -> None:
+        result = hermes_opensandbox._result_payload(
+            run_id="hermes-token-only",
+            status="completed",
+            exit_code=0,
+            stop_reason="completed",
+            final_text="done",
+            studio_session_id=None,
+            event_log_path=Path("/tmp/events.jsonl"),
+            runtime_log_path=Path("/tmp/runtime.log"),
+            changed_paths=[],
+            selection=_selection(),
+            health=_health(),
+            dispatch_probe={},
+            usage={
+                "prompt_tokens": 120,
+                "completion_tokens": 45,
+                "estimated_cost_usd": None,
+                "chat_calls": 1,
+            },
+        )
+
+        self.assertIsNone(result["budget_summary"]["spent"])
+        self.assertEqual(result["budget_summary"]["cost_status"], "tokens_only")
+
     def test_structured_write_scope_proposal_is_parsed_from_runner_output(self) -> None:
         config = hermes_opensandbox.RemoteIALConfig(
             base_url="https://ial.example.test",
