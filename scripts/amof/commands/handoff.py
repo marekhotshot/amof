@@ -1604,9 +1604,22 @@ def _dispatch_backend_handoff(
     manifest_repos = manifest.get("repos")
     readable_root = None
     if isinstance(manifest_repos, list) and manifest_repos:
-        first = manifest_repos[0]
-        if isinstance(first, dict):
-            readable_root = str(first.get("path") or "").strip() or None
+        repo_paths = [
+            Path(str(repo.get("path") or "").strip())
+            for repo in manifest_repos
+            if isinstance(repo, dict) and str(repo.get("path") or "").strip()
+        ]
+        if len(repo_paths) == 1:
+            readable_root = str(repo_paths[0])
+        elif len(repo_paths) > 1:
+            # Multi-target dispatch: every target is materialized as a direct
+            # child of one workspace directory; that directory is the readable
+            # boundary so the agent can inspect every target, not just the
+            # first. Fail closed to the first repo if the layout ever differs.
+            parents = {path.parent for path in repo_paths}
+            readable_root = (
+                str(parents.pop()) if len(parents) == 1 else str(repo_paths[0])
+            )
     selection = backend_module.build_selection(
         runner_id=runner_id,
         requested_capabilities=_capability_approvals(args),

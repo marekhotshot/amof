@@ -479,7 +479,7 @@ def run(
         and not selection.writable_roots
     )
     expected_proposal_paths = _shared._explicit_required_proposal_paths(goal)
-    write_scope_proposal: dict[str, Any] | None = None
+    write_scope_proposals: list[dict[str, Any]] = []
     proposal_missing_reason: str | None = None
     task_findings = ""
     runtime_detail = ""
@@ -562,15 +562,15 @@ def run(
             stop_reason = "claude_process_failed"
             exit_code = exit_code or 1
         runtime_detail = stderr_path.read_text(encoding="utf-8").strip()
-        write_scope_proposal, task_findings = (
-            _shared._extract_write_scope_proposal_output(
+        write_scope_proposals, task_findings = (
+            _shared._extract_write_scope_proposal_outputs(
                 raw_task_findings,
                 expected_allowed_roots=expected_proposal_paths,
             )
         )
         proposal_missing_reason = (
             _shared._proposal_missing_reason(task_findings, runtime_detail)
-            if proposal_required and write_scope_proposal is None
+            if proposal_required and not write_scope_proposals
             else None
         )
         validation_status = _shared._infer_validation_status(
@@ -614,7 +614,7 @@ def run(
                 backend_name=BACKEND_TYPE,
             )
             continue
-        if status == "completed" and proposal_required and write_scope_proposal is None:
+        if status == "completed" and proposal_required and not write_scope_proposals:
             if not proposal_replan_used:
                 _shared._append_event(
                     event_log_path,
@@ -663,7 +663,7 @@ def run(
         validation_status=validation_status,
         requested_model=requested_model,
         effective_model=requested_model,
-        write_scope_proposal=write_scope_proposal,
+        write_scope_proposals=write_scope_proposals,
         proposal_missing_reason=proposal_missing_reason,
         cli_envelope=cli_envelope,
     )
@@ -705,6 +705,7 @@ def _result_payload(
     effective_model: str = "unverified",
     task_findings: str | None = None,
     write_scope_proposal: dict[str, Any] | None = None,
+    write_scope_proposals: list[dict[str, Any]] | None = None,
     proposal_missing_reason: str | None = None,
     cli_envelope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -714,6 +715,8 @@ def _result_payload(
             spent = float(cli_envelope.get("total_cost_usd") or 0.0)
         except (TypeError, ValueError):
             spent = 0.0
+    if write_scope_proposal is None and write_scope_proposals:
+        write_scope_proposal = write_scope_proposals[0]
     return {
         "result_kind": "agent_run_result",
         "contract_version": "agent-run-v1",
@@ -727,6 +730,11 @@ def _result_payload(
         **(
             {"write_scope_proposal": write_scope_proposal}
             if write_scope_proposal is not None
+            else {}
+        ),
+        **(
+            {"write_scope_proposals": write_scope_proposals}
+            if write_scope_proposals
             else {}
         ),
         **(
