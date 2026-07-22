@@ -102,6 +102,34 @@ class MultiProposalExtractionTests(unittest.TestCase):
         self.assertIsNotNone(proposal)
         self.assertEqual(proposal["target_id"], "github_app:o/repo-a:" + SHA_A)
 
+    def test_expected_roots_accept_per_target_subsets(self) -> None:
+        # A multi-target mission names one explicit path per repository, so the
+        # expected roots are the UNION while each proposal carries only its
+        # own repository's slice. Both blocks must survive validation.
+        expected = ["docs/proof-a.md", "docs/proof-b.md"]
+        text = "\n".join(
+            [
+                _proposal_block("github_app:o/repo-a:" + SHA_A, SHA_A, ["docs/proof-a.md"]),
+                _proposal_block("github_app:o/repo-b:" + SHA_B, SHA_B, ["docs/proof-b.md"]),
+            ]
+        )
+        proposals, _ = hermes_opensandbox._extract_write_scope_proposal_outputs(
+            text, expected_allowed_roots=expected
+        )
+        self.assertEqual(len(proposals), 2)
+        self.assertEqual(proposals[0]["allowed_roots"], ["docs/proof-a.md"])
+        self.assertEqual(proposals[1]["allowed_roots"], ["docs/proof-b.md"])
+
+    def test_expected_roots_still_reject_out_of_scope_paths(self) -> None:
+        expected = ["docs/proof-a.md", "docs/proof-b.md"]
+        text = _proposal_block(
+            "github_app:o/repo-a:" + SHA_A, SHA_A, ["docs/proof-a.md", "src/evil.ts"]
+        )
+        proposals, _ = hermes_opensandbox._extract_write_scope_proposal_outputs(
+            text, expected_allowed_roots=expected
+        )
+        self.assertEqual(proposals, [])
+
     def test_invalid_block_is_skipped_but_valid_blocks_survive(self) -> None:
         invalid = (
             f"{hermes_opensandbox.WRITE_SCOPE_PROPOSAL_START}\n"

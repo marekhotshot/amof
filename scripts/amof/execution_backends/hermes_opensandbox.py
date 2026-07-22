@@ -941,10 +941,12 @@ def _normalize_write_scope_proposal(
         return None
     normalized_allowed_roots = [str(item) for item in allowed_roots]
     normalized_denied_roots = [str(item) for item in denied_roots]
-    if (
-        expected_allowed_roots
-        and normalized_allowed_roots != expected_allowed_roots
+    if expected_allowed_roots and not set(normalized_allowed_roots).issubset(
+        set(expected_allowed_roots)
     ):
+        # Multi-target missions partition the explicitly required paths across
+        # per-repository proposals, so each block may carry a subset. Any root
+        # outside the mission's explicit requirement still fails closed.
         return None
     proposal["target_id"] = target_id
     proposal["base_sha"] = base_sha
@@ -1123,7 +1125,11 @@ def _build_prompt(
             )
         if expected_allowed_roots:
             lines.append(
-                "Required allowed_roots (exact; no additional paths): "
+                (
+                    "Required allowed_roots across ALL proposal blocks combined (no additional paths; each block lists only the paths that belong to its own repository): "
+                    if multi_target
+                    else "Required allowed_roots (exact; no additional paths): "
+                )
                 + json.dumps(expected_allowed_roots)
             )
         if multi_target:
