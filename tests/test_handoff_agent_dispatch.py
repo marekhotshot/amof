@@ -515,7 +515,9 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertEqual(receipt["status"], "failed")
             self.assertEqual(receipt["stop_reason"], "selected_runner_dispatch_failed")
-            self.assertIn("does not provide dispatch backend", result["final_text"])
+            self.assertIn(
+                "does not provide a supported dispatch backend", result["final_text"]
+            )
 
     def test_explicit_hermes_read_only_maps_only_read_capability(self) -> None:
         captured: dict[str, object] = {}
