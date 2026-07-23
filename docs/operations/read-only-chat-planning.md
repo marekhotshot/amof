@@ -91,6 +91,15 @@ Callers may pass optional `risk_signals` into `plan_read_only_chat`
 `planner_confidence`, `contract_disagreement`, `budget_exhausted`,
 `explore_readonly`).
 
+CLI (additive):
+
+```bash
+amof chat plan "<objective>" --repo . --risk-signals-json '{"mutation_ceiling":"runtime_mutation","prod_touching":true}'
+```
+
+When `--risk-signals-json` is omitted, Critic stays off
+(`insufficient_risk_signals`) unless other positive signals are inferred.
+
 ## Evidence Behavior
 
 Evidence is written to AMOF app-data only, never into the target repo.

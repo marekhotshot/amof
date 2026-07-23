@@ -11,7 +11,12 @@ SCRIPTS_ROOT = ROOT / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from amof.commands.chat import PlanPacket, _maybe_apply_critic_pass
+from amof.commands.chat import (
+    ChatPlanError,
+    PlanPacket,
+    _maybe_apply_critic_pass,
+    parse_risk_signals_json,
+)
 from amof.critic import (
     CriticRiskSignals,
     decide_critic_gate,
@@ -159,6 +164,21 @@ class CriticGateTests(unittest.TestCase):
         self.assertEqual(mocked_call.call_count, 1)
         self.assertTrue(updated.dissent)
         self.assertEqual(updated.dissent[0]["severity"], "high")
+
+    def test_parse_risk_signals_json_accepts_object(self) -> None:
+        parsed = parse_risk_signals_json(
+            '{"mutation_ceiling":"runtime_mutation","prod_touching":true}'
+        )
+        self.assertEqual(parsed["mutation_ceiling"], "runtime_mutation")
+        self.assertTrue(parsed["prod_touching"])
+        self.assertIsNone(parse_risk_signals_json(None))
+        self.assertIsNone(parse_risk_signals_json("   "))
+
+    def test_parse_risk_signals_json_rejects_non_object(self) -> None:
+        with self.assertRaises(ChatPlanError):
+            parse_risk_signals_json("[]")
+        with self.assertRaises(ChatPlanError):
+            parse_risk_signals_json("{not-json")
 
 
 if __name__ == "__main__":
