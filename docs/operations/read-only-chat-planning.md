@@ -63,6 +63,34 @@ fabricated):
 - `dissent[]` — risk-gated Critic dissent entries (absent when critique did
   not run)
 
+## Risk-gated Critic
+
+After the planner PlanBundle is built, AMOF may run **at most one** Critic
+pass over the same canonical planning context. The Critic has no tools, no
+mutation, and no dialogue with the planner.
+
+Trigger table (never always-on):
+
+| Trigger | Critic |
+|---|---|
+| High mutation ceiling, prod-touching, or security-sensitive | ON by default |
+| Low planner confidence (`< 0.5`) or contract disagreement | ON |
+| Cheap read-only / explore work | OFF |
+| Budget exhausted | OFF (degrade to supervised) |
+| No positive risk signals supplied | OFF (`insufficient_risk_signals`) |
+
+The gating decision is always evidenced:
+
+- `events.jsonl` event `critic_gate_decision`
+- `plan-result` evidence key `critic_gate`
+- an `interpretations[]` entry with `role: "critic"` and
+  `critique_ran:...` or `critique_skipped:...`
+
+Callers may pass optional `risk_signals` into `plan_read_only_chat`
+(`mutation_ceiling`, `prod_touching`, `security_sensitive`,
+`planner_confidence`, `contract_disagreement`, `budget_exhausted`,
+`explore_readonly`).
+
 ## Evidence Behavior
 
 Evidence is written to AMOF app-data only, never into the target repo.
