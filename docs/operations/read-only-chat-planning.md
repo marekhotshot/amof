@@ -51,6 +51,18 @@ The packet includes:
 - `requires_user_approval`
 - `execution_allowed`
 
+Optional cognition fields (Evolution rule; absent when unknown — never
+fabricated):
+
+- `confidence` — planner confidence in `[0, 1]` when the planner provides it
+- `suggested_next_actions[]` — typed intake prefills
+  (`{ label, prefill: { intake_text } }`); proposals only, never executable
+  commands
+- `interpretations[]` — role-bound interpretation entries (often empty until
+  a Critic/Interpreter pass writes them)
+- `dissent[]` — risk-gated Critic dissent entries (absent when critique did
+  not run)
+
 ## Evidence Behavior
 
 Evidence is written to AMOF app-data only, never into the target repo.

@@ -10,6 +10,102 @@ class ContractError(RuntimeError):
     """Raised when a canonical AMOF contract becomes invalid."""
 
 
+_INTERPRETATION_ROLES = frozenset({"interpreter", "planner", "critic"})
+
+
+def _normalize_confidence(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ContractError("PlanBundle confidence must be a number in [0, 1].") from exc
+    if confidence < 0.0 or confidence > 1.0:
+        raise ContractError("PlanBundle confidence must be a number in [0, 1].")
+    return confidence
+
+
+def _normalize_interpretations(value: Any) -> list[dict[str, str]] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ContractError("PlanBundle interpretations must be an array.")
+    normalized: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ContractError("PlanBundle interpretations entries must be objects.")
+        text = str(item.get("text") or "").strip()
+        if not text:
+            raise ContractError("PlanBundle interpretations[].text is required.")
+        entry: dict[str, str] = {"text": text}
+        source = str(item.get("source") or "").strip()
+        if source:
+            entry["source"] = source
+        role = str(item.get("role") or "").strip()
+        if role:
+            if role not in _INTERPRETATION_ROLES:
+                raise ContractError(
+                    "PlanBundle interpretations[].role must be interpreter, planner, or critic."
+                )
+            entry["role"] = role
+        normalized.append(entry)
+    return normalized
+
+
+def _normalize_dissent(value: Any) -> list[dict[str, str]] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ContractError("PlanBundle dissent must be an array.")
+    normalized: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ContractError("PlanBundle dissent entries must be objects.")
+        text = str(item.get("text") or "").strip()
+        if not text:
+            raise ContractError("PlanBundle dissent[].text is required.")
+        entry: dict[str, str] = {"text": text}
+        severity = str(item.get("severity") or "").strip()
+        if severity:
+            entry["severity"] = severity
+        source = str(item.get("source") or "").strip()
+        if source:
+            entry["source"] = source
+        normalized.append(entry)
+    return normalized
+
+
+def _normalize_suggested_next_actions(value: Any) -> list[dict[str, Any]] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ContractError("PlanBundle suggested_next_actions must be an array.")
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ContractError("PlanBundle suggested_next_actions entries must be objects.")
+        label = str(item.get("label") or "").strip()
+        if not label:
+            raise ContractError("PlanBundle suggested_next_actions[].label is required.")
+        prefill = item.get("prefill")
+        if not isinstance(prefill, dict):
+            raise ContractError("PlanBundle suggested_next_actions[].prefill must be an object.")
+        intake_text = str(prefill.get("intake_text") or "").strip()
+        if not intake_text:
+            raise ContractError(
+                "PlanBundle suggested_next_actions[].prefill.intake_text is required."
+            )
+        # Proposals only: reject command-shaped keys if a model invents them.
+        forbidden = {"command", "shell", "execute", "argv", "executable"}
+        if forbidden.intersection(prefill.keys()) or forbidden.intersection(item.keys()):
+            raise ContractError(
+                "PlanBundle suggested_next_actions entries must be intake prefills, "
+                "never executable commands."
+            )
+        normalized.append({"label": label, "prefill": {"intake_text": intake_text}})
+    return normalized
+
+
 @dataclass(frozen=True)
 class PlanBundle:
     """Canonical proposal-only planning contract."""
@@ -27,6 +123,10 @@ class PlanBundle:
     proposed_ticket_id: str | None = None
     result_kind: str = "plan_bundle"
     contract_version: str = "plan-bundle-v1"
+    interpretations: list[dict[str, str]] | None = None
+    confidence: float | None = None
+    dissent: list[dict[str, str]] | None = None
+    suggested_next_actions: list[dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         if self.result_kind != "plan_bundle":
@@ -49,9 +149,19 @@ class PlanBundle:
             raise ContractError("PlanBundle requires_user_approval must be true.")
         if self.execution_allowed is not False:
             raise ContractError("PlanBundle execution_allowed must be false.")
+        object.__setattr__(self, "confidence", _normalize_confidence(self.confidence))
+        object.__setattr__(
+            self, "interpretations", _normalize_interpretations(self.interpretations)
+        )
+        object.__setattr__(self, "dissent", _normalize_dissent(self.dissent))
+        object.__setattr__(
+            self,
+            "suggested_next_actions",
+            _normalize_suggested_next_actions(self.suggested_next_actions),
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "result_kind": self.result_kind,
             "contract_version": self.contract_version,
             "objective": self.objective,
@@ -66,6 +176,22 @@ class PlanBundle:
             "ticket_id": self.ticket_id,
             "proposed_ticket_id": self.proposed_ticket_id,
         }
+        # Optional cognition fields: absent when unknown (never fabricate).
+        if self.interpretations:
+            payload["interpretations"] = [dict(item) for item in self.interpretations]
+        if self.confidence is not None:
+            payload["confidence"] = self.confidence
+        if self.dissent:
+            payload["dissent"] = [dict(item) for item in self.dissent]
+        if self.suggested_next_actions:
+            payload["suggested_next_actions"] = [
+                {
+                    "label": item["label"],
+                    "prefill": {"intake_text": item["prefill"]["intake_text"]},
+                }
+                for item in self.suggested_next_actions
+            ]
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PlanBundle":
@@ -93,6 +219,10 @@ class PlanBundle:
             else None,
             result_kind=str(payload.get("result_kind") or "plan_bundle"),
             contract_version=str(payload.get("contract_version") or "plan-bundle-v1"),
+            interpretations=payload.get("interpretations"),
+            confidence=payload.get("confidence"),
+            dissent=payload.get("dissent"),
+            suggested_next_actions=payload.get("suggested_next_actions"),
         )
 
 

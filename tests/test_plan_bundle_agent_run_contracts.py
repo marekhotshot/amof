@@ -105,6 +105,78 @@ class PlanBundleAgentRunContractTests(unittest.TestCase):
             run_example["contract_version"],
         )
 
+    def test_pre_change_plan_bundle_still_validates_without_cognition_fields(self) -> None:
+        payload = _load(PLAN_BUNDLE_EXAMPLE_PATH)
+        for key in (
+            "interpretations",
+            "confidence",
+            "dissent",
+            "suggested_next_actions",
+        ):
+            self.assertNotIn(key, payload)
+
+        bundle = PlanBundle.from_dict(payload)
+
+        self.assertIsNone(bundle.confidence)
+        self.assertIsNone(bundle.interpretations)
+        self.assertIsNone(bundle.dissent)
+        self.assertIsNone(bundle.suggested_next_actions)
+        self.assertEqual(bundle.to_dict(), payload)
+
+    def test_plan_bundle_cognition_fields_round_trip_when_present(self) -> None:
+        payload = _load(PLAN_BUNDLE_EXAMPLE_PATH)
+        payload["confidence"] = 0.72
+        payload["interpretations"] = [
+            {"text": "Mission is proposal-only planning.", "role": "planner"}
+        ]
+        payload["dissent"] = [
+            {"text": "Write scope may be broader than needed.", "severity": "medium"}
+        ]
+        payload["suggested_next_actions"] = [
+            {
+                "label": "Narrow write scope and replan",
+                "prefill": {
+                    "intake_text": "Replan with a narrower write scope limited to docs/."
+                },
+            }
+        ]
+
+        bundle = PlanBundle.from_dict(payload)
+
+        self.assertEqual(bundle.confidence, 0.72)
+        self.assertEqual(bundle.interpretations[0]["role"], "planner")
+        self.assertEqual(bundle.dissent[0]["severity"], "medium")
+        self.assertEqual(
+            bundle.suggested_next_actions[0]["prefill"]["intake_text"],
+            "Replan with a narrower write scope limited to docs/.",
+        )
+        self.assertEqual(bundle.to_dict(), payload)
+
+    def test_plan_bundle_rejects_executable_suggested_next_actions(self) -> None:
+        payload = _load(PLAN_BUNDLE_EXAMPLE_PATH)
+        payload["suggested_next_actions"] = [
+            {
+                "label": "Run shell",
+                "prefill": {"intake_text": "noop"},
+                "command": "rm -rf /",
+            }
+        ]
+
+        with self.assertRaises(Exception):
+            PlanBundle.from_dict(payload)
+
+    def test_plan_bundle_schema_declares_optional_cognition_fields(self) -> None:
+        plan_schema = _load(PLAN_BUNDLE_SCHEMA_PATH)
+        required = set(plan_schema["required"])
+        for key in (
+            "interpretations",
+            "confidence",
+            "dissent",
+            "suggested_next_actions",
+        ):
+            self.assertIn(key, plan_schema["properties"])
+            self.assertNotIn(key, required)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -84,6 +84,84 @@
     "execution_allowed": {
       "type": "boolean",
       "const": false
+    },
+    "interpretations": {
+      "type": "array",
+      "description": "Optional cognition field: role-bound interpretations of the planning context. Absent when unknown.",
+      "items": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "role": {
+            "type": "string",
+            "enum": ["interpreter", "planner", "critic"]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "description": "Optional planner confidence in [0, 1]. Absent when unknown; never fabricate 0.0.",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "dissent": {
+      "type": "array",
+      "description": "Optional cognition field: risk-gated Critic dissent entries. Absent when critique did not run.",
+      "items": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "suggested_next_actions": {
+      "type": "array",
+      "description": "Optional typed proposal cards (label + intake prefill). Never executable commands.",
+      "items": {
+        "type": "object",
+        "required": ["label", "prefill"],
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prefill": {
+            "type": "object",
+            "required": ["intake_text"],
+            "properties": {
+              "intake_text": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
     }
   },
   "anyOf": [
