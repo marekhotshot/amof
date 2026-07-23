@@ -61,12 +61,23 @@ Hard rules:
   validation_plan
   execution_prompt_for_director
   execution_allowed
+  confidence
+  suggested_next_actions
+
+Optional cognition keys (omit when unknown; never invent fake values):
+  interpretations
+  dissent
 
 Requirements:
 - `ticket_id` may be null only when `proposed_ticket_id` is provided.
 - `proposed_steps`, `risks`, and `validation_plan` must be arrays of short strings.
 - `execution_prompt_for_director` must state that the packet is proposal-only and requires user approval before execution.
 - `execution_allowed` must be false.
+- `confidence` is optional; when present it must be a number in [0, 1]. Omit when unknown.
+- `suggested_next_actions` is optional; when present it must be an array of objects
+  `{ "label": string, "prefill": { "intake_text": string } }` — intake prefills only,
+  never shell/executable commands. Omit when you have no useful next proposal.
+- `interpretations` and `dissent` may be omitted or empty unless a Critic pass produced them.
 """
 
 SESSION_PROMPT = """You are the AMOF bounded intake session assistant.
@@ -1090,6 +1101,20 @@ def _finalize_user_message(
     return "\n".join(sections).strip() + "\n"
 
 
+def _optional_cognition_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Pass through optional PlanBundle cognition fields when present."""
+    fields: dict[str, Any] = {}
+    if "confidence" in payload:
+        fields["confidence"] = payload.get("confidence")
+    if "interpretations" in payload:
+        fields["interpretations"] = payload.get("interpretations")
+    if "dissent" in payload:
+        fields["dissent"] = payload.get("dissent")
+    if "suggested_next_actions" in payload:
+        fields["suggested_next_actions"] = payload.get("suggested_next_actions")
+    return fields
+
+
 def _plan_packet_from_payload(
     *,
     payload: dict[str, Any],
@@ -1121,6 +1146,7 @@ def _plan_packet_from_payload(
             ),
             requires_user_approval=True,
             execution_allowed=False,
+            **_optional_cognition_fields(payload),
         )
     except ContractError as exc:
         raise ChatPlanError(str(exc)) from exc
@@ -1809,6 +1835,7 @@ def plan_read_only_chat(
             ),
             requires_user_approval=True,
             execution_allowed=False,
+            **_optional_cognition_fields(payload),
         )
     except ContractError as exc:
         raise ChatPlanError(str(exc)) from exc
