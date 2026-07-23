@@ -2059,12 +2059,31 @@ def _validate_output_path(repo_path: Path, output_path: str | None) -> Path | No
     return target
 
 
+def parse_risk_signals_json(raw: str | None) -> dict[str, Any] | None:
+    """Parse CLI `--risk-signals-json` into a mapping for Critic gating."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ChatPlanError(f"risk-signals-json must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ChatPlanError("risk-signals-json must be a JSON object.")
+    return parsed
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
     action = getattr(args, "chat_cmd", None)
     try:
         if action == "plan":
             repo_path = _normalize_repo_path(getattr(args, "repo", None))
             output_path = _validate_output_path(repo_path, getattr(args, "output", None))
+            risk_signals = parse_risk_signals_json(
+                getattr(args, "risk_signals_json", None)
+            )
             result = plan_read_only_chat(
                 objective=getattr(args, "objective", None),
                 repo=repo_path,
@@ -2073,6 +2092,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 max_files=int(getattr(args, "max_files", DEFAULT_MAX_FILES)),
                 minimal_context=bool(getattr(args, "minimal_context", False)),
                 model=getattr(args, "model", None),
+                risk_signals=risk_signals,
             )
             rendered = json.dumps(result.to_dict(), indent=2)
             if output_path is not None:
@@ -2149,6 +2169,7 @@ __all__ = [
     "cmd_chat",
     "finalize_bounded_chat_session",
     "handoff_approved_chat_plan",
+    "parse_risk_signals_json",
     "plan_read_only_chat",
     "start_bounded_chat_session",
     "status_bounded_chat_session",

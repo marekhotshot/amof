@@ -853,6 +853,16 @@ def parse_args() -> argparse.Namespace:
         help="Bypass canonical planning context/indexer and use only objective plus explicit --file context",
     )
     chat_plan.add_argument(
+        "--risk-signals-json",
+        help=(
+            "Optional JSON object of Critic risk signals "
+            "(mutation_ceiling, prod_touching, security_sensitive, "
+            "planner_confidence, contract_disagreement, budget_exhausted, "
+            "explore_readonly). When omitted, Critic stays off "
+            "(insufficient_risk_signals)."
+        ),
+    )
+    chat_plan.add_argument(
         "--output",
         help="Optional path outside the target repo for the emitted proposal JSON",
     )
