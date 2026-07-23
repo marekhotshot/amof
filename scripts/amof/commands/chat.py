@@ -14,6 +14,14 @@ from typing import Any
 from ..app_paths import evidence_dir, materialized_runs_dir, runs_dir
 from ..app_config import resolve_active_context_name
 from ..contracts_runtime import ContractError, PlanBundle
+from ..critic import (
+    CRITIC_SYSTEM_PROMPT,
+    CriticRiskSignals,
+    decide_critic_gate,
+    infer_security_sensitive,
+    merge_critic_fields,
+    risk_signals_from_mapping,
+)
 from ..orchestrator.events import EventLog
 from ..orchestrator.llm.base import ProviderError
 from ..orchestrator.llm.remote_ial import RemoteIALClient
@@ -1115,6 +1123,100 @@ def _optional_cognition_fields(payload: dict[str, Any]) -> dict[str, Any]:
     return fields
 
 
+def _resolve_critic_risk_signals(
+    *,
+    packet: PlanPacket,
+    risk_signals: CriticRiskSignals | dict[str, Any] | None,
+) -> CriticRiskSignals:
+    base = (
+        risk_signals
+        if isinstance(risk_signals, CriticRiskSignals)
+        else risk_signals_from_mapping(risk_signals)
+    )
+    confidence = (
+        base.planner_confidence
+        if base.planner_confidence is not None
+        else packet.confidence
+    )
+    security_sensitive = base.security_sensitive or infer_security_sensitive(
+        list(packet.files_to_inspect)
+    )
+    explore_readonly = base.explore_readonly or (
+        (base.mutation_ceiling or "read_only") == "read_only"
+        and not base.prod_touching
+        and not security_sensitive
+        and not base.contract_disagreement
+        and (confidence is None or confidence >= 0.5)
+    )
+    return CriticRiskSignals(
+        mutation_ceiling=base.mutation_ceiling,
+        prod_touching=base.prod_touching,
+        security_sensitive=security_sensitive,
+        planner_confidence=confidence,
+        contract_disagreement=base.contract_disagreement,
+        budget_exhausted=base.budget_exhausted,
+        explore_readonly=explore_readonly,
+    )
+
+
+def _maybe_apply_critic_pass(
+    *,
+    packet: PlanPacket,
+    client: RemoteIALClient,
+    context_prompt: str,
+    planning_receipt_payload: dict[str, Any],
+    events: EventLog,
+    risk_signals: CriticRiskSignals | dict[str, Any] | None = None,
+    telemetry: Any | None = None,
+) -> tuple[PlanPacket, dict[str, Any]]:
+    """Run at most one risk-gated Critic pass; always evidence the gate decision."""
+    signals = _resolve_critic_risk_signals(packet=packet, risk_signals=risk_signals)
+    decision = decide_critic_gate(signals)
+    events.log("critic_gate_decision", **decision.to_dict(), signals=signals.__dict__)
+    if not decision.run_critique:
+        merged = merge_critic_fields(
+            packet_dict=packet.to_dict(),
+            decision=decision,
+            critic_payload=None,
+        )
+        try:
+            return PlanPacket.from_dict(merged), decision.to_dict()
+        except ContractError as exc:
+            raise ChatPlanError(str(exc)) from exc
+
+    critic_user_message = "\n".join(
+        [
+            "## Canonical Planning Context",
+            context_prompt.strip(),
+            "",
+            "## Planning Context Receipt",
+            json.dumps(planning_receipt_payload, indent=2),
+            "",
+            "## Planner PlanBundle (proposal-only)",
+            json.dumps(packet.to_dict(), indent=2),
+            "",
+            "Return Critic JSON only.",
+        ]
+    ).strip() + "\n"
+    critic_payload, _inference = _call_remote_ial_json(
+        client=client,
+        system_prompt=CRITIC_SYSTEM_PROMPT,
+        user_message=critic_user_message,
+        events=events,
+        telemetry=telemetry,
+    )
+    events.log("critic_pass_completed", keys=sorted(str(key) for key in critic_payload.keys()))
+    merged = merge_critic_fields(
+        packet_dict=packet.to_dict(),
+        decision=decision,
+        critic_payload=critic_payload if isinstance(critic_payload, dict) else {},
+    )
+    try:
+        return PlanPacket.from_dict(merged), decision.to_dict()
+    except ContractError as exc:
+        raise ChatPlanError(str(exc)) from exc
+
+
 def _plan_packet_from_payload(
     *,
     payload: dict[str, Any],
@@ -1518,6 +1620,15 @@ def finalize_bounded_chat_session(
         repo_scope=state.repo_scope,
         files_to_inspect=list(state.files_to_inspect),
     )
+    packet, critic_gate = _maybe_apply_critic_pass(
+        packet=packet,
+        client=client,
+        context_prompt=context_prompt,
+        planning_receipt_payload=planning_receipt_payload,
+        events=events,
+        risk_signals=None,
+        telemetry=telemetry,
+    )
     response_json = json.dumps(packet.to_dict(), indent=2)
     session.add_assistant_message(response_json)
     events.agent_response(content=packet.execution_prompt_for_director)
@@ -1547,6 +1658,7 @@ def finalize_bounded_chat_session(
             "transport_provider": inference.transport_provider,
             "upstream_provider": inference.upstream_provider,
             "upstream_model": inference.upstream_model,
+            "critic_gate": critic_gate,
         },
         plan_packet=packet.to_dict(),
     )
@@ -1737,6 +1849,7 @@ def plan_read_only_chat(
     max_chars_per_file: int = DEFAULT_MAX_CHARS_PER_FILE,
     minimal_context: bool = False,
     model: str | None = None,
+    risk_signals: CriticRiskSignals | dict[str, Any] | None = None,
 ) -> ChatPlanResult:
     repo_path = _normalize_repo_path(repo)
     if max_files <= 0:
@@ -1840,6 +1953,16 @@ def plan_read_only_chat(
     except ContractError as exc:
         raise ChatPlanError(str(exc)) from exc
 
+    packet, critic_gate = _maybe_apply_critic_pass(
+        packet=packet,
+        client=client,
+        context_prompt=str(planning_context.context_prompt or ""),
+        planning_receipt_payload=planning_receipt_payload,
+        events=events,
+        risk_signals=risk_signals,
+        telemetry=None,
+    )
+
     response_json = json.dumps(packet.to_dict(), indent=2)
     session.add_assistant_message(content=response_json)
     events.agent_response(content=packet.execution_prompt_for_director)
@@ -1861,6 +1984,7 @@ def plan_read_only_chat(
         "session_dir": str(session_dir),
         "events_path": str(events.log_path),
         "messages_path": str(session_dir / "messages.jsonl"),
+        "critic_gate": critic_gate,
     }
 
     result = ChatPlanResult(
