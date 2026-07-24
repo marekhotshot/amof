@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from .base import Tool, ToolResult
+from .base import Tool, ToolResult, resolve_tool_path
 from .str_replace import (
     MAX_STR_REPLACE_ADDED_BYTES,
     MAX_STR_REPLACE_GROWTH_MULTIPLIER,
@@ -23,7 +23,10 @@ class InsertAfterTool(Tool):
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The path to the file to modify.",
+                "description": (
+                    "The path to the file to modify. Bare /workspace paths "
+                    "are rewritten to the runner workspace root."
+                ),
             },
             "anchor_string": {
                 "type": "string",
@@ -36,6 +39,9 @@ class InsertAfterTool(Tool):
         },
         "required": ["path", "anchor_string", "content_to_insert"],
     }
+
+    def __init__(self, workspace_root: Optional[Path] = None) -> None:
+        self._workspace_root = workspace_root
 
     def execute(self, path: str, anchor_string: str, content_to_insert: str) -> ToolResult:
         if anchor_string == "":
@@ -57,7 +63,7 @@ class InsertAfterTool(Tool):
                 error="invalid_insertafter_content_empty: content_to_insert must be non-empty.",
             )
 
-        file_path = Path(path)
+        file_path = resolve_tool_path(path, workspace_root=self._workspace_root)
         if not file_path.exists():
             return ToolResult(success=False, output="", error=f"File not found: {path}")
         if not file_path.is_file():

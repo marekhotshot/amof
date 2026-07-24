@@ -132,34 +132,11 @@ class PlanSubtaskModel(BaseModel):
         default_factory=list,
         description="Task IDs that must be completed before this subtask.",
     )
-
-class DelegateTaskModel(BaseModel):
-    """Orchestrator delegation of a subtask to a worker."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(..., description="Stable task identifier like '1' or '2a'.")
-    runner: str = Field(..., description="Type of worker/runner to use.")
-    task: str = Field(..., description="Detailed execution instructions for the worker.")
-    context: Optional[str] = Field(default=None, description="Additional context from the orchestrator.")
-
-class SubtaskResult(BaseModel):
-    """Result returned by a worker after execution."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    success: bool = Field(..., description="Whether the subtask succeeded.")
-    output: str = Field(..., description="Final output, summary, or logs from the worker.")
-    error_logs: Optional[str] = Field(default=None, description="Error logs if it failed.")
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(..., description="Stable task identifier like '1' or '2a'.")
-    title: str = Field(..., description="Short task title.")
-    description: str = Field(..., description="Detailed execution instructions.")
-    depends_on: List[str] = Field(
-        default_factory=list,
-        description="Task IDs that must be completed before this subtask.",
+    # Optional planner hints. Models often emit these (the planner prompt asks for
+    # per-subtask verification guidance); rejecting them as extras fails the whole plan.
+    verification: str = Field(
+        default="",
+        description="How to verify this subtask completed successfully.",
     )
     read_files: List[str] = Field(
         default_factory=list,
@@ -181,6 +158,27 @@ class SubtaskResult(BaseModel):
         "medium",
         description="Estimated implementation complexity.",
     )
+
+
+class DelegateTaskModel(BaseModel):
+    """Orchestrator delegation of a subtask to a worker."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(..., description="Stable task identifier like '1' or '2a'.")
+    runner: str = Field(..., description="Type of worker/runner to use.")
+    task: str = Field(..., description="Detailed execution instructions for the worker.")
+    context: Optional[str] = Field(default=None, description="Additional context from the orchestrator.")
+
+
+class SubtaskResult(BaseModel):
+    """Result returned by a worker after execution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool = Field(..., description="Whether the subtask succeeded.")
+    output: str = Field(..., description="Final output, summary, or logs from the worker.")
+    error_logs: Optional[str] = Field(default=None, description="Error logs if it failed.")
 
 
 class PlannerOutputModel(BaseModel):

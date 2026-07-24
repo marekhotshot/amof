@@ -577,6 +577,7 @@ class ToolRegistry:
         trust_state: Optional[TrustState] = None,
         policy_gate: Optional[Any] = None,
         policy_source: str = "master",
+        workspace_root: Optional[Path] = None,
     ):
         self._tools: Dict[str, Tool] = {}
         self.guardrails = guardrails or Guardrails()
@@ -587,6 +588,7 @@ class ToolRegistry:
         self.trust_state = trust_state
         self.policy_gate = policy_gate
         self.policy_source = policy_source
+        self._workspace_root = workspace_root
         self._read_evidence: Dict[str, List[str]] = {}
 
     def register(self, tool: Tool) -> None:
@@ -757,7 +759,13 @@ class ToolRegistry:
 
         # Write-class tools check path
         if name in ("Write", "StrReplace", "InsertAfter", "Delete"):
-            path = args.get("path", "")
+            raw_path = args.get("path", "")
+            # BL-037/BL-065: rewrite bare /workspace aliases before writable-root
+            # checks and before the tool mutates the filesystem.
+            resolved = resolve_tool_path(raw_path, workspace_root=self._workspace_root)
+            path = str(resolved)
+            if raw_path:
+                args["path"] = path
             guardrail_error = self.guardrails.check_write(path)
             if guardrail_error:
                 return guardrail_error
@@ -1025,6 +1033,10 @@ def create_default_registry(
     linter_config = load_config(linter_config_path)
     linter = LinterRunner(config=linter_config)
 
+    # Prefer explicit ticket_cwd; otherwise use the agent workspace_root so
+    # /workspace aliases resolve to the materialized Predator share paths.
+    effective_workspace_root = ticket_cwd or workspace_root
+
     registry = ToolRegistry(
         guardrails=guardrails,
         linter=linter,
@@ -1032,21 +1044,19 @@ def create_default_registry(
         trust_state=trust_state,
         policy_gate=policy_gate,
         policy_source=policy_source,
+        workspace_root=effective_workspace_root,
     )
     registry.max_output_chars = max_output_chars
-    # Prefer explicit ticket_cwd; otherwise use the agent workspace_root so
-    # /workspace aliases resolve to the materialized Predator share paths.
-    effective_workspace_root = ticket_cwd or workspace_root
 
     def _path_tools() -> list[Tool]:
         return [
             ReadTool(workspace_root=effective_workspace_root),
             InspectFilesTool(),
             ToolProposalTool(),
-            WriteTool(),
-            StrReplaceTool(),
-            InsertAfterTool(),
-            DeleteTool(),
+            WriteTool(workspace_root=effective_workspace_root),
+            StrReplaceTool(workspace_root=effective_workspace_root),
+            InsertAfterTool(workspace_root=effective_workspace_root),
+            DeleteTool(workspace_root=effective_workspace_root),
             GrepTool(workspace_root=effective_workspace_root),
             GlobTool(workspace_root=effective_workspace_root),
             LSTool(workspace_root=effective_workspace_root),
