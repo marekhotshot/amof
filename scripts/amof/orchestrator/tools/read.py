@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .base import Tool, ToolResult
+from .base import Tool, ToolResult, resolve_tool_path
 
 # Lazy import to avoid circular deps; resolved at call time
 _explainer = None
@@ -30,14 +30,19 @@ class ReadTool(Tool):
     description = (
         "Reads a file from the local filesystem. Returns lines numbered "
         "starting at 1 in format LINE_NUMBER|LINE_CONTENT. Supports offset "
-        "(1-indexed line start, negative counts from end) and limit (line count)."
+        "(1-indexed line start, negative counts from end) and limit (line count). "
+        "Prefer absolute materialized Repository Paths; bare /workspace is "
+        "rewritten to the runner workspace root."
     )
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The absolute path of the file to read.",
+                "description": (
+                    "The absolute path of the file to read. Bare /workspace "
+                    "paths are rewritten to the runner workspace root."
+                ),
             },
             "offset": {
                 "type": "integer",
@@ -51,27 +56,43 @@ class ReadTool(Tool):
         "required": ["path"],
     }
 
+    def __init__(self, workspace_root: Optional[Path] = None) -> None:
+        self._workspace_root = workspace_root
+
     def execute(
         self,
         path: str,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> ToolResult:
-        file_path = Path(path)
+        file_path = resolve_tool_path(path, workspace_root=self._workspace_root)
+        display_path = str(file_path)
 
         if not file_path.exists():
             ex = _get_explainer()
-            msg = ex.file_not_found(path, file_path.parent) if ex else f"File not found: {path}"
+            msg = (
+                ex.file_not_found(display_path, file_path.parent)
+                if ex
+                else f"File not found: {display_path}"
+            )
             return ToolResult(success=False, output="", error=msg)
 
         if not file_path.is_file():
-            return ToolResult(success=False, output="", error=f"Not a file (is a directory?): {path}")
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Not a file (is a directory?): {display_path}",
+            )
 
         try:
             content = file_path.read_text(encoding="utf-8", errors="replace")
         except PermissionError:
             ex = _get_explainer()
-            msg = ex.permission_denied(path, "read") if ex else f"Permission denied: {path}"
+            msg = (
+                ex.permission_denied(display_path, "read")
+                if ex
+                else f"Permission denied: {display_path}"
+            )
             return ToolResult(success=False, output="", error=msg)
         except Exception as e:
             return ToolResult(success=False, output="", error=f"Read error: {e}")

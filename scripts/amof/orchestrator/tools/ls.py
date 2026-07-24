@@ -9,21 +9,28 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .base import Tool, ToolResult
+from .base import Tool, ToolResult, resolve_tool_path
 
 
 class LSTool(Tool):
     name = "LS"
     description = (
         "Lists files and directories in a given path. Excludes dot-files "
-        "and dot-directories. Supports ignore glob patterns."
+        "and dot-directories. Supports ignore glob patterns. Prefer the "
+        "absolute materialized Repository Path from the mission; the bare "
+        "alias /workspace is rewritten to the runner workspace root."
     )
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {
             "target_directory": {
                 "type": "string",
-                "description": "Absolute path to directory to list.",
+                "description": (
+                    "Absolute path to directory to list. Use the materialized "
+                    "Repository Path (for example under "
+                    "/var/lib/amof/share/workspaces/...). Bare /workspace is "
+                    "rewritten to the runner workspace root."
+                ),
             },
             "ignore_globs": {
                 "type": "array",
@@ -34,25 +41,29 @@ class LSTool(Tool):
         "required": ["target_directory"],
     }
 
+    def __init__(self, workspace_root: Optional[Path] = None) -> None:
+        self._workspace_root = workspace_root
+
     def execute(
         self,
         target_directory: str,
         ignore_globs: Optional[List[str]] = None,
     ) -> ToolResult:
-        dir_path = Path(target_directory)
+        dir_path = resolve_tool_path(target_directory, workspace_root=self._workspace_root)
+        display_path = str(dir_path)
 
         if not dir_path.exists():
             return ToolResult(
                 success=False,
                 output="",
-                error=f"Directory not found: {target_directory}",
+                error=f"Directory not found: {display_path}",
             )
 
         if not dir_path.is_dir():
             return ToolResult(
                 success=False,
                 output="",
-                error=f"Not a directory: {target_directory}",
+                error=f"Not a directory: {display_path}",
             )
 
         ignore_patterns = ignore_globs or []
@@ -69,10 +80,10 @@ class LSTool(Tool):
             return ToolResult(
                 success=False,
                 output="",
-                error=f"Permission denied: {target_directory}",
+                error=f"Permission denied: {display_path}",
             )
 
-        lines = [f"{target_directory}/"]
+        lines = [f"{display_path}/"]
         for entry in entries:
             # Skip dot-files and dot-dirs
             if entry.name.startswith("."):

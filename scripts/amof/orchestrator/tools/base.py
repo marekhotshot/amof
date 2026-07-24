@@ -35,6 +35,31 @@ from ..trust_boundary import (
 
 logger = logging.getLogger(__name__)
 
+# Bare /workspace is a common model alias for "the repo root". Cloud-native
+# Predator materializes checkouts under /var/lib/amof/share/workspaces/..., so
+# tools must rewrite /workspace to the runner's materialized workspace root
+# instead of failing with Directory not found: /workspace (BL-037).
+_WORKSPACE_ALIAS = "/workspace"
+
+
+def resolve_tool_path(path: str | Path | None, *, workspace_root: Path | None = None) -> Path:
+    """Resolve a tool path argument against the materialized workspace root.
+
+    Rewrites bare ``/workspace`` and ``/workspace/<rel>`` to absolute paths under
+    ``workspace_root`` (default: process cwd). All other paths are returned as
+    ``Path`` values unchanged.
+    """
+    raw = str(path or "").strip()
+    root = (workspace_root or Path.cwd()).resolve(strict=False)
+    if not raw or raw == ".":
+        return root
+    if raw == _WORKSPACE_ALIAS or raw == f"{_WORKSPACE_ALIAS}/":
+        return root
+    if raw.startswith(f"{_WORKSPACE_ALIAS}/"):
+        return (root / raw[len(_WORKSPACE_ALIAS) + 1 :]).resolve(strict=False)
+    return Path(raw)
+
+
 # Default path for guardrails config (relative to workspace root)
 _DEFAULT_RULES_PATH = ".amof/rules/guardrails.yaml"
 _DEFAULT_ALLOWED_PATH = ".amof/rules/allowed.yaml"
@@ -1009,14 +1034,40 @@ def create_default_registry(
         policy_source=policy_source,
     )
     registry.max_output_chars = max_output_chars
+    # Prefer explicit ticket_cwd; otherwise use the agent workspace_root so
+    # /workspace aliases resolve to the materialized Predator share paths.
+    effective_workspace_root = ticket_cwd or workspace_root
+
+    def _path_tools() -> list[Tool]:
+        return [
+            ReadTool(workspace_root=effective_workspace_root),
+            InspectFilesTool(),
+            ToolProposalTool(),
+            WriteTool(),
+            StrReplaceTool(),
+            InsertAfterTool(),
+            DeleteTool(),
+            GrepTool(workspace_root=effective_workspace_root),
+            GlobTool(workspace_root=effective_workspace_root),
+            LSTool(workspace_root=effective_workspace_root),
+        ]
+
+    def _readonly_path_tools() -> list[Tool]:
+        return [
+            ReadTool(workspace_root=effective_workspace_root),
+            InspectFilesTool(),
+            GrepTool(workspace_root=effective_workspace_root),
+            GlobTool(workspace_root=effective_workspace_root),
+            LSTool(workspace_root=effective_workspace_root),
+        ]
 
     # Worker gets execution tools
     if role in ("worker", "all"):
-        for tool_cls in [ReadTool, InspectFilesTool, ToolProposalTool, WriteTool, StrReplaceTool, InsertAfterTool, DeleteTool, GrepTool, GlobTool, LSTool]:
-            registry.register(tool_cls())
+        for tool in _path_tools():
+            registry.register(tool)
         registry.register(
             ShellTool(
-                default_cwd=str(ticket_cwd) if ticket_cwd else None,
+                default_cwd=str(effective_workspace_root) if effective_workspace_root else None,
                 stop_checker=stop_checker,
             )
         )
@@ -1027,8 +1078,8 @@ def create_default_registry(
     if role in ("orchestrator", "all"):
         if role == "orchestrator":
             # Orchestrator still needs read access to build context
-            for tool_cls in [ReadTool, InspectFilesTool, GrepTool, GlobTool, LSTool]:
-                registry.register(tool_cls())
+            for tool in _readonly_path_tools():
+                registry.register(tool)
         
         # Register DelegateTool if a runner factory is provided
         if runner_factory is not None:
