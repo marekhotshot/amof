@@ -1052,7 +1052,7 @@ def create_default_registry(
         return [
             ReadTool(workspace_root=effective_workspace_root),
             InspectFilesTool(),
-            ToolProposalTool(),
+            ToolProposalTool(workspace_root=effective_workspace_root),
             WriteTool(workspace_root=effective_workspace_root),
             StrReplaceTool(workspace_root=effective_workspace_root),
             InsertAfterTool(workspace_root=effective_workspace_root),

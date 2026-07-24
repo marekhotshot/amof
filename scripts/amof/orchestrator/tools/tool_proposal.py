@@ -6,11 +6,11 @@ import hashlib
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from amof.app_paths import evidence_dir
 
-from .base import Tool, ToolResult
+from .base import Tool, ToolResult, resolve_tool_path
 
 
 _BLOCKED_GIT_RE = re.compile(r"\bgit\s+(commit|push|tag)\b", re.IGNORECASE)
@@ -18,6 +18,7 @@ _NETWORK_RE = re.compile(r"\b(curl|wget|nc|netcat|ssh|scp|rsync)\b|https?://", r
 _SECRET_RE = re.compile(r"\b(API[_-]?KEY|TOKEN|PASSWORD|SECRET|printenv|os\.environ)\b|\.env\b", re.IGNORECASE)
 _BROAD_FS_RE = re.compile(r"(^|\s)(/|~|/home/|/etc/|/var/|/usr/|find\s+/)\b", re.IGNORECASE)
 _WRITE_RE = re.compile(r"(^|\s)(rm|mv|cp|touch|mkdir|tee)\b|sed\s+-i|>>|(?<!<)>", re.IGNORECASE)
+_WORKSPACE_ALIAS_PREFIX_RE = re.compile(r"(?P<quote>['\"])/workspace/(?P<rest>[^'\"]*)(?P=quote)")
 
 
 class ToolProposalTool(Tool):
@@ -25,7 +26,9 @@ class ToolProposalTool(Tool):
     description = (
         "Propose and execute a bounded read-only helper script when a capability is "
         "missing. The shell or Python script is statically checked, stored in AMOF app-data, and "
-        "executed with captured rc/stdout/stderr/hash evidence. Direct Shell remains unavailable."
+        "executed with captured rc/stdout/stderr/hash evidence. Direct Shell remains unavailable. "
+        "allowed_paths must stay narrow; bare /workspace aliases and absolute paths inside the "
+        "workspace root are normalized to workspace-relative form before the static gate."
     )
     parameters: Dict[str, Any] = {
         "type": "object",
@@ -35,7 +38,11 @@ class ToolProposalTool(Tool):
             "allowed_paths": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Target paths this proposal may inspect or affect.",
+                "description": (
+                    "Target paths this proposal may inspect or affect. Prefer workspace-relative "
+                    "paths; /workspace aliases and absolute paths contained in the workspace are "
+                    "normalized to relative form."
+                ),
             },
             "allow_network": {"type": "boolean", "description": "Whether network access is explicitly allowed."},
             "timeout_seconds": {"type": "integer", "description": "Execution timeout in seconds."},
@@ -57,6 +64,9 @@ class ToolProposalTool(Tool):
         ],
     }
 
+    def __init__(self, workspace_root: Optional[Path] = None) -> None:
+        self._workspace_root = workspace_root
+
     def execute(
         self,
         purpose: str,
@@ -69,10 +79,22 @@ class ToolProposalTool(Tool):
         rollback: str,
         script: str,
     ) -> ToolResult:
+        workspace_root = (self._workspace_root or Path.cwd()).resolve(strict=False)
+        normalized_paths = _normalize_allowed_paths(
+            allowed_paths,
+            workspace_root=workspace_root,
+        )
+        if isinstance(normalized_paths, str):
+            return ToolResult(success=False, output="", error=normalized_paths)
+
+        # Keep script bodies aligned with normalized allowed_paths so /workspace
+        # aliases do not pass the gate then fail at runtime on a missing mount.
+        normalized_script = _normalize_workspace_alias_in_script(script)
+
         proposal = {
             "purpose": purpose,
             "mutation_intent": mutation_intent,
-            "allowed_paths": allowed_paths,
+            "allowed_paths": normalized_paths,
             "allow_network": allow_network,
             "timeout_seconds": timeout_seconds,
             "inputs": inputs,
@@ -81,25 +103,25 @@ class ToolProposalTool(Tool):
         }
         gate_error = _validate_static_gates(
             proposal=proposal,
-            script=script,
-            workspace_root=Path.cwd(),
+            script=normalized_script,
+            workspace_root=workspace_root,
         )
         if gate_error:
             return ToolResult(success=False, output="", error=gate_error)
 
-        script_hash = hashlib.sha256(script.encode("utf-8")).hexdigest()
+        script_hash = hashlib.sha256(normalized_script.encode("utf-8")).hexdigest()
         proposal_dir = evidence_dir() / "tool-proposals" / script_hash[:12]
         proposal_dir.mkdir(parents=True, exist_ok=True)
-        runtime = _script_runtime(script)
+        runtime = _script_runtime(normalized_script)
         suffix = ".py" if runtime == "python" else ".sh"
         script_path = proposal_dir / f"proposal{suffix}"
-        script_path.write_text(script, encoding="utf-8")
+        script_path.write_text(normalized_script, encoding="utf-8")
         command = ["python3", str(script_path)] if runtime == "python" else ["bash", str(script_path)]
 
         try:
             completed = subprocess.run(
                 command,
-                cwd=Path.cwd(),
+                cwd=workspace_root,
                 capture_output=True,
                 text=True,
                 timeout=max(1, min(int(timeout_seconds), 120)),
@@ -133,6 +155,55 @@ class ToolProposalTool(Tool):
         return ToolResult(success=rc == 0, output=output, error=None if rc == 0 else f"proposal exited with rc={rc}", metadata=metadata)
 
 
+def _normalize_allowed_paths(
+    allowed_paths: Any,
+    *,
+    workspace_root: Path,
+) -> List[str] | str:
+    """Normalize proposal allowed_paths to workspace-relative form (BL-070).
+
+    Absolute hermes-style ``/workspace/...`` aliases and absolute paths that
+    resolve inside ``workspace_root`` become relative. Broad roots and paths
+    that escape the workspace still hard-fail.
+    """
+    if not isinstance(allowed_paths, list) or not allowed_paths:
+        return "invalid_tool_proposal_static_gate: allowed_paths must be a non-empty list"
+
+    root = workspace_root.resolve(strict=False)
+    normalized: List[str] = []
+    for raw in allowed_paths:
+        if not isinstance(raw, str) or not raw.strip():
+            return "invalid_tool_proposal_static_gate: allowed_paths entries must be non-empty strings"
+        text = raw.strip()
+        if text in {".", "/", "*", "**", "~"}:
+            return "invalid_tool_proposal_static_gate: broad or absolute allowed_paths are not allowed"
+
+        resolved = resolve_tool_path(text, workspace_root=root).resolve(strict=False)
+        try:
+            relative = resolved.relative_to(root)
+        except ValueError:
+            return "invalid_tool_proposal_static_gate: allowed_paths must stay within the target workspace"
+
+        relative_text = relative.as_posix()
+        if not relative_text or relative_text == ".":
+            return "invalid_tool_proposal_static_gate: broad or absolute allowed_paths are not allowed"
+        if relative_text.startswith("../") or Path(relative_text).is_absolute():
+            return "invalid_tool_proposal_static_gate: broad or absolute allowed_paths are not allowed"
+        normalized.append(relative_text)
+    return normalized
+
+
+def _normalize_workspace_alias_in_script(script: str) -> str:
+    """Rewrite quoted ``/workspace/<rel>`` script paths to workspace-relative form."""
+    if not isinstance(script, str) or not script:
+        return script
+
+    def _replace(match: re.Match[str]) -> str:
+        quote = match.group("quote")
+        rest = match.group("rest")
+        return f"{quote}{rest}{quote}"
+
+    return _WORKSPACE_ALIAS_PREFIX_RE.sub(_replace, script)
 
 
 def _validate_static_gates(*, proposal: Dict[str, Any], script: str, workspace_root: Path) -> str | None:
