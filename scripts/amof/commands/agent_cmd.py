@@ -2323,9 +2323,12 @@ def _git_probe(workspace_root: Path) -> dict[str, str]:
             text=True,
             timeout=30,
         )
+        # BL-072: never str.strip() git status --short output. Porcelain v1 uses a
+        # leading space in the XY columns (e.g. " M docs/..."); stripping it turns
+        # the path into "ocs/..." and falsely fails write-scope mutation checks.
         if result.returncode != 0:
-            return (result.stdout + result.stderr).strip()
-        return result.stdout.strip()
+            return (result.stdout + result.stderr).rstrip("\n")
+        return result.stdout.rstrip("\n")
 
     status = _run(["git", "status", "--short", "--untracked-files=all"])
     tracked_numstat = _run(["git", "diff", "--numstat", "--"])
