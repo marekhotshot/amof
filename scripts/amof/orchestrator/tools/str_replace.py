@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .base import Tool, ToolResult
+from .base import Tool, ToolResult, resolve_tool_path
 
 _explainer = None
 MAX_REPLACE_ALL_OCCURRENCES = 20
@@ -38,7 +38,10 @@ class StrReplaceTool(Tool):
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The absolute path to the file to modify.",
+                "description": (
+                    "The absolute path to the file to modify. Bare /workspace "
+                    "paths are rewritten to the runner workspace root."
+                ),
             },
             "old_string": {
                 "type": "string",
@@ -56,6 +59,9 @@ class StrReplaceTool(Tool):
         "required": ["path", "old_string", "new_string"],
     }
 
+    def __init__(self, workspace_root: Optional[Path] = None) -> None:
+        self._workspace_root = workspace_root
+
     def execute(
         self,
         path: str,
@@ -63,7 +69,7 @@ class StrReplaceTool(Tool):
         new_string: str,
         replace_all: Optional[bool] = False,
     ) -> ToolResult:
-        file_path = Path(path)
+        file_path = resolve_tool_path(path, workspace_root=self._workspace_root)
 
         validation_error = self._validate_search_text(old_string)
         if validation_error:

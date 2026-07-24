@@ -6,9 +6,9 @@ Deletes a file at the specified path with safety checks.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from .base import Tool, ToolResult
+from .base import Tool, ToolResult, resolve_tool_path
 
 _explainer = None
 
@@ -34,14 +34,20 @@ class DeleteTool(Tool):
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The absolute path of the file to delete.",
+                "description": (
+                    "The absolute path of the file to delete. Bare /workspace "
+                    "paths are rewritten to the runner workspace root."
+                ),
             },
         },
         "required": ["path"],
     }
 
+    def __init__(self, workspace_root: Optional[Path] = None) -> None:
+        self._workspace_root = workspace_root
+
     def execute(self, path: str) -> ToolResult:
-        file_path = Path(path)
+        file_path = resolve_tool_path(path, workspace_root=self._workspace_root)
 
         if not file_path.exists():
             ex = _get_explainer()

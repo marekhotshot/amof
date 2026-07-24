@@ -1,4 +1,4 @@
-"""BL-037: bare /workspace aliases resolve to materialized workspace roots."""
+"""BL-037/BL-065: bare /workspace aliases resolve to materialized workspace roots."""
 
 from __future__ import annotations
 
@@ -12,10 +12,16 @@ SCRIPTS_ROOT = ROOT / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from amof.orchestrator.tools.base import resolve_tool_path
+from amof.orchestrator.tools.base import (
+    Guardrails,
+    ToolCall,
+    ToolRegistry,
+    resolve_tool_path,
+)
 from amof.orchestrator.tools.glob_tool import GlobTool
 from amof.orchestrator.tools.ls import LSTool
 from amof.orchestrator.tools.read import ReadTool
+from amof.orchestrator.tools.write import WriteTool
 
 
 class WorkspacePathAliasTests(unittest.TestCase):
@@ -69,6 +75,52 @@ class WorkspacePathAliasTests(unittest.TestCase):
         )
         self.assertTrue(read_result.success, read_result.error)
         self.assertIn("# backlog", read_result.output)
+
+    def test_write_tools_accept_workspace_alias_inside_writable_roots(self) -> None:
+        checkout = self.root / "01-amof-private"
+        backlog_dir = checkout / "docs" / "product" / "backlogs"
+        registry = ToolRegistry(
+            guardrails=Guardrails(writable_roots=[backlog_dir], unattended=True),
+            workspace_root=checkout,
+        )
+        registry.register(WriteTool(workspace_root=checkout))
+
+        # Pre-BL-065 this failed writable-root checks on the literal /workspace path.
+        written = registry.execute(
+            ToolCall(
+                id="1",
+                name="Write",
+                arguments={
+                    "path": "/workspace/docs/product/backlogs/dogfood-note.md",
+                    "contents": "ok\n",
+                },
+            )
+        )
+        self.assertTrue(written.success, written.error)
+        self.assertEqual(
+            (backlog_dir / "dogfood-note.md").read_text(encoding="utf-8"),
+            "ok\n",
+        )
+
+    def test_write_alias_outside_writable_roots_still_blocked(self) -> None:
+        target = self.root / "01-amof-private" / "docs" / "product" / "backlogs" / "amof.md"
+        registry = ToolRegistry(
+            guardrails=Guardrails(writable_roots=[target], unattended=True),
+            workspace_root=self.root,
+        )
+        registry.register(WriteTool(workspace_root=self.root))
+        blocked = registry.execute(
+            ToolCall(
+                id="2",
+                name="Write",
+                arguments={
+                    "path": "/workspace/README.md",
+                    "contents": "nope\n",
+                },
+            )
+        )
+        self.assertFalse(blocked.success)
+        self.assertIn("outside writable roots", blocked.error or "")
 
 
 if __name__ == "__main__":
