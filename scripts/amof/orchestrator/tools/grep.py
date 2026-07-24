@@ -6,9 +6,10 @@ Wraps ripgrep (rg) for fast regex search across files.
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .base import Tool, ToolResult
+from .base import Tool, ToolResult, resolve_tool_path
 
 
 class GrepTool(Tool):
@@ -16,7 +17,8 @@ class GrepTool(Tool):
     description = (
         "Search for a regex pattern across files using ripgrep. "
         "Supports file type filtering, glob patterns, context lines, "
-        "and multiple output modes."
+        "and multiple output modes. Prefer absolute materialized Repository "
+        "Paths; bare /workspace is rewritten to the runner workspace root."
     )
     parameters: Dict[str, Any] = {
         "type": "object",
@@ -27,7 +29,10 @@ class GrepTool(Tool):
             },
             "path": {
                 "type": "string",
-                "description": "File or directory to search in. Defaults to workspace root.",
+                "description": (
+                    "File or directory to search in. Defaults to workspace root. "
+                    "Bare /workspace is rewritten to the runner workspace root."
+                ),
             },
             "glob": {
                 "type": "string",
@@ -69,6 +74,9 @@ class GrepTool(Tool):
         },
         "required": ["pattern"],
     }
+
+    def __init__(self, workspace_root: Optional[Path] = None) -> None:
+        self._workspace_root = workspace_root
 
     def execute(self, pattern: str, **kwargs: Any) -> ToolResult:
         cmd: List[str] = ["rg", "--color=never"]
@@ -115,7 +123,12 @@ class GrepTool(Tool):
 
         # Pattern and path
         cmd.extend(["--", pattern])
-        search_path = kwargs.get("path", ".")
+        search_path = str(
+            resolve_tool_path(
+                kwargs.get("path", "."),
+                workspace_root=self._workspace_root,
+            )
+        )
         cmd.append(search_path)
 
         try:

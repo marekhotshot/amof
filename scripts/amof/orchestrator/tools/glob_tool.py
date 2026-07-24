@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .base import Tool, ToolResult
+from .base import Tool, ToolResult, resolve_tool_path
 
 
 class GlobTool(Tool):
@@ -17,7 +17,9 @@ class GlobTool(Tool):
     description = (
         "Search for files matching a glob pattern. Returns matching file "
         "paths sorted by modification time (newest first). Patterns not "
-        'starting with "**/" are auto-prepended with "**/" for recursive search.'
+        'starting with "**/" are auto-prepended with "**/" for recursive search. '
+        "Prefer absolute materialized Repository Paths; bare /workspace is "
+        "rewritten to the runner workspace root."
     )
     parameters: Dict[str, Any] = {
         "type": "object",
@@ -28,7 +30,10 @@ class GlobTool(Tool):
             },
             "target_directory": {
                 "type": "string",
-                "description": "Directory to search in. Defaults to workspace root.",
+                "description": (
+                    "Directory to search in. Defaults to workspace root. "
+                    "Bare /workspace is rewritten to the runner workspace root."
+                ),
             },
             "ignore_globs": {
                 "type": "array",
@@ -39,6 +44,9 @@ class GlobTool(Tool):
         "required": ["glob_pattern"],
     }
 
+    def __init__(self, workspace_root: Optional[Path] = None) -> None:
+        self._workspace_root = workspace_root
+
     def execute(
         self,
         glob_pattern: str,
@@ -46,7 +54,10 @@ class GlobTool(Tool):
         ignore_globs: Optional[List[str]] = None,
     ) -> ToolResult:
         _ = ignore_globs
-        search_dir = Path(target_directory) if target_directory else Path(".")
+        search_dir = resolve_tool_path(
+            target_directory if target_directory is not None else ".",
+            workspace_root=self._workspace_root,
+        )
 
         if not search_dir.is_dir():
             return ToolResult(
