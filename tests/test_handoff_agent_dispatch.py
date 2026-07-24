@@ -496,6 +496,82 @@ class HandoffAgentDispatchTests(unittest.TestCase):
         self.assertIn("structured write_scope_proposal", derived_goal)
         self.assertIn("proposal_missing", derived_goal)
 
+    def test_builtin_read_only_structured_proposal_uses_governed_backend(self) -> None:
+        captured: dict[str, object] = {}
+
+        def _fake_backend(**kwargs: object) -> dict[str, object]:
+            selection = kwargs["selection"]
+            captured["runner_id"] = selection.runner_id
+            return {
+                "schema_version": 1,
+                "result_kind": "agent_run_result",
+                "contract_version": "agent-run-v1",
+                "status": "completed",
+                "session_id": "builtin-discovery-proposal",
+                "exit_code": 0,
+                "stop_reason": "completed",
+                "final_text": "builtin ok",
+                "runner_id": selection.runner_id,
+                "backend": "hermes_opensandbox",
+                "write_scope_proposal": {
+                    "target_id": "github_app:owner/repo:abc123",
+                    "base_sha": "abc123",
+                    "allowed_roots": ["docs/product/backlogs/amof.md"],
+                    "denied_roots": [],
+                    "reason": "docs-only follow-up",
+                    "expected_checks": ["git diff --check"],
+                    "docs_only": True,
+                    "source_mutation": False,
+                },
+                "plan_path": None,
+                "checkpoint_path": None,
+                "event_log_path": "/tmp/events.jsonl",
+                "runtime_log_path": "/tmp/runtime.log",
+                "journal_path": None,
+                "changed_paths": [],
+                "validation_summary": {"status": "passed"},
+                "approved_capabilities": list(selection.capabilities),
+                "effective_capabilities": list(selection.capabilities),
+                "evidence_refs": {},
+            }
+
+        canonical_payload = _canonical_mission_packet(
+            goal="Inspect backlog drift and propose a bounded docs-only follow-up.",
+            objective="Return structured write_scope_proposal for docs/product/backlogs/amof.md.",
+            result_requirements={"structured_write_scope_proposal": True},
+            execution_allowed=True,
+        )
+        canonical_text = handoff._canonical_json(canonical_payload)
+
+        with TemporaryDirectory(prefix="amof-handoff-builtin-proposal-") as td:
+            amof_home = Path(td)
+            _write_packet(
+                amof_home,
+                text=canonical_text,
+                payload_kind="canonical_mission_packet",
+            )
+            with (
+                patch("amof.commands.handoff._load_execution_manifest", return_value={"ecosystem": "demo-repo", "repos": []}),
+                patch("amof.commands.handoff.hermes_opensandbox.run", side_effect=_fake_backend),
+                patch("amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope") as builtin,
+            ):
+                code, stdout, _stderr = _run_execute(
+                    _execute_args(confirm=True, runner_id="amof-built-in-code"), amof_home
+                )
+
+            receipt = json.loads(stdout)
+            result = json.loads(Path(receipt["result_path"]).read_text(encoding="utf-8"))
+            builtin.assert_not_called()
+            self.assertEqual(code, 0)
+            self.assertEqual(receipt["status"], "completed")
+            self.assertEqual(captured["runner_id"], "amof-built-in-code")
+            self.assertEqual(result["runner_id"], "amof-built-in-code")
+            self.assertEqual(result["backend"], "amof_builtin_code")
+            self.assertEqual(
+                result["write_scope_proposal"]["allowed_roots"],
+                ["docs/product/backlogs/amof.md"],
+            )
+
     def test_explicit_unsupported_runner_fails_closed_without_builtin_substitution(self) -> None:
         with TemporaryDirectory(prefix="amof-handoff-runner-fail-closed-") as td:
             amof_home = Path(td)
