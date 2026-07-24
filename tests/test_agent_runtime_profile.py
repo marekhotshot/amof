@@ -319,6 +319,24 @@ class _ProviderErrorPlannerLLM:
         return "openrouter/invalid"
 
 
+class _SchemaValidationProviderErrorPlannerLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat_structured(self, **kwargs):
+        self.calls += 1
+        raise ProviderError(
+            provider="remote-ial",
+            message=(
+                "Remote IAL structured response failed schema validation: "
+                "1 validation error for PlannerOutputModel"
+            ),
+        )
+
+    def model_name(self) -> str:
+        return "remote-ial/default"
+
+
 def _make_structured_planner_response(
     *,
     analysis: str,
@@ -4194,6 +4212,47 @@ class AgentPlanExecuteEnvelopeTests(unittest.TestCase):
             "schema-valid but unusable because it contained no subtasks and no clarification questions",
             planner_llm.messages_history[1][-1]["content"],
         )
+
+    def test_remote_ial_schema_provider_error_retries_once_and_emits_planning_failed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="amof-agent-envelope-remote-ial-schema-"
+        ) as td:
+            temp = Path(td)
+            repo = temp / "demo-repo"
+            amof_home = temp / "amof-home"
+            _init_git_repo(repo)
+            manifest = self._manifest(repo)
+            env = {
+                "AMOF_HOME": str(amof_home),
+                "OPENROUTER_API_KEY": "unit-test-provider-value",
+            }
+            planner_llm = _SchemaValidationProviderErrorPlannerLLM()
+
+            with patch.dict(os.environ, env, clear=False):
+                with _cwd(repo):
+                    with patch(
+                        "amof.orchestrator.llm.openai_client.OpenAIClient",
+                        return_value=planner_llm,
+                    ):
+                        envelope = agent_cmd.run_agent_plan_execute_envelope(
+                            manifest,
+                            {
+                                "goal": "Inspect this repo",
+                                "provider": "openrouter",
+                                "no_follow_up": True,
+                            },
+                        )
+            event_log_path = Path(str(envelope.event_log_path))
+            event_log_text = event_log_path.read_text(encoding="utf-8")
+
+        self.assertEqual(planner_llm.calls, 2)
+        self.assertEqual(envelope.status, "failed")
+        self.assertEqual(envelope.stop_reason, "planning_failed")
+        self.assertIn("schema validation", envelope.final_text)
+        self.assertIn('"event_type": "planning_failed"', event_log_text)
+        self.assertIn('"event_type": "session_end"', event_log_text)
 
     def test_readiness_capability_block_returns_structured_blocked_envelope(
         self,

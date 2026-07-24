@@ -377,6 +377,14 @@ def _budget_summary_payload(telemetry: Any) -> Dict[str, Any]:
     return {"limit": limit, "spent": spent, "remaining": remaining}
 
 
+def _provider_error_is_structured_schema_failure(exc: Any) -> bool:
+    message = str(exc or "").lower()
+    return (
+        "schema validation" in message
+        or "structured response failed schema validation" in message
+    )
+
+
 def _build_plan_execute_envelope(
     *,
     status: str,
@@ -4037,17 +4045,26 @@ def cmd_agent(
                     except ProviderError as e:
                         planning_failure_text = f"Planning provider error: {e}"
                         sys.stderr.write(f"[plan-execute] {planning_failure_text}\n")
-                        if _json_envelope:
-                            return _build_plan_execute_envelope(
-                                status="failed",
-                                session_id=session.id,
-                                exit_code=1,
-                                stop_reason="planning_provider_error",
-                                final_text=planning_failure_text,
-                                telemetry=telemetry,
-                                event_log_path=events.log_path,
+                        if (
+                            _provider_error_is_structured_schema_failure(e)
+                            and attempt < 2
+                        ):
+                            sys.stderr.write(
+                                "[plan-execute] Structured planner output failed schema "
+                                f"validation (attempt {attempt}/2); retrying once...\n"
                             )
-                        return 1
+                            continue
+                        events.log(
+                            "planning_failed",
+                            message=planning_failure_text[:500],
+                            stop_reason="planning_failed",
+                        )
+                        return _finalize_plan_execute_terminal(
+                            status="failed",
+                            exit_code=1,
+                            stop_reason="planning_failed",
+                            final_text=planning_failure_text,
+                        )
                     except PlannerSemanticRetryExhausted as e:
                         planning_failure_text = f"Planning failed after {max_plan_retries} attempts: {e}"
                         sys.stderr.write(f"[plan-execute] {planning_failure_text}\n")
