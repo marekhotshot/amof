@@ -1567,6 +1567,36 @@ def _explicit_builtin_runner_selected(runner_id: str | None) -> bool:
     return runner_id in {"code", "built-in", "builtin", "amof-built-in-code"}
 
 
+def _builtin_read_only_structured_proposal_discovery(
+    packet: PreparedHandoffPacket,
+    args: Any,
+) -> bool:
+    """Read-only discovery that must emit structured write-scope proposals."""
+    if _writable_root_approvals(args):
+        return False
+    if packet.payload_kind != "canonical_mission_packet":
+        return False
+    try:
+        canonical, _canonical_text = _parse_canonical_mission_packet_text(
+            packet.payload.text,
+            field_name="handoff packet canonical mission payload",
+            require_canonical_text=False,
+            studio_session_id=packet.studio_session_id,
+        )
+    except ValueError:
+        return False
+    return canonical.structured_write_scope_proposal_required
+
+
+def _synthetic_builtin_runner_record(runner_id: str) -> dict[str, Any]:
+    normalized = runner_id.strip() or "amof-built-in-code"
+    return {
+        "runner_id": normalized,
+        "backend": hermes_opensandbox.BACKEND_TYPE,
+        "execution": {"max_runtime_seconds": 900},
+    }
+
+
 def _capability_approvals(args: Any) -> list[str]:
     return [
         item.strip()
@@ -1690,15 +1720,28 @@ def _execute_agent_from_handoff(
             )
         )
         if runner_id is None or _explicit_builtin_runner_selected(runner_id):
-            response = agent_cmd.run_external_agent_plan_execute_envelope(
-                manifest,
-                request_payload,
-                studio_session_id=packet.studio_session_id,
-            )
-            result_payload = dict(response.result)
-            if runner_id is not None:
-                result_payload.setdefault("runner_id", runner_id)
-                result_payload.setdefault("backend", "amof_builtin_code")
+            effective_runner = (runner_id or "amof-built-in-code").strip()
+            if _builtin_read_only_structured_proposal_discovery(packet, args):
+                result_payload = _dispatch_backend_handoff(
+                    args=args,
+                    packet=packet,
+                    manifest=manifest,
+                    runner_record=_synthetic_builtin_runner_record(effective_runner),
+                    request_payload=request_payload,
+                    backend_module=hermes_opensandbox,
+                )
+                result_payload.setdefault("runner_id", effective_runner)
+                result_payload["backend"] = "amof_builtin_code"
+            else:
+                response = agent_cmd.run_external_agent_plan_execute_envelope(
+                    manifest,
+                    request_payload,
+                    studio_session_id=packet.studio_session_id,
+                )
+                result_payload = dict(response.result)
+                if runner_id is not None:
+                    result_payload.setdefault("runner_id", runner_id)
+                    result_payload.setdefault("backend", "amof_builtin_code")
         else:
             runner_record = _load_runner_record(runner_id)
             backend = hermes_opensandbox.runner_backend_type(runner_record)

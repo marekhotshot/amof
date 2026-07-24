@@ -4609,6 +4609,40 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         self.assertEqual(req.packs, {"core-read"})
         self.assertEqual(derive_required_capabilities(goal), {"read"})
 
+    def test_docs_only_dogfood_mission_does_not_derive_ops_helm_deploy(self) -> None:
+        from amof.orchestrator.plan_execute_control import (
+            assess_execution_readiness,
+            derive_tool_pack_requirements,
+        )
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = (
+            "Trivial develop-AMOF dogfood under project amof: in marekhotshot/amof-private, "
+            "append a one-line note to docs/product/backlogs/amof.md under a short heading "
+            "'## Autopilot dogfood (AMOF-PREDATOR-AUTOPILOT-DOGFOOD-002)' stating the UTC date "
+            "and that Predator Mission Autopilot cloud-dev dogfood touched this backlog. "
+            "Do not change charts, secrets, or deploy configs. Keep the edit docs-only."
+        )
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[Subtask(id="1", title="Append backlog note", description=goal, runner="code")],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+        self.assertNotIn("ops-helm-deploy", req.packs)
+        self.assertNotIn("k8s_mutation", req.capabilities)
+        self.assertNotIn("secret", req.capabilities)
+
+        readiness = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=create_trust_state(goal),
+            runner_factory=_StubRunnerFactory({"code": ["Read", "Write", "Glob"]}),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+        )
+        self.assertTrue(readiness.ok)
+
     def test_report_md_under_tmp_derives_reports(self) -> None:
         from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
         from amof.orchestrator.planner import ExecutionPlan, Subtask
