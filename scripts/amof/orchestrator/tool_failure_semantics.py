@@ -339,6 +339,17 @@ def analyze_tool_call_events(
                 required_or_optional = "alternative_group"
                 required_for = "repository metadata fallback"
                 safe_next_action = "Use the completed repository findings already collected through alternate read-only evidence."
+        elif tool_name in {"InsertAfter", "StrReplace", "Write"} and (
+            "requires_read" in error_summary or "not_observed" in error_summary
+        ):
+            # BL-071: path-alias mismatches can fail an early edit attempt; a
+            # later successful edit of the same class is recovery, not fatal.
+            if _has_successful_tool_followup(tool_events, call_index, tool_name):
+                required_or_optional = "alternative_group"
+                required_for = f"{tool_name} edit recovery"
+                safe_next_action = (
+                    f"Use the later successful {tool_name} result after re-reading the target path."
+                )
 
         failures.append(
             ToolFailureDetail(

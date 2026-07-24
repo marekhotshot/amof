@@ -851,7 +851,12 @@ class ToolRegistry:
             )
 
     def _record_read_evidence_for_path(self, path: str, *, offset: Any = None, limit: Any = None) -> None:
-        file_path = Path(path).resolve()
+        # BL-071: key read evidence by the same resolved path write tools use
+        # after /workspace alias rewrite, so InsertAfter/StrReplace against an
+        # absolute materialized path can see a prior Read of /workspace/<rel>.
+        file_path = resolve_tool_path(path, workspace_root=self._workspace_root).resolve(
+            strict=False
+        )
         if not file_path.is_file():
             return
         try:

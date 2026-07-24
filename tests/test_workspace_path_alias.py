@@ -12,6 +12,7 @@ SCRIPTS_ROOT = ROOT / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
+from amof.orchestrator.tool_failure_semantics import analyze_tool_call_events
 from amof.orchestrator.tools.base import (
     Guardrails,
     ToolCall,
@@ -19,6 +20,7 @@ from amof.orchestrator.tools.base import (
     resolve_tool_path,
 )
 from amof.orchestrator.tools.glob_tool import GlobTool
+from amof.orchestrator.tools.insert_after import InsertAfterTool
 from amof.orchestrator.tools.ls import LSTool
 from amof.orchestrator.tools.read import ReadTool
 from amof.orchestrator.tools.write import WriteTool
@@ -121,6 +123,69 @@ class WorkspacePathAliasTests(unittest.TestCase):
         )
         self.assertFalse(blocked.success)
         self.assertIn("outside writable roots", blocked.error or "")
+
+    def test_insert_after_accepts_read_evidence_from_workspace_alias(self) -> None:
+        """BL-071: Read(/workspace/...) must authorize InsertAfter(absolute)."""
+        checkout = self.root / "01-amof-private"
+        target = checkout / "docs" / "product" / "backlogs" / "amof.md"
+        registry = ToolRegistry(
+            guardrails=Guardrails(writable_roots=[target], unattended=True),
+            workspace_root=checkout,
+        )
+        registry.register(ReadTool(workspace_root=checkout))
+        registry.register(InsertAfterTool(workspace_root=checkout))
+
+        read = registry.execute(
+            ToolCall(
+                id="r1",
+                name="Read",
+                arguments={"path": "/workspace/docs/product/backlogs/amof.md"},
+            )
+        )
+        self.assertTrue(read.success, read.error)
+
+        inserted = registry.execute(
+            ToolCall(
+                id="i1",
+                name="InsertAfter",
+                arguments={
+                    "path": str(target.resolve()),
+                    "anchor_string": "# backlog",
+                    "content_to_insert": "\n## dogfood\n",
+                },
+            )
+        )
+        self.assertTrue(inserted.success, inserted.error)
+        self.assertIn("## dogfood", target.read_text(encoding="utf-8"))
+
+    def test_insert_after_requires_read_recovered_by_later_success(self) -> None:
+        events = [
+            {
+                "event_id": "run:0001",
+                "tool": "InsertAfter",
+                "args": {"path": "/abs/docs/amof.md"},
+                "success": False,
+                "error": (
+                    "invalid_insertafter_anchor_requires_read: Read /abs/docs/amof.md "
+                    "before InsertAfter, then copy anchor_string exactly from the Read output."
+                ),
+            },
+            {
+                "event_id": "run:0002",
+                "tool": "InsertAfter",
+                "args": {"path": "/abs/docs/amof.md"},
+                "success": True,
+                "output_preview": "inserted",
+            },
+        ]
+        analysis = analyze_tool_call_events(
+            events,
+            task_text="Append a docs-only backlog note under Autopilot dogfood.",
+            final_response="Changed docs/product/backlogs/amof.md",
+            subtask_id="1",
+        )
+        self.assertEqual(len(analysis["fatal_failures"]), 0)
+        self.assertEqual(analysis["failures"][0].required_or_optional, "alternative_group")
 
 
 if __name__ == "__main__":
