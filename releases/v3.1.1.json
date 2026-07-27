@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "version": "3.1.1",
+  "tag": "v3.1.1",
+  "previous_tag": "v3.1.0",
+  "timestamp": "2026-06-11T10:09:53Z",
+  "action": "bump",
+  "bump_part": "patch",
+  "stage": null,
+  "stage_num": null,
+  "branch": "main",
+  "commit": "63340073f293ffabbb2a564f5c90452eb533d00f",
+  "author": "Marek Ga\u0161per",
+  "commits_since_previous": 5,
+  "commit_subjects": [
+    "chore(promote-main): promote AMOF-ASYNC-AGENT-RUN-COCKPIT-AND-RELEASE-001 candidate bundle",
+    "chore(promote-main): promote AMOF-OPERATOR-CONSOLE-ACTIONABILITY-001 candidate bundle",
+    "chore(promote-main): promote AMOF-PROMOTE-MAIN-COMPAT-LOCK-RECONCILE-001 candidate bundle",
+    "chore(promote-main): promote AMOF-BLOCKED-ENVELOPE-CHECKPOINT-CONTRACT-001 candidate bundle",
+    "chore(promote-main): promote AMOF-OPERATOR-COCKPIT-HERMES-CONVERGENCE-001 candidate bundle"
+  ],
+  "files_updated": [
+    "pyproject.toml",
+    "scripts/amof/__init__.py",
+    "scripts/amof/orchestrator/__init__.py",
+    "CHANGELOG.md",
+    "README.md",
+    "docs/releases/amof-3.1.1.md",
+    "docs/governed-cognition-runtime.md",
+    "docs/remote-ial.md",
+    "docs/operations/remote-ial-public-client-contract.md",
+    "docs/operations/public-smoke-matrix.md",
+    "docs/operations/public-surface-taxonomy.md",
+    "docs/operations/source-checkout-bootstrap.md",
+    "docs/runbooks/install.md",
+    "docs/runbooks/happy-path-agent-workflow.md",
+    "scripts/smoke-standalone-amof.sh"
+  ],
+  "origin": "manual",
+  "dry_run": false,
+  "pushed": true,
+  "notes": "Derived retrospectively from docs/releases/amof-3.1.1.md and annotated tag v3.1.1 (AMOF-BL-092 release-truth gap fill)."
+}

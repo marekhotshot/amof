@@ -232,6 +232,7 @@ class ExternalAgentPlanExecuteRequestSchemaTests(unittest.TestCase):
                 "event_log_path",
                 "journal_path",
                 "budget_summary",
+                "proposal_missing_reason",
             },
         )
         self.assertEqual(envelope.to_dict()["result_kind"], "agent_run_result")

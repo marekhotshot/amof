@@ -11,6 +11,8 @@
       "runner_id": "authority-local-planning",
       "context": "local",
       "status": "available",
+      "backend": "planning_only",
+      "dispatch_available": false,
       "supported_task_kinds": [
         "other"
       ],

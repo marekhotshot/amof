@@ -348,11 +348,9 @@ class AgentRunResult:
                 if self.write_scope_proposal is not None
                 else {}
             ),
-            **(
-                {"proposal_missing_reason": self.proposal_missing_reason}
-                if self.proposal_missing_reason is not None
-                else {}
-            ),
+            # Schema declares proposal_missing_reason as string|null; always
+            # serialize so null round-trips with contract examples.
+            "proposal_missing_reason": self.proposal_missing_reason,
             **({"approved_capabilities": list(self.approved_capabilities)} if self.approved_capabilities is not None else {}),
             **({"effective_capabilities": list(self.effective_capabilities)} if self.effective_capabilities is not None else {}),
             **({"evidence_refs": dict(self.evidence_refs)} if self.evidence_refs is not None else {}),

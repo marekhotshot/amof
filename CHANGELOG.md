@@ -8,6 +8,65 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## v3.2.0 - Governed Handoff Truthfulness
+
+- Minor release after `v3.1.1`.
+- Packages the 43-commit public `main` delta since `v3.1.1` as a governed
+  handoff truthfulness release: additive contracts and runtime hardening only
+  (contracts `+489/−0` at the public contract root; no CLI file removals).
+
+### Added
+
+- Public `canonical-mission-packet` contract and handoff prepare/accept path for
+  bounded mission transport without command, secret, or self-approval authority.
+- Structured `write_scope_proposal` emission on agent-run results and optional
+  `structured_write_scope_proposal` on canonical mission packets.
+- Claude Code execution backend as a second governed runner, with multi-target
+  dispatch coverage alongside Hermes.
+- Risk-gated Critic pass producing PlanBundle `dissent` / interpretation
+  signals, plus `amof chat plan --risk-signals-json` for dogfood.
+- Optional PlanBundle cognition receipt fields (`interpretations`, `confidence`,
+  `dissent`, `suggested_next_actions`).
+- Hermes Remote IAL usage and cost accounting on terminal result envelopes.
+- Canonical-repo write guard and doctor hygiene for forbidding source edits in
+  canonical checkouts.
+- Native plan-execute provider/model/transport provenance on result telemetry
+  (public BL-047).
+
+### Changed
+
+- Hermes read-only mutation policy preservation remains fail-closed at the
+  workspace boundary; unclean read-only blocker copy now states modified and/or
+  untracked paths truthfully (public BL-087 follow-up; message-only).
+- Plan/execute and handoff hardening bundles: workspace path aliasing for
+  `/workspace` tool roots, ToolProposal `allowed_paths` normalization, InsertAfter
+  read-evidence path parity, git-status changed-path preservation, bounded-auto
+  capability clamp, planning failure class and builtin discovery proposal fixes
+  (BL-027/037/045/046/065/070–073).
+- Builtin/read-only tool-failure semantics, write-advisory nonfatal recovery,
+  fence-tolerant Remote IAL planner parse, new-file diff verification, and
+  promote-main candidate-delta safety remain part of the accumulated public
+  hardening line.
+- Contract-conformance repairs for release truth: `AgentRunResult.to_dict()` now
+  always serializes schema-declared `proposal_missing_reason` (including `null`)
+  so examples round-trip; remote-ial provider-profile example template restored;
+  runner-authority match golden updated for intended `backend` /
+  `dispatch_available` candidate fields.
+
+### Notes
+
+- This release does not claim sandbox/substrate containment, hard duration or
+  loop-budget authority, or EU AI Act compliance/certification.
+- Private Predator / operator-console surfaces (for example operative-mission
+  carrier truncation and WAITING_ON_OPERATOR UX) remain outside the public
+  artifact.
+
+### Validation
+
+- `PYTHONPATH=scripts python3 -m amof --version` reports `AMOF v3.2.0`.
+- `PYTHONPATH=scripts python3 -m unittest discover -s tests` recorded green
+  after contract-conformance repairs (skips allowed).
+
 ## v3.1.1 - Async Handoff Closeout and Canonical Terminal Results
 
 - Patch release after `v3.1.0`.
