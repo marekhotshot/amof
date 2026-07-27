@@ -39,6 +39,49 @@ _FULL_REWRITE_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Docs-only / bounded-write packets enumerate prohibited domains; strip those
+# clauses before trusted-intent classification (BL-073 / BL-044 residual).
+_PROHIBITION_CLAUSE_RE = re.compile(
+    r"\b(?:do\s+not|don't|never)\s+"
+    r"(?:run|execute|use|call|trigger|apply|install|uninstall|upgrade|"
+    r"mutate|rotate|fetch|download|write|edit|modify|patch|update|change)\b"
+    r"[^.!\n]*[.!]?",
+    re.IGNORECASE,
+)
+_NEGATED_OPERATION_RE = re.compile(
+    r"\b(?:do\s+not|don't|never|without)\s+"
+    r"(?:run|execute|use|call|trigger|apply|install|uninstall|upgrade|"
+    r"mutate|rotate|fetch|download|write|edit|modify|patch|update|change)\b",
+    re.IGNORECASE,
+)
+_NO_SLASH_PROHIBITION_RE = re.compile(
+    r"\bno\s+[\w-]+(?:\s*/\s*[\w-]+)+",
+    re.IGNORECASE,
+)
+_FORBIDDEN_MUTATIONS_CLAUSE_RE = re.compile(
+    r"\bForbidden mutations:\s*[^.!\n]*[.!]?",
+    re.IGNORECASE,
+)
+_INERT_DEPLOY_CONFIG_NOUN_RE = re.compile(
+    r"\bdeploy(?:ment)?\s+configs?\b",
+    re.IGNORECASE,
+)
+_INERT_DEPLOYMENT_CREDENTIALS_RE = re.compile(
+    r"\bdeployment[_ -]?credentials\b",
+    re.IGNORECASE,
+)
+
+
+def strip_prohibited_intent_framing(text: str) -> str:
+    """Remove prohibition / governance framing before capability intent scans."""
+    sanitized = _PROHIBITION_CLAUSE_RE.sub(" ", text or "")
+    sanitized = _NEGATED_OPERATION_RE.sub(" ", sanitized)
+    sanitized = _NO_SLASH_PROHIBITION_RE.sub(" ", sanitized)
+    sanitized = _FORBIDDEN_MUTATIONS_CLAUSE_RE.sub(" ", sanitized)
+    sanitized = _INERT_DEPLOY_CONFIG_NOUN_RE.sub(" ", sanitized)
+    sanitized = _INERT_DEPLOYMENT_CREDENTIALS_RE.sub(" ", sanitized)
+    return sanitized
+
 _SHELL_WRITE_PREFIXES = (
     "mkdir",
     "touch",
@@ -106,7 +149,7 @@ class PolicyDecision:
 
 
 def derive_trusted_intent_caps(user_prompt: str) -> Set[Capability]:
-    text = (user_prompt or "").strip()
+    text = strip_prohibited_intent_framing(user_prompt or "").strip()
     caps: Set[Capability] = {"read"}
     if not text:
         return caps
@@ -120,9 +163,10 @@ def derive_trusted_intent_caps(user_prompt: str) -> Set[Capability]:
 
 
 def create_trust_state(user_prompt: str) -> TrustState:
+    sanitized = strip_prohibited_intent_framing(user_prompt or "")
     return TrustState(
         trusted_intent_caps=derive_trusted_intent_caps(user_prompt),
-        full_rewrite_authorized=bool(_FULL_REWRITE_INTENT_RE.search(user_prompt or "")),
+        full_rewrite_authorized=bool(_FULL_REWRITE_INTENT_RE.search(sanitized)),
     )
 
 

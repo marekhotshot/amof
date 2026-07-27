@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from .planner import ExecutionPlan, Subtask
-from .trust_boundary import Capability, TrustState, derive_trusted_intent_caps
+from .trust_boundary import (
+    Capability,
+    TrustState,
+    derive_trusted_intent_caps,
+    strip_prohibited_intent_framing,
+)
 
 VALID_CAPABILITIES: frozenset[str] = frozenset(
     {
@@ -132,16 +137,6 @@ _ACTIVE_OPERATION_INTENT_RE = re.compile(
     r"\b(run|execute|use|call|trigger|apply|install|uninstall|upgrade|"
     r"mutate|rotate|read\s+(?:a\s+)?(?:\w+\s+){0,3}(?:secret|token|credential|kubeconfig|\.env)|"
     r"fetch|download|write|edit|modify|patch|update)\b",
-    re.IGNORECASE,
-)
-_NEGATED_OPERATION_RE = re.compile(
-    r"\b(?:do\s+not|don't|never|without)\s+"
-    r"(?:run|execute|use|call|trigger|apply|install|uninstall|upgrade|"
-    r"mutate|rotate|fetch|download|write|edit|modify|patch|update|change)\b",
-    re.IGNORECASE,
-)
-_INERT_DEPLOY_CONFIG_NOUN_RE = re.compile(
-    r"\bdeploy(?:ment)?\s+configs?\b",
     re.IGNORECASE,
 )
 _READ_ONLY_REPO_INSPECTION_RE = re.compile(
@@ -648,10 +643,13 @@ def _is_read_only_inspection(text: str) -> bool:
 
 
 def _strip_negated_operations(text: str) -> str:
-    """Remove 'do not modify/run/...' phrases before intent classification."""
-    sanitized = _NEGATED_OPERATION_RE.sub("", text or "")
-    # Prohibited "deploy configs" mentions are configuration nouns, not helm deploy intent.
-    return _INERT_DEPLOY_CONFIG_NOUN_RE.sub("", sanitized)
+    """Remove prohibition / governance framing before intent classification.
+
+    Docs-only bounded-write packets often enumerate what must *not* be touched
+    (Helm/Jenkins/K8s/secrets/deploy). Those nouns must not derive ops tool
+    packs. Readiness still gates genuine positive deploy/CI intent.
+    """
+    return strip_prohibited_intent_framing(text)
 
 
 def is_read_only_repository_inspection(text: str) -> bool:
@@ -850,14 +848,15 @@ def _path_covered_by_writable_roots(path: str, roots: List[Path]) -> bool:
 
 
 def derive_required_capabilities(text: str) -> Set[Capability]:
+    sanitized = _strip_negated_operations(text or "")
     caps = set(derive_trusted_intent_caps(text))
     if _is_read_only_inspection(text or ""):
         return {"read"}  # type: ignore[return-value]
-    if _SECRET_INTENT_RE.search(text or ""):
+    if _SECRET_INTENT_RE.search(sanitized):
         caps.update({"secret", "write"})
-    if _NETWORK_INTENT_RE.search(text or ""):
+    if _NETWORK_INTENT_RE.search(sanitized):
         caps.add("network")
-    if _WRITE_INTENT_RE.search(text or ""):
+    if _WRITE_INTENT_RE.search(sanitized):
         caps.add("write")
     return caps  # type: ignore[return-value]
 
