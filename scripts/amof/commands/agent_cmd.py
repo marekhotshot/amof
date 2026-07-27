@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -509,6 +509,44 @@ def _json_plan_execute_early_exit(
     )
 
 
+def _transport_for_provider(provider: Optional[str]) -> Optional[str]:
+    """Map request provider to the transport label Mission Result expects."""
+    normalized = (provider or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized in {"remote-ial", "remote_ial"}:
+        return "remote_ial"
+    if normalized in {"anthropic", "claude", "claude-code"}:
+        return "claude_code"
+    return "local"
+
+
+def _with_request_provenance(
+    envelope: AgentPlanExecuteEnvelope,
+    request: AgentPlanExecuteJsonRequest,
+) -> AgentPlanExecuteEnvelope:
+    """BL-047: fill provider/model/transport holes on native plan-execute envelopes.
+
+    Hermes backends already stamp these fields. The built-in plan-execute path
+    historically returned exit_code/status without requested/effective
+    provider/model or transport, so Mission Result showed nulls despite a
+    completed run.
+    """
+    provider = (request.provider or "").strip() or None
+    model = (request.model or "").strip() or None
+    transport = envelope.transport or _transport_for_provider(provider)
+    return replace(
+        envelope,
+        requested_provider=envelope.requested_provider or provider,
+        effective_provider=envelope.effective_provider or provider,
+        requested_model=envelope.requested_model or model,
+        effective_model=envelope.effective_model or model,
+        transport=transport,
+        runner_id=envelope.runner_id or "amof-built-in-code",
+        backend=envelope.backend or "amof_builtin_code",
+    )
+
+
 def _run_agent_plan_execute_request(
     manifest: Dict[str, Any],
     request: AgentPlanExecuteJsonRequest,
@@ -537,10 +575,13 @@ def _run_agent_plan_execute_request(
             _json_envelope=True,
         )
     if isinstance(result, AgentPlanExecuteEnvelope):
-        return result
-    return _failed_json_envelope(
-        stop_reason="invalid_json_mode_result",
-        final_text="JSON plan-execute mode did not produce a structured result envelope.",
+        return _with_request_provenance(result, request)
+    return _with_request_provenance(
+        _failed_json_envelope(
+            stop_reason="invalid_json_mode_result",
+            final_text="JSON plan-execute mode did not produce a structured result envelope.",
+        ),
+        request,
     )
 
 
