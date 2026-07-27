@@ -448,7 +448,9 @@ def run(
         return _blocked_result(
             run_id=run_id,
             stop_reason="read_only_workspace_not_clean",
-            final_text="Read-only run blocked before execution because workspace has pre-existing tracked changes.",
+            final_text=_shared._read_only_unclean_workspace_message(
+                list(preexisting_changed_paths)
+            ),
             studio_session_id=studio_session_id,
             event_log_path=event_log_path,
             runtime_log_path=runtime_log_path,

@@ -1267,6 +1267,25 @@ def _changed_paths_delta(before: list[str], after: list[str]) -> list[str]:
     return sorted(after_set - before_set)
 
 
+def _read_only_unclean_workspace_message(preexisting_changed_paths: list[str]) -> str:
+    """Describe the unclean workspace without claiming tracked-only when untracked may be present.
+
+    `_changed_paths` uses `git status --short --untracked-files=all`, so the sample
+    may include modified tracked files and/or untracked paths.
+    """
+    paths = [str(item).strip() for item in preexisting_changed_paths if str(item).strip()]
+    if not paths:
+        return (
+            "Read-only run blocked before execution because the workspace is not clean."
+        )
+    sample = ", ".join(paths[:5])
+    more = f" (+{len(paths) - 5} more)" if len(paths) > 5 else ""
+    return (
+        "Read-only run blocked before execution because the workspace has pre-existing "
+        f"changes (modified and/or untracked): {sample}{more}."
+    )
+
+
 def _restore_read_only_paths(workspace: Path, paths: list[str]) -> list[str]:
     restored: list[str] = []
     if not paths:
@@ -1510,7 +1529,7 @@ def run(
         )
 
     if not selection.writable_roots and preexisting_changed_paths:
-        final_text = "Read-only run blocked before execution because workspace has pre-existing tracked changes."
+        final_text = _read_only_unclean_workspace_message(list(preexisting_changed_paths))
         result = _result_payload(
             run_id=run_id,
             status="blocked",

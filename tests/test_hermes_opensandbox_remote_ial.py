@@ -658,6 +658,9 @@ class HermesOpenSandboxRemoteIALTests(unittest.TestCase):
             (result.get("evidence_refs") or {}).get("preexisting_changed_paths"),
             ["src/components/CookieConsent.tsx"],
         )
+        self.assertIn("src/components/CookieConsent.tsx", result.get("final_text") or "")
+        self.assertIn("modified and/or untracked", result.get("final_text") or "")
+        self.assertNotIn("pre-existing tracked changes", result.get("final_text") or "")
         run_process.assert_not_called()
 
     def test_missing_remote_ial_config_blocks_before_hermes_process(self) -> None:
