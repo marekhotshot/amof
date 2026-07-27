@@ -4643,6 +4643,107 @@ class PlanExecuteToolPackReadinessTests(unittest.TestCase):
         )
         self.assertTrue(readiness.ok)
 
+    def test_bl073_docs_only_bounded_auto_packet_framing_does_not_ask_ci_cluster(
+        self,
+    ) -> None:
+        """BL-073: packet prohibition framing must not derive ops packs."""
+        from amof.orchestrator.plan_execute_control import (
+            assess_execution_readiness,
+            derive_tool_pack_requirements,
+        )
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        cases = [
+            (
+                "slash-list",
+                "Native bounded-auto dogfood: append a one-line note to "
+                "docs/product/backlogs/amof.md. Docs-only; no charts/secrets/deploy. "
+                "Apply the approved write scope exactly. Forbidden mutations: "
+                "runtime_mutation, credential_injection, shell_commands, "
+                "tool_pack_self_approval, capability_self_approval, "
+                "deployment_credentials.",
+            ),
+            (
+                "enumerated-prohibition",
+                "Trivial develop-AMOF dogfood: append a one-line note to "
+                "docs/product/backlogs/amof.md. Do not change charts, secrets, "
+                "deploy configs, Helm, Kubernetes, Jenkins, or network settings. "
+                "Keep the edit docs-only. Use only Read/InsertAfter/Write on the "
+                "approved markdown file. Apply the approved scope exactly.",
+            ),
+        ]
+        for label, goal in cases:
+            with self.subTest(label=label):
+                plan = ExecutionPlan(
+                    analysis="Append note to amof.md",
+                    subtasks=[
+                        Subtask(
+                            id="1",
+                            title="Append note to amof.md",
+                            description="Append note to amof.md",
+                            runner="code",
+                        )
+                    ],
+                    execution_order=["1"],
+                )
+                req = derive_tool_pack_requirements(goal, plan)
+                self.assertNotIn("ops-helm-deploy", req.packs)
+                self.assertNotIn("ops-jenkins", req.packs)
+                self.assertNotIn("ops-k8s", req.packs)
+                self.assertTrue(req.packs <= {"core-read", "code-edit", "reports"})
+                for cap in (
+                    "k8s_mutation",
+                    "jenkins",
+                    "k8s",
+                    "secret",
+                    "shell_limited",
+                    "network",
+                ):
+                    self.assertNotIn(cap, req.capabilities)
+                readiness = assess_execution_readiness(
+                    goal,
+                    plan,
+                    trust_state=create_trust_state(goal),
+                    runner_factory=_StubRunnerFactory(
+                        {"code": ["Read", "Write", "InsertAfter", "Glob"]}
+                    ),
+                    guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+                )
+                self.assertTrue(readiness.ok, msg=readiness.issues)
+
+    def test_bl073_genuine_deploy_mission_still_asks_and_gates(self) -> None:
+        """BL-073: real deploy intent still derives ops-helm-deploy and fails readiness."""
+        from amof.orchestrator.plan_execute_control import (
+            assess_execution_readiness,
+            derive_tool_pack_requirements,
+        )
+        from amof.orchestrator.planner import ExecutionPlan, Subtask
+        from amof.orchestrator.trust_boundary import create_trust_state
+
+        goal = (
+            "Deploy the staging release with helm upgrade --install for chart "
+            "amof-cloud-runtime in namespace amof-ial-dev and verify rollout."
+        )
+        plan = ExecutionPlan(
+            analysis=goal,
+            subtasks=[
+                Subtask(id="1", title="Helm deploy", description=goal, runner="code")
+            ],
+            execution_order=["1"],
+        )
+        req = derive_tool_pack_requirements(goal, plan)
+        self.assertIn("ops-helm-deploy", req.packs)
+        self.assertIn("k8s_mutation", req.capabilities)
+        readiness = assess_execution_readiness(
+            goal,
+            plan,
+            trust_state=create_trust_state(goal),
+            runner_factory=_StubRunnerFactory({"code": ["Read", "Write", "Glob"]}),
+            guardrails=Guardrails(config=GuardrailConfig.public_defaults()),
+        )
+        self.assertFalse(readiness.ok)
+
     def test_report_md_under_tmp_derives_reports(self) -> None:
         from amof.orchestrator.plan_execute_control import derive_tool_pack_requirements
         from amof.orchestrator.planner import ExecutionPlan, Subtask
