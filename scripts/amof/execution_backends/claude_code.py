@@ -257,6 +257,7 @@ def build_selection(
     approve_writable_roots: list[str],
     timeout_seconds: int,
     readable_root: str | None,
+    write_scope_binding_id: str | None = None,
 ) -> HermesBackendSelection:
     # Selection semantics (capability gating, writable-root containment) are
     # backend-independent; reuse the shared governed builder.
@@ -266,6 +267,7 @@ def build_selection(
         approve_writable_roots=approve_writable_roots,
         timeout_seconds=timeout_seconds,
         readable_root=readable_root,
+        write_scope_binding_id=write_scope_binding_id,
     )
 
 
@@ -669,6 +671,14 @@ def run(
         proposal_missing_reason=proposal_missing_reason,
         cli_envelope=cli_envelope,
     )
+    result = _shared._apply_write_scope_enforcement_if_bound(
+        result,
+        selection=selection,
+        run_id=run_id,
+        workspace=workspace,
+    )
+    stop_reason = str(result.get("stop_reason") or stop_reason)
+    status = str(result.get("status") or status)
     _shared._write_terminal_result(
         result_path=result_path,
         event_log_path=event_log_path,

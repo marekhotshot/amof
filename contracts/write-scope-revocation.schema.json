@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/write-scope-revocation.schema.json",
+  "title": "Write Scope Revocation",
+  "description": "First-class operator kill switch for a WriteScopeApproval. Revocation is idempotent but auditable: repeating revoke for an already-revoked approval returns the existing record and emits an audit event. reason is human rationale and non-authoritative for identity.",
+  "type": "object",
+  "required": [
+    "kind",
+    "schema_version",
+    "revocation_id",
+    "approval_id",
+    "revoked_by",
+    "revoked_at",
+    "reason",
+    "provenance"
+  ],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "const": "write_scope_revocation"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "revocation_id": {
+      "type": "string",
+      "pattern": "^wsr-[0-9a-f]{24}$",
+      "description": "Deterministic id: wsr- + sha256(approval_id)[:24]. One durable revocation identity per approval."
+    },
+    "approval_id": {
+      "type": "string",
+      "pattern": "^wsa-[0-9a-f]{24}$"
+    },
+    "revoked_by": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Operator identity asserted at revoke time."
+    },
+    "revoked_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ISO-8601 UTC timestamp of the first successful revocation. Idempotent re-revoke preserves the original revoked_at."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human rationale. Non-authoritative; does not alter approval identity or path grants."
+    },
+    "provenance": {
+      "type": "string",
+      "const": "operator_asserted",
+      "description": "Only operator_asserted provenance may revoke."
+    }
+  },
+  "additionalProperties": false
+}

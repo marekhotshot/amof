@@ -258,8 +258,12 @@ class AgentRunResult:
     failure_classification: str | None = None
     failure: dict[str, Any] | None = None
     changed_paths: list[str] | None = None
+    write_scope_binding_id: str | None = None
+    write_scope_approval_id: str | None = None
+    mutation_receipt: dict[str, Any] | None = None
     validation_summary: dict[str, Any] | None = None
     write_scope_proposal: dict[str, Any] | None = None
+    write_scope_proposals: list[dict[str, Any]] | None = None
     proposal_missing_reason: str | None = None
     approved_capabilities: list[str] | None = None
     effective_capabilities: list[str] | None = None
@@ -342,10 +346,34 @@ class AgentRunResult:
             ),
             **({"failure": dict(self.failure)} if self.failure is not None else {}),
             **({"changed_paths": list(self.changed_paths)} if self.changed_paths is not None else {}),
+            **(
+                {"write_scope_binding_id": self.write_scope_binding_id}
+                if self.write_scope_binding_id is not None
+                else {}
+            ),
+            **(
+                {"write_scope_approval_id": self.write_scope_approval_id}
+                if self.write_scope_approval_id is not None
+                else {}
+            ),
+            **(
+                {"mutation_receipt": dict(self.mutation_receipt)}
+                if self.mutation_receipt is not None
+                else {}
+            ),
             **({"validation_summary": dict(self.validation_summary)} if self.validation_summary is not None else {}),
             **(
                 {"write_scope_proposal": dict(self.write_scope_proposal)}
                 if self.write_scope_proposal is not None
+                else {}
+            ),
+            **(
+                {
+                    "write_scope_proposals": [
+                        dict(item) for item in self.write_scope_proposals
+                    ]
+                }
+                if self.write_scope_proposals is not None
                 else {}
             ),
             # Schema declares proposal_missing_reason as string|null; always

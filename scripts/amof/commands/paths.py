@@ -30,6 +30,13 @@ from ..app_paths import (
     vector_store_dir,
     workspace_state_file,
     workspaces_registry_file,
+    write_scope_approvals_dir,
+    write_scope_bindings_dir,
+    write_scope_events_dir,
+    write_scope_proposals_dir,
+    write_scope_receipts_dir,
+    write_scope_revocations_dir,
+    write_scopes_dir,
 )
 from ..version_metadata import install_metadata_file, load_install_metadata
 
@@ -50,6 +57,14 @@ def _path_report() -> dict[str, Any]:
         "provider_profiles_dir": str(provider_profiles_dir()),
         "runs_dir": str(runs_dir()),
         "studio_dir": str(studio_dir()),
+        "write_scopes_dir": str(write_scopes_dir()),
+        "write_scope_proposals_dir": str(write_scope_proposals_dir()),
+        "write_scope_approvals_dir": str(write_scope_approvals_dir()),
+        "write_scope_bindings_dir": str(write_scope_bindings_dir()),
+        "write_scope_receipts_dir": str(write_scope_receipts_dir()),
+        "write_scope_revocations_dir": str(write_scope_revocations_dir()),
+        "write_scope_events_dir": str(write_scope_events_dir()),
+
         "evidence_dir": str(evidence_dir()),
         "director_prepare_runs_dir": str(director_prepare_runs_dir()),
         "director_run_local_dir": str(director_run_local_dir()),

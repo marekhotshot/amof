@@ -8,6 +8,42 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - No unreleased changes.
 
+## v3.3.0 - Write-Scope Authority
+
+- Minor release after `v3.2.0`.
+- Completes the public Write-Scope Authority loop for OSS runtimes:
+  workers propose, operators approve, Runtime binds and enforces, receipts
+  prove compliance.
+
+### Added
+
+- Public Write-Scope Authority loop: durable Proposal → operator Approval
+  (TTL + revoke) → Runtime Binding → path enforcement → MutationReceipt →
+  `amof scope audit|recover`.
+- Public contracts: `write-scope-proposal`, `write-scope-approval`,
+  `write-scope-binding`, `write-scope-revocation`, `mutation-receipt`, plus
+  additive AgentRunResult fields (`write_scope_proposals[]`,
+  `write_scope_approval_id`, `write_scope_binding_id`, `mutation_receipt`).
+- CLI: `amof scope list|show|approve|revoke|audit|recover` and execute binding
+  via `--write-scope-approval`.
+- Crash recovery that never fabricates successful completion and never
+  continues mutation authority automatically.
+- Docs: `docs/write-scope-authority.md`, `docs/releases/amof-3.3.0.md`.
+
+### Changed
+
+- `--approve-writable-root` remains available as a deprecated compatibility
+  shim with an explicit warning. It never mints historical Approvals/Bindings.
+
+### Migration notes
+
+- Nested `write_scope_proposal` / `write_scope_proposals[]` on AgentRunResult
+  remain backwards-readable; Runtime may persist them into durable Proposal
+  records without rewriting the result envelope.
+- Legacy naked writable-root flags / `cli_flag` elevation events are **not**
+  converted into WriteScopeApproval history.
+- Unknown or corrupt write-scope records fail closed.
+
 ## v3.2.0 - Governed Handoff Truthfulness
 
 - Minor release after `v3.1.1`.

@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/write-scope-binding.schema.json",
+  "title": "Write Scope Binding",
+  "description": "Runtime-authored binding of exactly one WriteScopeApproval to exactly one mutating execution attempt. Binding is created by Runtime before worker mutation authority is granted. Wave 3 does not consume the Approval; consumption is reserved for successful mutation completion (Wave 4). Single-use: an Approval cannot re-bind while it has an active or completed binding.",
+  "type": "object",
+  "required": [
+    "kind",
+    "schema_version",
+    "binding_id",
+    "approval_id",
+    "run_id",
+    "target_id",
+    "bound_at",
+    "status",
+    "body_hash",
+    "base_sha",
+    "workspace_root",
+    "writable_roots",
+    "denied_roots"
+  ],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "const": "write_scope_binding"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "binding_id": {
+      "type": "string",
+      "pattern": "^wsb-[0-9a-f]{24}$",
+      "description": "Deterministic id: wsb- + sha256(approval_id + ':' + run_id + ':' + bound_at + ':' + target_id)[:24]."
+    },
+    "approval_id": {
+      "type": "string",
+      "pattern": "^wsa-[0-9a-f]{24}$",
+      "description": "Parent WriteScopeApproval identity."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Execution attempt id (handoff id, session id, or plan-execute run id)."
+    },
+    "target_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Repository identity from the frozen Approval body; must match the execution target."
+    },
+    "runner_id": {
+      "type": ["string", "null"],
+      "description": "Selected runner/backend identity when known at bind time."
+    },
+    "bound_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ISO-8601 UTC timestamp when Runtime created the binding."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "completed", "failed", "revoked", "suspended"],
+      "description": "Binding lifecycle. active reserves the Approval for this attempt; completed/failed mark terminal execution outcomes. Approval consumption is Wave 4."
+    },
+    "body_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Copied from Approval at bind time after integrity re-check."
+    },
+    "base_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Frozen base_sha from Approval; must equal git rev-parse HEAD in workspace_root at bind time."
+    },
+    "workspace_root": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path of the repository workspace used for base_sha and root resolution."
+    },
+    "writable_roots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Absolute writable roots resolved from Approval allowed_roots against workspace_root. Path checks still apply denied_roots with deny-wins semantics."
+    },
+    "denied_roots": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Absolute denied roots resolved from Approval denied_roots at bind time. Empty when no denies. Deny wins on path-prefix overlap with writable_roots."
+    },
+    "terminal_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ISO-8601 UTC timestamp when binding left active status."
+    },
+    "terminal_reason": {
+      "type": "string",
+      "description": "Optional non-authoritative reason for failed/revoked/suspended."
+    }
+  },
+  "additionalProperties": false
+}

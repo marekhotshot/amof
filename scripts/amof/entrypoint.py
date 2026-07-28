@@ -34,6 +34,7 @@ NO_ECOSYSTEM_COMMANDS = {
     "execution",
     "loop",
     "runs",
+    "scope",
     "studio",
     "update",
     "uninstall",
@@ -194,6 +195,7 @@ cmd_runner = _lazy_command("runner", "cmd_runner")
 cmd_execution = _lazy_command("execution", "cmd_execution")
 cmd_loop = _lazy_command("loop", "cmd_loop")
 cmd_runs = _lazy_command("runs", "cmd_runs")
+cmd_scope = _lazy_command("scope", "cmd_scope")
 cmd_studio = _lazy_command("studio", "cmd_studio")
 cmd_agent = _lazy_command("agent_cmd", "cmd_agent")
 cmd_manifest = _lazy_command("manifest_cmd", "cmd_manifest")
@@ -282,6 +284,8 @@ def main() -> None:
             sys.exit(cmd_loop(args))
         if args.command == "runs":
             sys.exit(cmd_runs(args))
+        if args.command == "scope":
+            sys.exit(cmd_scope(args))
         if args.command == "studio":
             sys.exit(cmd_studio(args))
         if args.command == "update":
@@ -565,6 +569,8 @@ def main() -> None:
                 approve_capabilities=getattr(args, "approve_capabilities", None),
                 approve_tool_packs=getattr(args, "approve_tool_packs", None),
                 approve_writable_roots=getattr(args, "approve_writable_roots", None),
+                write_scope_approval=getattr(args, "write_scope_approval", None),
+                legacy_path_elevation=getattr(args, "legacy_path_elevation", None),
             )
         )
 

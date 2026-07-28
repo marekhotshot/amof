@@ -136,6 +136,8 @@ class AgentPlanExecuteJsonRequest:
     approve_capabilities: Optional[List[str]] = None
     approve_tool_packs: Optional[List[str]] = None
     approve_writable_roots: Optional[List[str]] = None
+    write_scope_approval: Optional[str] = None
+    legacy_path_elevation: bool = False
     no_follow_up: bool = True
 
 
@@ -257,6 +259,8 @@ def parse_agent_plan_execute_json_request(payload: Any) -> AgentPlanExecuteJsonR
         approve_writable_roots=_string_list(
             payload.get("approve_writable_roots"), field_name="approve_writable_roots"
         ),
+        write_scope_approval=_optional_text(payload.get("write_scope_approval")),
+        legacy_path_elevation=bool(payload.get("legacy_path_elevation", False)),
         no_follow_up=True,
     )
 
@@ -571,6 +575,8 @@ def _run_agent_plan_execute_request(
             approve_capabilities=request.approve_capabilities,
             approve_tool_packs=request.approve_tool_packs,
             approve_writable_roots=request.approve_writable_roots,
+            write_scope_approval=request.write_scope_approval,
+            legacy_path_elevation=request.legacy_path_elevation,
             studio_session_id=studio_session_id,
             _json_envelope=True,
         )
@@ -1835,6 +1841,8 @@ def _gate_plan_execute_readiness(
     approve_capabilities: Optional[List[str]] = None,
     approve_tool_packs: Optional[List[str]] = None,
     approve_writable_roots: Optional[List[str]] = None,
+    write_scope_approval: Optional[str] = None,
+    legacy_path_elevation: bool = False,
     no_follow_up: bool = False,
 ) -> tuple[Any, int | None, Optional[Dict[str, Any]]]:
     """Run readiness; optionally elevate capabilities for this plan/session."""
@@ -1854,6 +1862,59 @@ def _gate_plan_execute_readiness(
         parse_writable_root_paths,
         readiness_is_capability_only_failure,
     )
+    from ..write_scope_bindings import (
+        WriteScopeBindingError,
+        prepare_execution_write_scope,
+    )
+
+    # Wave 3 bind gate: resolve Approval → Binding → absolute writable roots
+    # before any worker mutation authority. Read-only (no approval, no naked
+    # roots) remains unaffected.
+    approval_ref = str(write_scope_approval or "").strip() or None
+    try:
+        resolved_roots, binding = prepare_execution_write_scope(
+            write_scope_approval=approval_ref,
+            approve_writable_roots=list(approve_writable_roots or []) or None,
+            run_id=str(getattr(session, "id", "") or "plan-execute"),
+            workspace_root=workspace_root,
+            manifest=manifest,
+            requested_capabilities=list(approve_capabilities or []),
+            require_bounded_write=bool(approval_ref),
+            legacy_path_elevation=bool(legacy_path_elevation),
+            warn_stream=sys.stderr,
+        )
+    except WriteScopeBindingError as exc:
+        sys.stderr.write(f"[plan-execute] write-scope bind gate failed: {exc}\n")
+        return (
+            None,
+            1,
+            {
+                "status": "blocked",
+                "stop_reason": "write_scope_bind_failed",
+                "final_text": str(exc),
+                "checkpoint_path": None,
+            },
+        )
+    if binding is not None:
+        session.metadata["write_scope_binding_id"] = binding["binding_id"]
+        session.metadata["write_scope_approval_id"] = binding["approval_id"]
+        session.metadata["write_scope_binding"] = binding
+        denied = [Path(p) for p in (binding.get("denied_roots") or [])]
+        if denied:
+            existing_denied = [
+                Path(p).resolve()
+                for p in (getattr(guardrails, "denied_roots", None) or [])
+            ]
+            for root in denied:
+                resolved = root.resolve()
+                if resolved not in existing_denied:
+                    guardrails.denied_roots.append(resolved)
+        print(
+            "[plan-execute] WriteScopeBinding created: "
+            f"{binding['binding_id']} (approval={binding['approval_id']})"
+        )
+    # Prefer Runtime-resolved roots from Approval; legacy naked roots otherwise.
+    approve_writable_roots = resolved_roots or None
 
     parent_tools = set(getattr(tool_registry, "_tools", {}).keys())
     base_ceiling = set(trust_state.trusted_intent_caps) if trust_state else {"read"}
@@ -2867,6 +2928,8 @@ def cmd_agent(
     approve_capabilities: Optional[List[str]] = None,
     approve_tool_packs: Optional[List[str]] = None,
     approve_writable_roots: Optional[List[str]] = None,
+    write_scope_approval: Optional[str] = None,
+    legacy_path_elevation: Optional[bool] = None,
     studio_session_id: Optional[str] = None,
     _json_envelope: bool = False,
 ) -> int | AgentPlanExecuteEnvelope:
@@ -4409,6 +4472,8 @@ def cmd_agent(
             approve_capabilities=approve_capabilities,
             approve_tool_packs=approve_tool_packs,
             approve_writable_roots=approve_writable_roots,
+            write_scope_approval=write_scope_approval,
+            legacy_path_elevation=bool(legacy_path_elevation),
             no_follow_up=bool(no_follow_up),
         )
         if readiness_exit is not None:
@@ -4702,7 +4767,7 @@ def cmd_agent(
                 ],
             }
             run_failed = plan.has_failures or verifier_failed
-            return _build_plan_execute_envelope(
+            envelope = _build_plan_execute_envelope(
                 status="completed" if not run_failed else "failed",
                 session_id=session.id,
                 exit_code=0 if not run_failed else 1,
@@ -4733,6 +4798,30 @@ def cmd_agent(
                 changed_paths=changed_paths,
                 validation_summary=final_validation_summary,
             )
+            binding_meta = session.metadata.get("write_scope_binding")
+            if isinstance(binding_meta, dict):
+                from ..write_scope_enforcement import apply_enforcement_to_result
+
+                enforced = apply_enforcement_to_result(
+                    envelope.to_dict(),
+                    binding=binding_meta,
+                    workspace_root=workspace_root,
+                    runner_failed=run_failed,
+                )
+                return replace(
+                    envelope,
+                    status=str(enforced.get("status") or envelope.status),
+                    exit_code=enforced.get("exit_code", envelope.exit_code),
+                    stop_reason=str(
+                        enforced.get("stop_reason") or envelope.stop_reason
+                    ),
+                    final_text=str(enforced.get("final_text") or envelope.final_text),
+                    changed_paths=list(enforced.get("changed_paths") or []),
+                    write_scope_binding_id=enforced.get("write_scope_binding_id"),
+                    write_scope_approval_id=enforced.get("write_scope_approval_id"),
+                    mutation_receipt=enforced.get("mutation_receipt"),
+                )
+            return envelope
 
         # Post-run follow-up menu
         if not no_follow_up:

@@ -161,6 +161,41 @@ def runs_dir() -> Path:
     return get_app_paths().data_root / "runs"
 
 
+def write_scopes_dir() -> Path:
+    """App-data root for write-scope authority records (proposals, approvals, bindings, revocations)."""
+    return get_app_paths().data_root / "write-scopes"
+
+
+def write_scope_proposals_dir() -> Path:
+    """Durable WriteScopeProposal store: ``{data_root}/write-scopes/proposals/``."""
+    return write_scopes_dir() / "proposals"
+
+
+def write_scope_approvals_dir() -> Path:
+    """Durable WriteScopeApproval store: ``{data_root}/write-scopes/approvals/``."""
+    return write_scopes_dir() / "approvals"
+
+
+def write_scope_bindings_dir() -> Path:
+    """Durable WriteScopeBinding store: ``{data_root}/write-scopes/bindings/``."""
+    return write_scopes_dir() / "bindings"
+
+
+def write_scope_receipts_dir() -> Path:
+    """Durable MutationReceipt store: ``{data_root}/write-scopes/receipts/``."""
+    return write_scopes_dir() / "receipts"
+
+
+def write_scope_revocations_dir() -> Path:
+    """Durable WriteScopeRevocation store: ``{data_root}/write-scopes/revocations/``."""
+    return write_scopes_dir() / "revocations"
+
+
+def write_scope_events_dir() -> Path:
+    """Write-scope audit event log directory: ``{data_root}/write-scopes/events/``."""
+    return write_scopes_dir() / "events"
+
+
 def studio_dir() -> Path:
     return get_app_paths().data_root / "studio"
 
@@ -349,4 +384,11 @@ __all__ = [
     "workspace_state_file",
     "workspaces_dir",
     "workspaces_registry_file",
+    "write_scope_approvals_dir",
+    "write_scope_bindings_dir",
+    "write_scope_events_dir",
+    "write_scope_proposals_dir",
+    "write_scope_receipts_dir",
+    "write_scope_revocations_dir",
+    "write_scopes_dir",
 ]

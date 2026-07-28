@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/write-scope-approval.schema.json",
+  "title": "Write Scope Approval",
+  "description": "Sole durable operator mutation grant for a frozen WriteScopeBody. Approval alone does not enable mutation execution; a later binding wave is required. Provenance is operator_asserted only — workers cannot mint approvals.",
+  "type": "object",
+  "$defs": {
+    "WriteScopeBody": {
+      "type": "object",
+      "description": "Frozen normalized write-scope body copied from the approved proposal. reason is human rationale and non-authoritative for body_hash identity. Deny wins: any path matching both allowed_roots and denied_roots is denied at enforcement.",
+      "required": [
+        "target_id",
+        "base_sha",
+        "allowed_roots",
+        "denied_roots",
+        "reason",
+        "expected_checks",
+        "docs_only",
+        "source_mutation"
+      ],
+      "properties": {
+        "target_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "allowed_roots": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "denied_roots": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_checks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "docs_only": {
+          "type": "boolean"
+        },
+        "source_mutation": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "kind",
+    "schema_version",
+    "approval_id",
+    "proposal_id",
+    "run_id",
+    "body",
+    "body_hash",
+    "approved_by",
+    "approved_at",
+    "expires_at",
+    "status",
+    "approval_source",
+    "provenance"
+  ],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "const": "write_scope_approval"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "approval_id": {
+      "type": "string",
+      "pattern": "^wsa-[0-9a-f]{24}$",
+      "description": "Deterministic id: wsa- + sha256(proposal_id + ':' + approved_at + ':' + approved_by + ':' + expires_at + ':' + body_hash)[:24]."
+    },
+    "proposal_id": {
+      "type": "string",
+      "pattern": "^wsp-[0-9a-f]{24}$",
+      "description": "Parent WriteScopeProposal identity. Approvals require a durable proposal; prose cannot be approved."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Parent discovery run_id copied from the proposal for list filtering."
+    },
+    "body": {
+      "$ref": "#/$defs/WriteScopeBody"
+    },
+    "body_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Must equal the stored proposal body_hash at approve time. Fail closed on mismatch."
+    },
+    "approved_by": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Operator identity asserted at approve time (CLI --approved-by or equivalent). Never a worker identity."
+    },
+    "approved_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ISO-8601 UTC timestamp when the operator granted this approval."
+    },
+    "expires_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ISO-8601 UTC expiry. TTL is mandatory; immortal approvals are rejected."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["approved", "revoked", "expired", "consumed"],
+      "description": "Lifecycle status. consumed is reserved for binding/mutation waves; Wave 2 defines the transition table and rejects impossible transitions. expired and revoked cannot become approved again."
+    },
+    "approval_source": {
+      "type": "string",
+      "enum": ["cli", "api"],
+      "description": "Surface that recorded the operator grant."
+    },
+    "provenance": {
+      "type": "string",
+      "const": "operator_asserted",
+      "description": "Only operator_asserted provenance is valid. Worker/self-approval claims are rejected."
+    },
+    "revocation_id": {
+      "type": "string",
+      "pattern": "^wsr-[0-9a-f]{24}$",
+      "description": "Present when status is revoked; references the durable revocation record."
+    }
+  },
+  "additionalProperties": false
+}

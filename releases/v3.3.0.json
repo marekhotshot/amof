@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "version": "3.3.0",
+  "tag": "v3.3.0",
+  "previous_tag": "v3.2.0",
+  "timestamp": "2026-07-28T10:58:53Z",
+  "action": "bump",
+  "bump_part": "minor",
+  "stage": null,
+  "stage_num": null,
+  "branch": "ticket/AMOF-WRITE-SCOPE-AUTHORITY-002-write-scope-authority",
+  "commit": "a79065f61b5663d07a2174c07e7c24c844978672",
+  "author": "Wave5 agent",
+  "commits_since_previous": 6,
+  "commit_subjects": [
+    "feat(write-scope): add audit, recover, and migration honesty for Wave 5",
+    "feat(write-scope): enforce bound mutations and emit MutationReceipt for Wave 4",
+    "feat(write-scope): bind approvals to mutating execution attempts for Wave 3",
+    "feat(write-scope): add operator approval, revocation, and TTL for Wave 2",
+    "feat(write-scope): persist proposals and scope CLI for Wave 1"
+  ],
+  "files_updated": [
+    "pyproject.toml",
+    "scripts/amof/__init__.py",
+    "scripts/amof/orchestrator/__init__.py",
+    "CHANGELOG.md",
+    "README.md",
+    "docs/releases/amof-3.3.0.md",
+    "docs/write-scope-authority.md",
+    "releases/v3.3.0.json"
+  ],
+  "origin": "wave5-release-prep",
+  "dry_run": false,
+  "pushed": false
+}

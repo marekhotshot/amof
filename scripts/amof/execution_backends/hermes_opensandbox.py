@@ -22,6 +22,7 @@ from urllib.request import Request, urlopen
 
 from ..app_paths import get_app_paths, runs_dir
 from ..commands.studio import attach_run_reference, require_active_studio_session
+from ..write_scope_proposals import persist_write_scope_proposals_from_result
 
 BACKEND_TYPE = "hermes_opensandbox"
 BACKEND_CONTRACT_VERSION = "hermes-cli-remote-ial-v1"
@@ -91,6 +92,7 @@ class HermesBackendSelection:
     writable_roots: list[str]
     timeout_seconds: int
     readable_root: str | None
+    write_scope_binding_id: str | None = None
 
 
 def _now_iso() -> str:
@@ -511,6 +513,11 @@ def _write_terminal_result(
         runtime_log_path=runtime_log_path,
     )
     result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    # Wave 1: persist validated proposal evidence only. Never creates authority.
+    # Backends may emit write_scope_proposals[]; singular write_scope_proposal
+    # remains for compatibility. Prose-only / hostile approval claims are rejected.
+    # Intentionally does not mutate AgentRunResult fields (additionalProperties=false).
+    persist_write_scope_proposals_from_result(result)
     _append_event(
         event_log_path,
         "run_finished",
@@ -589,6 +596,7 @@ def build_selection(
     approve_writable_roots: list[str],
     timeout_seconds: int,
     readable_root: str | None,
+    write_scope_binding_id: str | None = None,
 ) -> HermesBackendSelection:
     normalized_caps = [str(item).strip() for item in requested_capabilities if str(item).strip()]
     _assert_no_dangerous_caps(normalized_caps)
@@ -612,6 +620,11 @@ def build_selection(
         writable_roots=writable_roots,
         timeout_seconds=timeout_seconds,
         readable_root=readable_root,
+        write_scope_binding_id=(
+            str(write_scope_binding_id).strip() or None
+            if write_scope_binding_id is not None
+            else None
+        ),
     )
 
 
@@ -1751,6 +1764,14 @@ def run(
         proposal_missing_reason=proposal_missing_reason,
         usage=usage,
     )
+    result = _apply_write_scope_enforcement_if_bound(
+        result,
+        selection=selection,
+        run_id=run_id,
+        workspace=workspace,
+    )
+    stop_reason = str(result.get("stop_reason") or stop_reason)
+    status = str(result.get("status") or status)
     _write_terminal_result(
         result_path=result_path,
         event_log_path=event_log_path,
@@ -1768,6 +1789,36 @@ def run(
         status=status,
     )
     return result
+
+
+def _apply_write_scope_enforcement_if_bound(
+    result: dict[str, Any],
+    *,
+    selection: HermesBackendSelection,
+    run_id: str,
+    workspace: Path,
+) -> dict[str, Any]:
+    """Wave 4: when a Binding is active for this run, enforce + attach MutationReceipt."""
+    from ..write_scope_bindings import list_bindings, load_binding
+    from ..write_scope_enforcement import apply_enforcement_to_result
+
+    binding = None
+    binding_id = getattr(selection, "write_scope_binding_id", None)
+    if binding_id:
+        try:
+            binding = load_binding(str(binding_id))
+        except Exception:
+            binding = None
+    if binding is None:
+        active = list_bindings(run_id=run_id, status="active")
+        binding = active[0] if active else None
+    if binding is None:
+        return result
+    return apply_enforcement_to_result(
+        result,
+        binding=binding,
+        workspace_root=workspace,
+    )
 
 
 def _result_payload(

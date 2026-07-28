@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/mutation-receipt.schema.json",
+  "title": "Mutation Receipt",
+  "description": "Runtime-authored proof that filesystem mutations under a WriteScopeBinding stayed inside effective_allowed roots (allowed_roots minus denied_roots; deny wins). Prompts are not enforcement. Does not grant further authority.",
+  "type": "object",
+  "required": [
+    "kind",
+    "schema_version",
+    "receipt_id",
+    "run_id",
+    "binding_id",
+    "approval_id",
+    "target_id",
+    "base_sha",
+    "changed_paths",
+    "in_scope_paths",
+    "out_of_scope_paths",
+    "restored_paths",
+    "compliance",
+    "binding_status",
+    "approval_status",
+    "created_at",
+    "evaluated_at"
+  ],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "const": "mutation_receipt"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "receipt_id": {
+      "type": "string",
+      "pattern": "^wmr-[0-9a-f]{24}$",
+      "description": "Deterministic id: wmr- + sha256(binding_id + ':' + run_id + ':' + evaluated_at + ':' + compliance)[:24]."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "binding_id": {
+      "type": "string",
+      "pattern": "^wsb-[0-9a-f]{24}$"
+    },
+    "approval_id": {
+      "type": "string",
+      "pattern": "^wsa-[0-9a-f]{24}$"
+    },
+    "target_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Frozen Approval base_sha at bind time."
+    },
+    "workspace_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "changed_paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Repo-relative paths observed as mutated during the bound attempt."
+    },
+    "in_scope_paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "out_of_scope_paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "restored_paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Out-of-scope paths Runtime attempted to restore. Not a claim of atomic rollback."
+    },
+    "compliance": {
+      "type": "string",
+      "enum": [
+        "within_scope",
+        "scope_exceeded",
+        "base_sha_mismatch",
+        "no_mutation",
+        "partial"
+      ]
+    },
+    "binding_status": {
+      "type": "string",
+      "enum": ["active", "completed", "failed", "revoked", "suspended"],
+      "description": "Terminal (or checkpoint) Binding status recorded on this receipt."
+    },
+    "approval_status": {
+      "type": "string",
+      "enum": ["approved", "revoked", "expired", "consumed"],
+      "description": "Approval status after enforcement outcomes (consume / revoke-by-breach / leave reusable)."
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ISO-8601 UTC when the receipt object was minted."
+    },
+    "evaluated_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ISO-8601 UTC when compliance was evaluated."
+    },
+    "stop_reason": {
+      "type": ["string", "null"],
+      "description": "Failure/stop reason when the run or authority checkpoint failed closed."
+    },
+    "failure_reason": {
+      "type": ["string", "null"],
+      "description": "Optional non-authoritative detail for breach, expiry, revoke, or restore limits."
+    },
+    "revocation_id": {
+      "type": ["string", "null"],
+      "description": "Present when Approval was revoked-by-breach."
+    },
+    "effective_allowed_roots": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Absolute allowed roots used for classification (before deny subtraction at path-check time)."
+    },
+    "denied_roots": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Absolute denied roots; deny wins over allowed on path-prefix overlap."
+    },
+    "rollback_atomic": {
+      "type": "boolean",
+      "const": false,
+      "description": "Always false in v3.3 Wave 4 — do not claim atomic rollback."
+    }
+  },
+  "additionalProperties": false
+}

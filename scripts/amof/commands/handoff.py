@@ -18,6 +18,12 @@ from ..execution_backends import claude_code, hermes_opensandbox
 from ..manifest import list_available_ecosystems, load_manifest
 from ..state import get_state
 from ..utils import get_ecosystem_from_branch, get_ecosystem_from_path, get_git_toplevel
+from ..write_scope_bindings import (
+    WriteScopeBindingError,
+    finalize_binding,
+    prepare_execution_write_scope,
+)
+from ..write_scope_enforcement import apply_enforcement_to_result
 
 MAX_PAYLOAD_UTF8_BYTES = 40000
 HANDOFF_PACKET_SCHEMA_VERSION = 1
@@ -1613,6 +1619,120 @@ def _writable_root_approvals(args: Any) -> list[str]:
     ]
 
 
+def _primary_manifest_workspace(manifest: dict[str, Any]) -> Path | None:
+    repos = manifest.get("repos")
+    if not isinstance(repos, list):
+        return None
+    paths = [
+        Path(str(repo.get("path") or "").strip()).expanduser().resolve(strict=False)
+        for repo in repos
+        if isinstance(repo, dict) and str(repo.get("path") or "").strip()
+    ]
+    if len(paths) == 1:
+        return paths[0]
+    return None
+
+
+def _apply_write_scope_bind_gate(
+    *,
+    args: Any,
+    request_payload: dict[str, Any],
+    manifest: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any] | None:
+    """Bind Approval before mutation authority; inject resolved absolute roots.
+
+    Returns the Binding record when ``--write-scope-approval`` is used, else None.
+    Fail closed before worker dispatch when the Approval is invalid.
+    """
+    approval_ref = _optional_text(getattr(args, "write_scope_approval", None))
+    naked_roots = _writable_root_approvals(args)
+    caps = _capability_approvals(args)
+    workspace = _primary_manifest_workspace(manifest) or _current_git_root()
+    try:
+        resolved_roots, binding = prepare_execution_write_scope(
+            write_scope_approval=approval_ref,
+            approve_writable_roots=naked_roots or None,
+            run_id=run_id,
+            workspace_root=workspace,
+            manifest=manifest,
+            requested_capabilities=caps,
+            runner_id=_selected_runner_id(args),
+            legacy_path_elevation=bool(getattr(args, "legacy_path_elevation", False)),
+            require_bounded_write=bool(approval_ref),
+            warn_stream=sys.stderr,
+        )
+    except WriteScopeBindingError as exc:
+        raise ValueError(f"write-scope bind gate failed: {exc}") from exc
+
+    if binding is not None:
+        # Inject Runtime-resolved absolute roots for backend selection.
+        # Do not add write_scope_* keys to the external request schema surface.
+        args.approve_writable_roots = list(resolved_roots)
+        request_payload["approve_writable_roots"] = list(resolved_roots)
+        # Internal handoff-only attribute for Hermes/Claude terminal enforcement.
+        args.write_scope_binding_id = binding["binding_id"]
+        _stderr(
+            "[handoff] WriteScopeBinding created: "
+            f"{binding['binding_id']} (approval={binding['approval_id']})"
+        )
+    elif resolved_roots:
+        args.approve_writable_roots = list(resolved_roots)
+        request_payload["approve_writable_roots"] = list(resolved_roots)
+    return binding
+
+
+def _finalize_write_scope_binding(
+    binding: dict[str, Any] | None,
+    *,
+    success: bool,
+    reason: str | None = None,
+    result_payload: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Wave 4: enforce mutations + MutationReceipt when Binding is active.
+
+    Falls back to Wave 3 finalize_binding when no result payload is available
+    (e.g. pre-dispatch bind failure with empty diagnostic).
+    """
+    if binding is None:
+        return result_payload
+    if isinstance(result_payload, dict):
+        try:
+            workspace = Path(str(binding.get("workspace_root") or "")).expanduser()
+            return apply_enforcement_to_result(
+                result_payload,
+                binding=binding,
+                workspace_root=workspace if workspace.exists() else None,
+                runner_failed=not success,
+            )
+        except Exception as exc:
+            _stderr(f"[handoff] write-scope enforcement warning: {exc}")
+            try:
+                finalize_binding(
+                    binding["binding_id"],
+                    success=False,
+                    reason=f"enforcement_error: {exc}",
+                )
+            except WriteScopeBindingError as bind_exc:
+                _stderr(f"[handoff] write-scope binding finalize warning: {bind_exc}")
+            failed = dict(result_payload)
+            failed["status"] = "failed"
+            failed["exit_code"] = 1
+            failed["stop_reason"] = "write_scope_enforcement_error"
+            failed["write_scope_binding_id"] = binding["binding_id"]
+            failed["write_scope_approval_id"] = binding["approval_id"]
+            return failed
+    try:
+        finalize_binding(
+            binding["binding_id"],
+            success=success,
+            reason=reason,
+        )
+    except WriteScopeBindingError as exc:
+        _stderr(f"[handoff] write-scope binding finalize warning: {exc}")
+    return result_payload
+
+
 def _dispatch_backend_handoff(
     *,
     args: Any,
@@ -1650,13 +1770,22 @@ def _dispatch_backend_handoff(
             readable_root = (
                 str(parents.pop()) if len(parents) == 1 else str(repo_paths[0])
             )
-    selection = backend_module.build_selection(
-        runner_id=runner_id,
-        requested_capabilities=_capability_approvals(args),
-        approve_writable_roots=_writable_root_approvals(args),
-        timeout_seconds=timeout_seconds,
-        readable_root=readable_root,
-    )
+    binding_id = _optional_text(getattr(args, "write_scope_binding_id", None))
+    selection_kwargs: dict[str, Any] = {
+        "runner_id": runner_id,
+        "requested_capabilities": _capability_approvals(args),
+        "approve_writable_roots": _writable_root_approvals(args),
+        "timeout_seconds": timeout_seconds,
+        "readable_root": readable_root,
+    }
+    # Wave 4: pass Binding id when the backend selection contract accepts it.
+    try:
+        selection = backend_module.build_selection(
+            **selection_kwargs,
+            write_scope_binding_id=binding_id,
+        )
+    except TypeError:
+        selection = backend_module.build_selection(**selection_kwargs)
     return backend_module.run(
         manifest=manifest,
         goal=str(request_payload.get("goal") or packet.payload.text),
@@ -1694,6 +1823,7 @@ def _execute_agent_from_handoff(
         raise RuntimeError("preview-only")
 
     manifest = _load_execution_manifest(args)
+    binding: dict[str, Any] | None = None
     started_at = _now_iso()
     _write_execution_state(
         HandoffExecutionState(
@@ -1707,6 +1837,13 @@ def _execute_agent_from_handoff(
     )
 
     try:
+        # Fail closed before worker mutation authority when Approval is invalid.
+        binding = _apply_write_scope_bind_gate(
+            args=args,
+            request_payload=request_payload,
+            manifest=manifest,
+            run_id=handoff_id,
+        )
         runner_id = _selected_runner_id(args)
         execution_started_at = _now_iso()
         _write_execution_state(
@@ -1767,6 +1904,15 @@ def _execute_agent_from_handoff(
         completed_at = _now_iso()
         receipt_path = _handoff_receipts_dir() / f"{handoff_id}.json"
         runner_id = _selected_runner_id(args)
+        stop_reason = (
+            "write_scope_bind_failed"
+            if "write-scope bind gate failed" in str(exc)
+            else (
+                "handoff_dispatch_failed"
+                if runner_id is None
+                else "selected_runner_dispatch_failed"
+            )
+        )
         diagnostic_result = {
             "result_kind": "agent_run_result",
             "contract_version": "agent-run-v1",
@@ -1774,7 +1920,7 @@ def _execute_agent_from_handoff(
             "status": "failed",
             "session_id": "",
             "exit_code": 1,
-            "stop_reason": "handoff_dispatch_failed" if runner_id is None else "selected_runner_dispatch_failed",
+            "stop_reason": stop_reason,
             "final_text": str(exc),
             "runner_id": runner_id,
             "backend": None,
@@ -1785,7 +1931,7 @@ def _execute_agent_from_handoff(
             "runtime_log_path": None,
             "started_at": started_at,
             "completed_at": completed_at,
-            "failure_classification": "handoff_dispatch_failed" if runner_id is None else "selected_runner_dispatch_failed",
+            "failure_classification": stop_reason,
             "journal_path": None,
             "changed_paths": [],
             "validation_summary": {"status": "not_run", "reason": str(exc)},
@@ -1794,6 +1940,26 @@ def _execute_agent_from_handoff(
             "evidence_refs": {},
             "budget_summary": {"limit": None, "spent": 0.0, "remaining": None},
         }
+        if binding is not None:
+            diagnostic_result["write_scope_binding_id"] = binding["binding_id"]
+            diagnostic_result["write_scope_approval_id"] = binding["approval_id"]
+            # Bind-gate failures leave no Binding; dispatch failures enforce.
+            if stop_reason != "write_scope_bind_failed":
+                diagnostic_result = (
+                    _finalize_write_scope_binding(
+                        binding,
+                        success=False,
+                        reason=str(exc),
+                        result_payload=diagnostic_result,
+                    )
+                    or diagnostic_result
+                )
+            else:
+                _finalize_write_scope_binding(
+                    binding,
+                    success=False,
+                    reason=str(exc),
+                )
         result_path = _write_execution_result(handoff_id, diagnostic_result)
         result_sha256 = _file_sha256(result_path)
         receipt = HandoffExecutionReceipt(
@@ -1802,7 +1968,7 @@ def _execute_agent_from_handoff(
             request_id=handoff_id,
             status=_lifecycle_status_from_result(diagnostic_result),
             exit_code=1,
-            stop_reason="handoff_dispatch_failed" if runner_id is None else "selected_runner_dispatch_failed",
+            stop_reason=stop_reason,
             session_id="",
             studio_session_id=packet.studio_session_id,
             result_path=str(result_path),
@@ -1827,6 +1993,22 @@ def _execute_agent_from_handoff(
             )
         )
         return receipt
+
+    success = int(result_payload.get("exit_code") or 0) == 0 and str(
+        result_payload.get("status") or ""
+    ) in {"completed", "ok", "success"}
+    result_payload = (
+        _finalize_write_scope_binding(
+            binding,
+            success=success,
+            reason=str(result_payload.get("stop_reason") or "") or None,
+            result_payload=result_payload,
+        )
+        or result_payload
+    )
+    if binding is not None:
+        result_payload.setdefault("write_scope_binding_id", binding["binding_id"])
+        result_payload.setdefault("write_scope_approval_id", binding["approval_id"])
 
     result_path = _write_execution_result(handoff_id, result_payload)
     result_sha256 = _file_sha256(result_path)

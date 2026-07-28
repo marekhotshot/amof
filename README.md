@@ -10,13 +10,13 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v3.2.0-0A7FFF.svg" alt="release v3.2.0" />
+  <img src="https://img.shields.io/badge/release-v3.3.0-0A7FFF.svg" alt="release v3.3.0" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
 AI agents are cheap. Runtime truth is not.
 
-AMOF v3.2.0 is a local-first CLI and governed runtime surface for canonical
+AMOF v3.3.0 is a local-first CLI and governed runtime surface for canonical
 planning and execution contracts, governed handoff-to-agent execution, truthful
 planner recovery, truthful clarification-required termination, and an
 experimental Studio Session ledger for correlating governed runs, checkpoints,
@@ -70,8 +70,32 @@ AMOF does not trust chat output as runtime truth. Runtime truth is emitted as
 inspectable evidence through receipts, runtime logs, run records, intake
 records, selected context, runner metadata, and bounded loop reports.
 
-Public v3.2.0 runtime authority surfaces:
+### Write-Scope Authority
 
+Workers propose bounded repository mutations. Operators approve finite,
+TTL-bound grants. Runtime binds a grant to one execution attempt and enforces
+filesystem paths. MutationReceipts prove whether execution stayed inside scope.
+
+```bash
+amof scope list --from-run <run-id>
+amof scope show <proposal-id>
+amof scope approve <proposal-id> --ttl 2h --approved-by <operator>
+amof handoff execute-agent --handoff-id <id> --write-scope-approval <approval-id> ...
+amof scope audit <approval-id>
+amof scope revoke <approval-id> --reason "..." --revoked-by <operator>
+amof scope recover <binding-id> --decision restore|accept-partial|mark-failed
+```
+
+Legacy `--approve-writable-root` remains a deprecated path-elevation shim with a
+warning. It does **not** create WriteScopeApproval or Binding evidence and is
+not the happy path.
+
+See `docs/write-scope-authority.md` for the lifecycle, failure model, and a
+worked OSS example.
+
+Public runtime authority surfaces:
+
+- write-scope propose / approve / bind / enforce / audit / recover via `amof scope`
 - context selection via `amof context`
 - governed intake validation/submission via `amof intake`
 - runner registry metadata via `amof runner`
@@ -161,7 +185,7 @@ Those belong outside the public product tree.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v3.2.0 surface:
+This public `main` intentionally keeps a narrow, installable v3.3.0 surface:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -188,7 +212,7 @@ This public `main` intentionally keeps a narrow, installable v3.2.0 surface:
 
 ## Released Public CLI Surface
 
-What works in v3.2.0:
+What works in v3.3.0:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -299,7 +323,7 @@ an explicit checkout-local virtualenv.
 Use this if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.2.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.3.0"
 ```
 
 This installs the `amof` CLI from the public GitHub tag into a pipx-managed
@@ -328,7 +352,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v3.2.0
+amof update --version v3.3.0
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -406,7 +430,7 @@ Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.2.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.3.0"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
@@ -424,7 +448,7 @@ message rather than fail on missing `--ecosystem/-e`.
 
 ## Bounded Loops and Scan/Report
 
-The v3.2.0 release broadens the public governed runtime surface while keeping
+The v3.3.0 release completes Write-Scope Authority on the public governed runtime surface while keeping
 policy and evidence boundaries explicit:
 
 - `amof execution scan` and `amof execution report` for readiness and evidence
@@ -592,10 +616,14 @@ Additional public docs retained in this repo include:
 
 ## Release State
 
-- `v3.2.0` is the current AMOF public release.
+- `v3.3.0` is the current AMOF public release.
+- `v3.2.0` remains as the prior public release in this line.
 - `v3.0.0` remains as a historical broken escaped tag and is not rewritten.
 - `v3.0.1` remains as the prior correction release in this line.
-- Public `v3.2.0` includes:
+- Public `v3.3.0` includes:
+  - Write-Scope Authority (`amof scope` propose/approve/bind/enforce/audit/recover)
+  - MutationReceipt compliance proof on governed mutating runs
+- Public `v3.2.0` lineage also includes:
   - explicit runtime context via `amof context`
   - intake contract and CLI intake via `amof intake`
   - runner capability registry via `amof runner`
@@ -616,15 +644,17 @@ Additional public docs retained in this repo include:
   - bounded loops with `NO_MUTATION_PERFORMED` and `NO_REMOTE_EXECUTION_DISPATCHED`
   - runtime evidence inspection via `amof runs`
   - standalone smoke current-version hygiene for released artifacts
-- Studio in `v3.2.0` is positioned as: Experimental Studio Session ledger for
+- Studio in `v3.3.0` remains positioned as: Experimental Studio Session ledger for
   correlating governed runs, checkpoints, and evidence.
-- Current `v3.2.0` limitations:
+- Current `v3.3.0` limitations:
   - detached checkouts still require adoption knowledge
   - raw Studio `runs.json` remains attachment-time ledger truth
   - browser UX for Studio correlation remains private/operator-side
   - no transcript synchronization or active-session discovery
   - no browser/userscript integration is included in this release
 - Release evidence docs:
+  - `docs/releases/amof-3.3.0.md`
+  - `docs/write-scope-authority.md`
   - `docs/releases/amof-3.2.0.md`
   - `docs/releases/amof-3.1.1.md`
   - `docs/releases/amof-3.0-closeout.md`

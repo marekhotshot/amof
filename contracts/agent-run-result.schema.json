@@ -167,12 +167,106 @@
         "type": "string"
       }
     },
+    "write_scope_binding_id": {
+      "type": ["string", "null"],
+      "description": "WriteScopeBinding identity when this run executed under a bound Approval.",
+      "pattern": "^wsb-[0-9a-f]{24}$"
+    },
+    "write_scope_approval_id": {
+      "type": ["string", "null"],
+      "description": "WriteScopeApproval identity bound for this mutating execution attempt.",
+      "pattern": "^wsa-[0-9a-f]{24}$"
+    },
+    "mutation_receipt": {
+      "type": ["object", "null"],
+      "description": "Runtime MutationReceipt proving whether mutations respected the bound write scope. Additive Wave 4 field; prompts are not enforcement.",
+      "required": [
+        "kind",
+        "schema_version",
+        "receipt_id",
+        "run_id",
+        "binding_id",
+        "approval_id",
+        "target_id",
+        "base_sha",
+        "changed_paths",
+        "in_scope_paths",
+        "out_of_scope_paths",
+        "restored_paths",
+        "compliance",
+        "binding_status",
+        "approval_status",
+        "created_at",
+        "evaluated_at"
+      ],
+      "properties": {
+        "kind": { "type": "string", "const": "mutation_receipt" },
+        "schema_version": { "type": "integer", "const": 1 },
+        "receipt_id": { "type": "string", "pattern": "^wmr-[0-9a-f]{24}$" },
+        "run_id": { "type": "string", "minLength": 1 },
+        "binding_id": { "type": "string", "pattern": "^wsb-[0-9a-f]{24}$" },
+        "approval_id": { "type": "string", "pattern": "^wsa-[0-9a-f]{24}$" },
+        "target_id": { "type": "string", "minLength": 1 },
+        "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "workspace_root": { "type": "string", "minLength": 1 },
+        "changed_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "in_scope_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "out_of_scope_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "restored_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "compliance": {
+          "type": "string",
+          "enum": [
+            "within_scope",
+            "scope_exceeded",
+            "base_sha_mismatch",
+            "no_mutation",
+            "partial"
+          ]
+        },
+        "binding_status": {
+          "type": "string",
+          "enum": ["active", "completed", "failed", "revoked", "suspended"]
+        },
+        "approval_status": {
+          "type": "string",
+          "enum": ["approved", "revoked", "expired", "consumed"]
+        },
+        "created_at": { "type": "string", "minLength": 1 },
+        "evaluated_at": { "type": "string", "minLength": 1 },
+        "stop_reason": { "type": ["string", "null"] },
+        "failure_reason": { "type": ["string", "null"] },
+        "revocation_id": { "type": ["string", "null"] },
+        "effective_allowed_roots": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "denied_roots": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "rollback_atomic": { "type": "boolean", "const": false }
+      },
+      "additionalProperties": true
+    },
     "validation_summary": {
       "type": "object",
       "additionalProperties": true
     },
     "write_scope_proposal": {
       "type": ["object", "null"],
+      "description": "Singular write-scope proposal body for compatibility. Prefer write_scope_proposals[] when multiple targets are proposed. Evidence only — never mutation authority.",
       "required": [
         "target_id",
         "base_sha",
@@ -225,6 +319,65 @@
         }
       },
       "additionalProperties": true
+    },
+    "write_scope_proposals": {
+      "type": "array",
+      "description": "Additive plural proposal bodies emitted by multi-target discovery backends. Normalized into durable WriteScopeProposal records; does not grant mutation authority.",
+      "items": {
+        "type": "object",
+        "required": [
+          "target_id",
+          "base_sha",
+          "allowed_roots",
+          "denied_roots",
+          "reason",
+          "expected_checks",
+          "docs_only",
+          "source_mutation"
+        ],
+        "properties": {
+          "target_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "base_sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "allowed_roots": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "denied_roots": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_checks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "docs_only": {
+            "type": "boolean"
+          },
+          "source_mutation": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": true
+      }
     },
     "proposal_missing_reason": {
       "type": ["string", "null"]

@@ -24,6 +24,7 @@ PUBLIC_HELP_COMMANDS = (
     "execution",
     "loop",
     "runs",
+    "scope",
     "studio",
     "agent",
     "bootstrap",
@@ -324,12 +325,37 @@ def parse_args() -> argparse.Namespace:
         help="Optional canonical tool-pack approvals for the governed external request surface",
     )
     handoff_execute_agent.add_argument(
+        "--write-scope-approval",
+        dest="write_scope_approval",
+        default=None,
+        metavar="APPROVAL_ID",
+        help=(
+            "Bind a durable WriteScopeApproval (wsa-...) to this mutating execution attempt. "
+            "Runtime creates WriteScopeBinding and resolves writable roots from the Approval. "
+            "Required for governed mutation authority."
+        ),
+    )
+    handoff_execute_agent.add_argument(
         "--approve-writable-root",
         dest="approve_writable_roots",
         action="append",
         default=None,
         metavar="PATH",
-        help="Optional canonical writable-root approvals for the governed external request surface",
+        help=(
+            "DEPRECATED compatibility path elevation (not the happy path). "
+            "Does not mint WriteScopeApproval or WriteScopeBinding. "
+            "Prefer --write-scope-approval."
+        ),
+    )
+    handoff_execute_agent.add_argument(
+        "--legacy-path-elevation",
+        dest="legacy_path_elevation",
+        action="store_true",
+        default=False,
+        help=(
+            "Explicit acknowledgement when using deprecated --approve-writable-root "
+            "(Wave 3 still warns; never fabricates Approval/Binding evidence)."
+        ),
     )
     handoff_status = handoff_sub.add_parser(
         "status",
@@ -981,6 +1007,134 @@ def parse_args() -> argparse.Namespace:
         "--json", action="store_true", help="Emit machine-readable JSON"
     )
 
+    scope_parser = subparsers.add_parser(
+        "scope",
+        help=(
+            "Write-Scope Authority: propose evidence, operator approve/revoke, "
+            "Runtime bind/enforce, audit lineage, and crash recover "
+            "(workers propose; operators approve; Runtime binds and enforces)"
+        ),
+    )
+    scope_sub = scope_parser.add_subparsers(dest="scope_cmd", required=True)
+    scope_list = scope_sub.add_parser(
+        "list",
+        help="List persisted WriteScopeProposal, Approval, and/or Binding records",
+    )
+    scope_list.add_argument(
+        "--from-run",
+        dest="from_run",
+        help="Filter by parent run_id / session_id / execution attempt id",
+    )
+    scope_list.add_argument(
+        "--status",
+        choices=(
+            "proposed",
+            "approved",
+            "revoked",
+            "expired",
+            "consumed",
+            "active",
+            "completed",
+            "failed",
+            "suspended",
+        ),
+        help=(
+            "Filter by lifecycle status (proposals: proposed; approvals: "
+            "approved|revoked|expired|consumed; bindings: active|completed|failed|revoked|suspended)"
+        ),
+    )
+    scope_list.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    scope_show = scope_sub.add_parser(
+        "show",
+        help="Show one WriteScopeProposal (wsp-...), Approval (wsa-...), or Binding (wsb-...)",
+    )
+    scope_show.add_argument(
+        "scope_id",
+        help="Durable proposal_id (wsp-...), approval_id (wsa-...), or binding_id (wsb-...)",
+    )
+    scope_show.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    scope_approve = scope_sub.add_parser(
+        "approve",
+        help=(
+            "Operator-approve a durable WriteScopeProposal (TTL mandatory; "
+            "mutation requires --write-scope-approval bind on execute)"
+        ),
+    )
+    scope_approve.add_argument("proposal_id", help="Durable proposal id (wsp-...)")
+    scope_approve.add_argument(
+        "--ttl",
+        required=True,
+        help="Mandatory TTL duration (e.g. 30s, 30m, 2h, 1d, 1h30m)",
+    )
+    scope_approve.add_argument(
+        "--approved-by",
+        required=True,
+        dest="approved_by",
+        help="Operator identity (operator_asserted provenance; workers rejected)",
+    )
+    scope_approve.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    scope_revoke = scope_sub.add_parser(
+        "revoke",
+        help="Revoke a WriteScopeApproval (idempotent but auditable)",
+    )
+    scope_revoke.add_argument("approval_id", help="Durable approval id (wsa-...)")
+    scope_revoke.add_argument(
+        "--reason",
+        required=True,
+        help="Human revoke rationale (non-authoritative)",
+    )
+    scope_revoke.add_argument(
+        "--revoked-by",
+        required=True,
+        dest="revoked_by",
+        help="Operator identity (operator_asserted provenance)",
+    )
+    scope_revoke.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    scope_audit = scope_sub.add_parser(
+        "audit",
+        help=(
+            "Reconstruct write-scope lineage: proposal, approval, revocation, "
+            "binding, execution result, MutationReceipt, terminal authority state"
+        ),
+    )
+    scope_audit.add_argument(
+        "scope_id",
+        help="proposal_id (wsp-...), approval_id (wsa-...), binding_id (wsb-...), or run_id",
+    )
+    scope_audit.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    scope_recover = scope_sub.add_parser(
+        "recover",
+        help=(
+            "Classify and resolve a crashed/suspended WriteScopeBinding "
+            "(never fabricates success; never continues mutation authority)"
+        ),
+    )
+    scope_recover.add_argument("binding_id", help="Durable binding id (wsb-...)")
+    scope_recover.add_argument(
+        "--decision",
+        choices=("auto", "restore", "accept-partial", "mark-failed"),
+        default="auto",
+        help=(
+            "Recovery decision: auto (fail-closed; dirty workspace requires "
+            "explicit restore|accept-partial), restore (best-effort path restore "
+            "+ mark failed), accept-partial (leave dirty + mark failed), "
+            "mark-failed (terminalize without restore)"
+        ),
+    )
+    scope_recover.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+
     runs_logs = runs_sub.add_parser(
         "logs",
         help="Print events.jsonl lines for one run",
@@ -1515,14 +1669,35 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     agent_parser.add_argument(
+        "--write-scope-approval",
+        dest="write_scope_approval",
+        default=None,
+        metavar="APPROVAL_ID",
+        help=(
+            "Bind a durable WriteScopeApproval (wsa-...) to this plan-execute attempt. "
+            "Runtime creates WriteScopeBinding before mutation authority is granted."
+        ),
+    )
+    agent_parser.add_argument(
         "--approve-writable-root",
         dest="approve_writable_roots",
         action="append",
         default=None,
         metavar="PATH",
         help=(
-            "Approve an additional writable root for this plan-execute run only "
-            "(repeatable; e.g. --approve-writable-root /tmp/delivery-3663-matrix-reports)."
+            "DEPRECATED compatibility path elevation for this plan-execute run only "
+            "(repeatable). Does not mint WriteScopeApproval or WriteScopeBinding. "
+            "Prefer --write-scope-approval."
+        ),
+    )
+    agent_parser.add_argument(
+        "--legacy-path-elevation",
+        dest="legacy_path_elevation",
+        action="store_true",
+        default=False,
+        help=(
+            "Explicit acknowledgement when using deprecated --approve-writable-root "
+            "(Wave 3 still warns; never fabricates Approval/Binding evidence)."
         ),
     )
     agent_parser.add_argument(
