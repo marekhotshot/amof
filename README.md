@@ -2,11 +2,16 @@
   <img src="docs/assets/amof-logo.svg" alt="AMOF logo" width="140" />
 </p>
 
-<h1 align="center">AMOF 3.2 governed execution is live.</h1>
+<h1 align="center">AMOF 3.3 — Write-Scope Authority</h1>
 
 <p align="center"><strong>Agentic Operations Fabric</strong></p>
 
-<p align="center">AMOF now owns runtime truth across intake, context, runners, scans, bounded loops, receipts, and evidence — while cognition workers remain replaceable.</p>
+<p align="center">
+  Workers propose bounded repository mutations.<br />
+  Operators approve finite write grants.<br />
+  Runtime Authority binds and enforces those grants.<br />
+  Mutation receipts prove whether execution remained inside scope.
+</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
@@ -16,65 +21,19 @@
 
 AI agents are cheap. Runtime truth is not.
 
-AMOF v3.3.0 is a local-first CLI and governed runtime surface for canonical
-planning and execution contracts, governed handoff-to-agent execution, truthful
-planner recovery, truthful clarification-required termination, and an
-experimental Studio Session ledger for correlating governed runs, checkpoints,
-and evidence. It validates the workstation, stores app-data and receipts
-outside the target repo, records provider profile references, and keeps Studio
-optional.
+AMOF v3.3.0 is an OSS-only, installable local-first CLI and governed runtime.
+Its current product claim is **Write-Scope Authority**: workers propose bounded
+repository mutations; operators approve finite, TTL-bound grants; Runtime
+Authority binds and enforces those grants; MutationReceipts prove whether
+execution remained inside scope.
 
-AMOF is for platform and DevOps engineers who want an auditable runtime loop:
-LLM calls are workers inside a governed runtime, not the authority for source
-truth, runtime truth, or mutation policy.
-
-It is not just a chatbot and not a generic AI wrapper. The public contract is a
-governed cognition runtime around bounded loops, runtime truth, and execution
-evidence.
-
-## What AMOF Is
-
-AMOF turns a repository into a governed cognition runtime:
-
-- `amof check` and `amof doctor` verify the workstation and app-data layout.
-- `amof init --adopt .` binds an existing Git repo into AMOF app-data.
-- `amof setup provider ...` stores provider references, not raw secrets.
-- `amof chat plan` produces a non-executable proposal through remote IAL.
-- `amof chat start|ask|status|finalize` shape a bounded proposal-only intake session.
-- `amof chat approve` and `amof chat handoff` create explicit approval and handoff artifacts only.
-- `amof agent --plan` is read-only planning.
-- `amof execution scan|report` provides readiness/evidence surfaces without
-  execution dispatch.
-- `amof loop` provides bounded non-mutation runtime loops with evidence output.
+Lifecycle:
 
 ```text
-source repo + runtime evidence
-        |
-        v
-AMOF governance loop ---- receipts / provenance / approvals
-        |
-        v
-optional cognition worker: local model, hosted provider, or remote IAL gateway
-        |
-        v
-proposal, bounded plan, or explicitly approved execution artifact
+propose → inspect → approve → bind → enforce → audit
 ```
 
-AMOF owns the loop around source truth, runtime truth, receipts, and approval
-boundaries. Vendor runtimes and local models are optional cognition workers
-behind that loop.
-
-## Runtime Authority
-
-AMOF does not trust chat output as runtime truth. Runtime truth is emitted as
-inspectable evidence through receipts, runtime logs, run records, intake
-records, selected context, runner metadata, and bounded loop reports.
-
-### Write-Scope Authority
-
-Workers propose bounded repository mutations. Operators approve finite,
-TTL-bound grants. Runtime binds a grant to one execution attempt and enforces
-filesystem paths. MutationReceipts prove whether execution stayed inside scope.
+Minimal CLI path:
 
 ```bash
 amof scope list --from-run <run-id>
@@ -86,6 +45,60 @@ amof scope revoke <approval-id> --reason "..." --revoked-by <operator>
 amof scope recover <binding-id> --decision restore|accept-partial|mark-failed
 ```
 
+AMOF remains a governed cognition runtime around planning contracts, handoff
+execution, runtime evidence, and receipts. LLM calls are workers inside that
+runtime, not the authority for source truth, runtime truth, or mutation policy.
+Studio remains an optional experimental session ledger.
+
+## What AMOF Is
+
+AMOF turns a repository into a governed cognition runtime:
+
+- `amof check` and `amof doctor` verify the workstation and app-data layout.
+- `amof init --adopt .` binds an existing Git repo into AMOF app-data.
+- `amof setup provider ...` stores provider references, not raw secrets.
+- `amof scope list|show|approve|revoke|audit|recover` completes Write-Scope
+  Authority for bounded repository mutation.
+- Mutating execution binds an Approval with `--write-scope-approval`.
+- `amof chat plan` produces a non-executable proposal through remote IAL.
+- `amof chat start|ask|status|finalize` shape a bounded intake session.
+- `amof chat approve` and `amof chat handoff` create explicit chat-plan approval
+  and handoff artifacts (distinct from write-scope Approvals).
+- `amof agent --plan` is read-only planning.
+- `amof execution scan|report` provides readiness/evidence surfaces without
+  execution dispatch.
+- `amof loop` provides bounded non-mutation runtime loops with evidence output.
+
+```text
+source repo + runtime evidence
+        |
+        v
+AMOF governance loop ---- receipts / provenance / write-scope grants
+        |
+        v
+optional cognition worker: local model, hosted provider, or remote IAL gateway
+        |
+        v
+proposal → approval → bound execution → MutationReceipt
+```
+
+AMOF owns the loop around source truth, runtime truth, receipts, and approval
+boundaries. Vendor runtimes and local models are optional cognition workers
+behind that loop.
+
+## Runtime Authority
+
+AMOF does not trust chat output as runtime truth. Runtime truth is emitted as
+inspectable evidence through receipts, runtime logs, run records, intake
+records, selected context, runner metadata, MutationReceipts, and bounded loop
+reports.
+
+### Write-Scope Authority
+
+Workers propose bounded repository mutations. Operators approve finite,
+TTL-bound grants. Runtime binds a grant to one execution attempt and enforces
+filesystem paths. MutationReceipts prove whether execution stayed inside scope.
+
 Legacy `--approve-writable-root` remains a deprecated path-elevation shim with a
 warning. It does **not** create WriteScopeApproval or Binding evidence and is
 not the happy path.
@@ -95,7 +108,7 @@ worked OSS example.
 
 Public runtime authority surfaces:
 
-- write-scope propose / approve / bind / enforce / audit / recover via `amof scope`
+- write-scope propose / inspect / approve / bind / enforce / audit / recover via `amof scope`
 - context selection via `amof context`
 - governed intake validation/submission via `amof intake`
 - runner registry metadata via `amof runner`
@@ -161,12 +174,6 @@ CTA: [Open Operator Console Preview](https://console-cloud-dev.amof.dev/)
 
 IAL reference (auth-bound gateway surface): [https://ial-cloud-dev.amof.dev/](https://ial-cloud-dev.amof.dev/)
 
-## Current Known Next Slices
-
-- Runtime logs viewer contract and minimal UI
-- Receipt count semantics contract
-- Console rollout guardrail comparing deployed hash vs intended source
-
 ## Why Evidence-First
 
 AMOF keeps evidence and runtime state in app-data instead of spraying files into
@@ -194,13 +201,14 @@ This public `main` intentionally keeps a narrow, installable v3.3.0 surface:
 - `amof doctor`
 - `amof setup provider`
 - `amof init --adopt .`
+- `amof scope list|show|approve|revoke|audit|recover`
 - `amof chat plan "Inspect this repo"`
 - `amof chat start "Clarify this repo"`
 - `amof chat approve <session-id>`
 - `amof chat handoff <approval-id-or-path>`
 - `amof agent --plan "Inspect this repo"`
 - `amof handoff prepare --help`
-- `amof handoff execute-agent --help`
+- `amof handoff execute-agent --help` (bind with `--write-scope-approval`)
 - `amof studio --help`
 - `amof runs --help`
 - `amof execution scan --help`
@@ -228,6 +236,7 @@ What works in v3.3.0:
 - `amof doctor --json`
 - `amof setup provider --list`
 - `amof init --adopt .`
+- `amof scope list|show|approve|revoke|audit|recover`
 - `amof chat plan "Inspect this repo" --repo .`
 - `amof chat start "Clarify this repo" --repo .`
 - `amof chat ask <session-id> "Bounded answer"`
@@ -237,7 +246,7 @@ What works in v3.3.0:
 - `amof chat handoff <approval-id-or-path>`
 - `amof agent --plan "Inspect this repo"`
 - `amof handoff prepare --json`
-- `amof handoff execute-agent <packet-or-dir>`
+- `amof handoff execute-agent <packet-or-dir> --write-scope-approval <approval-id>`
 - `amof studio create --json`
 - `amof studio show --json <studio-session-id>`
 - `amof studio checkpoint add --summary "..." <studio-session-id>`
@@ -397,7 +406,9 @@ The normal public path after install is:
 2. inspect app-data health with `amof doctor`
 3. configure a provider profile with `amof setup provider ...`
 4. run read-only planning with `amof agent --plan`
-5. use `amof execution scan|report` and `amof loop` for governed non-mutation
+5. when a run emits write-scope proposals, inspect/approve via `amof scope`,
+   bind with `--write-scope-approval`, then `amof scope audit`
+6. use `amof execution scan|report` and `amof loop` for governed non-mutation
    runtime loops
 
 AMOF stores repo bindings, contexts, journals, run logs, and provider-profile
@@ -448,9 +459,11 @@ message rather than fail on missing `--ecosystem/-e`.
 
 ## Bounded Loops and Scan/Report
 
-The v3.3.0 release completes Write-Scope Authority on the public governed runtime surface while keeping
-policy and evidence boundaries explicit:
+The v3.3.0 release completes Write-Scope Authority on the public governed
+runtime surface while keeping policy and evidence boundaries explicit:
 
+- `amof scope` for propose → inspect → approve → bind → enforce → audit/recover
+- `amof handoff execute-agent --write-scope-approval` for bound mutating runs
 - `amof execution scan` and `amof execution report` for readiness and evidence
   (`NO_EXECUTION_PERFORMED`)
 - `amof loop` for bounded long-running loops with stop conditions and evidence
@@ -460,8 +473,8 @@ policy and evidence boundaries explicit:
 - `amof studio` for an experimental Studio Session ledger that correlates runs,
   checkpoints, and evidence without automatic session creation
 
-This release framing does not claim autonomous remote dispatch or unrestricted
-mutation execution in public runtime surfaces.
+This release framing does not claim autonomous remote dispatch, unrestricted
+mutation, Workforce, or Predator as public OSS features.
 
 ## Configure A Provider Profile
 
@@ -600,6 +613,7 @@ that directory as a flat app-data root.
 
 Additional public docs retained in this repo include:
 
+- `docs/write-scope-authority.md`
 - `docs/governed-cognition-runtime.md`
 - `docs/remote-ial.md`
 - `docs/runbooks/install.md`
@@ -616,13 +630,15 @@ Additional public docs retained in this repo include:
 
 ## Release State
 
-- `v3.3.0` is the current AMOF public release.
+- `v3.3.0` is the current AMOF public release (Write-Scope Authority).
 - `v3.2.0` remains as the prior public release in this line.
 - `v3.0.0` remains as a historical broken escaped tag and is not rewritten.
 - `v3.0.1` remains as the prior correction release in this line.
 - Public `v3.3.0` includes:
-  - Write-Scope Authority (`amof scope` propose/approve/bind/enforce/audit/recover)
+  - Write-Scope Authority lifecycle: propose → inspect → approve → bind →
+    enforce → audit/recover via `amof scope` and `--write-scope-approval`
   - MutationReceipt compliance proof on governed mutating runs
+  - OSS-only installable CLI (`pipx` / source checkout); no Workforce claim
 - Public `v3.2.0` lineage also includes:
   - explicit runtime context via `amof context`
   - intake contract and CLI intake via `amof intake`

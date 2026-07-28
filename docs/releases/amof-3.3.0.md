@@ -2,12 +2,16 @@
 
 Status: release notes for the Write-Scope Authority public release  
 Canonical version: `v3.3.0`  
-Previous release: `v3.2.0`
+Previous release: `v3.2.0`  
+Date: 2026-07-28
 
 AMOF `v3.3.0` completes **Write-Scope Authority** for OSS runtimes: workers
 propose bounded repository mutations, operators approve finite grants, Runtime
 binds and enforces them, and receipts prove whether execution remained inside
 scope.
+
+Public lifecycle: `propose → inspect → approve → bind → enforce → audit`.
+See the repository README for the rendered public surface framing.
 
 ## Highlights
 
