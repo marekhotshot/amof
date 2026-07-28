@@ -111,10 +111,10 @@ As of `v3.1.1`, the verified public Runtime Authority surface includes:
 - aggregate intake missing-field validation reporting
 - standalone smoke current-version hygiene for released artifacts
 
-Current cloud-dev verification summary:
+Public verification of this surface is CLI- and contract-first: install,
+doctor/check, intake/runner/execution scan readiness, bounded loops, and
+receipt/evidence inspection. Private operator hosting and preview hostnames are
+not part of the OSS architecture narrative.
 
-- `VERIFIED_RUNTIME_SURFACES=console-cloud-dev.amof.dev:LOW_RISK_EXPOSURE;ial-cloud-dev.amof.dev:SAFE_PUBLIC_SURFACE`
-- `REGRESSIONS_FOUND=receipt_sidebar_polling_regression_detected_and_fixed;admin_context_switch_surfaces_missing_with_mixed_intent_classification`
-
-This is the shipped surface. Anything beyond it should be documented as future
-direction or private/operator evidence, not as public capability.
+This is the shipped public surface. Anything beyond it should be documented as
+future direction or private/operator evidence, not as public capability.

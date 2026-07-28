@@ -158,22 +158,6 @@ AMOF preserves provider cost truth:
 - missing provider cost remains unknown/null
 - missing cost is never reported as fake `0.0`
 
-## Operator Console Preview
-
-Label: **Cloud-dev live preview**
-
-The cloud-dev Operator Console exposes AMOF runtime receipts, intake
-submissions, selected runs, policy attribution, and sanitized evidence/debug
-surfaces. It is a live preview over the current AMOF runtime path, not a fake
-demo surface.
-
-Caution: Cloud-dev preview. Public-safe runtime surfaces only. Known gaps are
-tracked as follow-up slices.
-
-CTA: [Open Operator Console Preview](https://console-cloud-dev.amof.dev/)
-
-IAL reference (auth-bound gateway surface): [https://ial-cloud-dev.amof.dev/](https://ial-cloud-dev.amof.dev/)
-
 ## Why Evidence-First
 
 AMOF keeps evidence and runtime state in app-data instead of spraying files into
@@ -189,6 +173,9 @@ the target repo. The goal is to make agent actions reviewable:
 The public repo does not ship private deployment topology, live runtime
 operators, kubeconfigs, customer environments, or internal cloud workflows.
 Those belong outside the public product tree.
+
+Predator is the private operator cockpit built on top of AMOF Runtime Authority
+and is not part of the OSS release.
 
 ## Public Surface
 
