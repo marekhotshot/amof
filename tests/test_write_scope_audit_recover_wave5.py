@@ -291,29 +291,32 @@ class WriteScopeAuditRecoverWave5Tests(unittest.TestCase):
         self.assertEqual(result["residual_mutation_authority"], "none")
 
     def test_recover_expired_approval(self) -> None:
+        from datetime import timedelta
+
         body = _valid_body(target_id=self.target_id, base_sha=self.base_sha)
         outcome = persist_write_scope_proposals_from_result(
             _result_envelope(session_id="run-wave5-exp", proposal=body),
             base_dir=self.proposals,
         )
-        t0 = datetime(2026, 7, 28, 10, 0, 0, tzinfo=timezone.utc)
+        # Bind while the Approval is still active under the real clock, then
+        # persist expiry via injected later now before recover.
+        t0 = datetime.now(timezone.utc).replace(microsecond=0)
         approval = approve_proposal(
             outcome.persisted[0]["proposal_id"],
             ttl="1h",
             approved_by=OPERATOR,
-            approved_at="2026-07-28T10:00:00Z",
+            approved_at=t0.strftime("%Y-%m-%dT%H:%M:%SZ"),
             now=t0,
             proposals_dir=self.proposals,
             approvals_dir=self.approvals,
             events_dir=self.events,
         )
         bound = self._bind(approval["approval_id"])
-        # Persist expiry via lazy TTL evaluation (restart clock).
         expired = load_approval(
             approval["approval_id"],
             approvals_dir=self.approvals,
             events_dir=self.events,
-            now=datetime(2026, 7, 28, 11, 0, 0, tzinfo=timezone.utc),
+            now=t0 + timedelta(hours=1),
         )
         self.assertEqual(expired["status"], STATUS_EXPIRED)
         result = recover_binding(
