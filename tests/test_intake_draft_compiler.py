@@ -124,6 +124,103 @@ class IntakeDraftCompilerTests(unittest.TestCase):
         self.assertNotIn("amof.dev", packet["paths_to_inspect"])
         self.assertIn("services/operator-console/src/app/page.tsx", packet["paths_to_inspect"])
 
+    # AMOF-BL-109: verification-style classification with project-memory inject
+
+    _WAVE_D_MISSION = (
+        "Develop-AMOF backlog verification mission under project amof: in\n"
+        "marekhotshot/amof-private, the only file in scope is\n"
+        "docs/product/backlogs/amof.md. Docs-only mission.\n"
+        "\n"
+        "This is a verification-only bounded write for AMOF-BL-108 / BL-091 dogfood\n"
+        "on bl077-107-108. The expected and correct outcome is ZERO file changes.\n"
+        "Do not invent an edit to appear productive.\n"
+        "\n"
+        "Task: verify that the delivered status marker for AMOF-BL-108 in\n"
+        "docs/product/backlogs/amof.md is intact and mentions allow_no_change.\n"
+        "Inspect the marker lines only.\n"
+        "\n"
+        "If the marker already contains the required references (expected), make NO\n"
+        "changes at all and state clearly in your final findings which lines you\n"
+        "inspected and that you intentionally made zero changes.\n"
+        "\n"
+        "Do not touch any other line. An empty diff is success.\n"
+        "\n"
+        "Final requirement: include\n"
+        '"End-of-mission sentinel AMOF-EOM-BL108-DOGFOOD-20260728 observed." in findings.'
+    )
+
+    _WAVE_D_MEMORY_PREFIX = (
+        "## Project memory\n"
+        "- AMOF develops AMOF via Predator Golden Flow: select project/targets → compile\n"
+        "mission → preflight → prepare packet → dispatch → review evidence → publish/\n"
+        "promote only with operator decision. Models are workers; runtime owns\n"
+        "capability, policy, audit, and writes. UI is projection + operator surface,\n"
+        "not execution authority. Conversation/planning ≠ approval ≠ execution.\n"
+        "Evidence must report observation (events, logs, provenance), not configured\n"
+        "labels. Fail closed on missing write_scope_proposals[]; stop honestly when\n"
+        "blocked or no-delta. Public installable surface (marekhotshot/amof) is\n"
+        "separate from private operator/runtime leverage (marekhotshot/amof-private).\n"
+        "Historical Arena agent-society / UI-owned writes are rejected design history. "
+        "[charter, seed, bl-064]\n"
+        "- Recent closed trains (names only): DELIVERY-TAIL-001 (BL-047/074/075/076),\n"
+        "WORKFORCE-LADDERS-001/002 (BL-054/055 + qualification calibrate),\n"
+        "BACKLOG-CLEANUP-001 (status reconcile + BL-033/061/062). [mission-history, seed, bl-064]\n"
+        "\n"
+    )
+
+    def test_bl109_wave_d_mission_with_memory_is_verification(self) -> None:
+        """Exact wave D dogfood shape: memory prepend must not yield task_kind=blocked."""
+        raw_text = self._WAVE_D_MEMORY_PREFIX + self._WAVE_D_MISSION
+        draft = compile_intake_draft(raw_text)
+        packet = json.loads(draft.packet_text)
+        self.assertEqual(packet["task_kind"], "verification")
+        self.assertNotEqual(packet["task_kind"], "blocked")
+        self.assertTrue(packet["rough_intent"].startswith("## Project memory\n"))
+        self.assertIn("docs/product/backlogs/amof.md", packet["paths_to_inspect"])
+        self.assertTrue(draft.title.startswith("Develop-AMOF backlog verification"))
+
+    def test_bl109_wave_d_mission_without_memory_is_verification(self) -> None:
+        draft = compile_intake_draft(self._WAVE_D_MISSION)
+        packet = json.loads(draft.packet_text)
+        self.assertEqual(packet["task_kind"], "verification")
+
+    def test_bl109_mutation_with_memory_stays_implementation(self) -> None:
+        mission = (
+            "AMOF-BL-109 today: implement a docs fix in docs/product/backlogs/amof.md.\n"
+            "Update the marker line to mention allow_no_change and edit the file.\n"
+            "Apply a patch; empty diff is not success."
+        )
+        raw_text = self._WAVE_D_MEMORY_PREFIX + mission
+        draft = compile_intake_draft(raw_text)
+        packet = json.loads(draft.packet_text)
+        self.assertEqual(packet["task_kind"], "implementation")
+        self.assertNotEqual(packet["task_kind"], "blocked")
+        self.assertNotEqual(packet["task_kind"], "verification")
+
+    def test_bl109_ambiguous_verification_and_mutation_is_fail_visible(self) -> None:
+        mission = (
+            "AMOF-BL-109 verification-only mission for docs/product/backlogs/amof.md.\n"
+            "Zero file changes expected. Also update the marker line and edit the file "
+            "to implement the missing note."
+        )
+        draft = compile_intake_draft(mission)
+        packet = json.loads(draft.packet_text)
+        self.assertEqual(packet["task_kind"], "classification_ambiguous")
+        self.assertEqual(draft.classification, "ambiguous")
+        self.assertTrue(
+            any("classification_ambiguous" in item for item in packet["uc_classification"]["blockers"])
+        )
+
+    def test_bl109_incidental_blocked_in_principles_does_not_defer(self) -> None:
+        raw_text = (
+            "AMOF-900 today: inspect docs/product/backlogs/amof.md marker lines.\n"
+            "Principle reminder: stop honestly when blocked or no-delta.\n"
+            "This mission is actionable now."
+        )
+        draft = compile_intake_draft(raw_text)
+        self.assertNotEqual(draft.classification, "defer")
+        self.assertNotEqual(json.loads(draft.packet_text)["task_kind"], "blocked")
+
 
 if __name__ == "__main__":
     unittest.main()
