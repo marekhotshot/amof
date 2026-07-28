@@ -30,6 +30,11 @@ optional cognition worker
 proposal, plan, handoff artifact, or reviewed bounded diff
 ```
 
+The concrete handoff chain (canonical mission packet → prepared handoff →
+duck-typed execution backends → `agent-run-result` → evidence → verdict
+ownership) is documented in `docs/canonical-execution-chain.md`. That note
+names what already exists; it does not introduce a parallel abstraction.
+
 ## What AMOF Owns
 
 AMOF owns the local operating contract:

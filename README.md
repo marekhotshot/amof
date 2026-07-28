@@ -106,6 +106,10 @@ not the happy path.
 See `docs/write-scope-authority.md` for the lifecycle, failure model, and a
 worked OSS example.
 
+The governed handoff path (mission packet → prepared handoff → Hermes/Claude
+backends → `agent-run-result` → evidence) is already the canonical execution
+chain; see `docs/canonical-execution-chain.md`.
+
 Public runtime authority surfaces:
 
 - write-scope propose / inspect / approve / bind / enforce / audit / recover via `amof scope`
@@ -658,6 +662,7 @@ Additional public docs retained in this repo include:
 - Release evidence docs:
   - `docs/releases/amof-3.3.0.md`
   - `docs/write-scope-authority.md`
+  - `docs/canonical-execution-chain.md`
   - `docs/releases/amof-3.2.0.md`
   - `docs/releases/amof-3.1.1.md`
   - `docs/releases/amof-3.0-closeout.md`

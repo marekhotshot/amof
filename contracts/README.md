@@ -15,8 +15,13 @@ The retained contract families are:
 - examples that prove the bootstrap contract statuses and director intake
   shapes
 
+Canonical execution chain (intent → handoff → backends → `agent-run-result` →
+evidence → verdict ownership): see `docs/canonical-execution-chain.md`. Do not
+treat `execution-handoff-result` as the agent completion contract.
+
 Active contract set:
 
+- `canonical-mission-packet.schema.json`
 - `plan-bundle.schema.json`
 - `agent-run-result.schema.json`
 - `studio-session.schema.json`
