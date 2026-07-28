@@ -93,28 +93,6 @@ AMOF preserves provider cost truth:
 - missing provider cost remains unknown/null
 - missing provider cost is never reported as fake `0.0`
 
-## Operator Console Preview
-
-Label: **Cloud-dev live preview**
-
-The cloud-dev Operator Console exposes AMOF runtime receipts, intake
-submissions, selected runs, policy attribution, and sanitized evidence/debug
-surfaces. It is a live preview over the current AMOF runtime path, not a fake
-demo surface.
-
-Caution: Cloud-dev preview. Public-safe runtime surfaces only. Known gaps are
-tracked as follow-up slices.
-
-CTA: [Open Operator Console Preview](https://console-cloud-dev.amof.dev/)
-
-IAL reference (auth-bound surface): [https://ial-cloud-dev.amof.dev/](https://ial-cloud-dev.amof.dev/)
-
-## Current Known Next Slices
-
-- Runtime logs viewer contract and minimal UI
-- Receipt count semantics contract
-- Console rollout guardrail comparing deployed hash vs intended source
-
 ## Scope Boundaries
 
 - This release does not claim production readiness.
