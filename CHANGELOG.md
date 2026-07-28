@@ -6,10 +6,12 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 ## [Unreleased]
 
-- No unreleased changes.
+- Docs-only: public README / CHANGELOG surface reconciliation for `v3.3.0`
+  Write-Scope Authority framing (post-tag on main; no product version bump).
 
 ## v3.3.0 - Write-Scope Authority
 
+- Date: 2026-07-28.
 - Minor release after `v3.2.0`.
 - Completes the public Write-Scope Authority loop for OSS runtimes:
   workers propose, operators approve, Runtime binds and enforces, receipts
@@ -34,6 +36,22 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 - `--approve-writable-root` remains available as a deprecated compatibility
   shim with an explicit warning. It never mints historical Approvals/Bindings.
+
+### Security
+
+- Deny-wins path enforcement for bound write scopes; out-of-scope mutations
+  fail closed and surface on MutationReceipt.
+- Unknown or corrupt write-scope records fail closed (no silent grant/retain).
+- Revocation and TTL end mutation authority; recovery never fabricates success
+  and never continues mutation authority automatically.
+
+### Explicit non-claims
+
+- Not perfect sandboxing or general OS containment.
+- Not transactional filesystem rollback.
+- Not autonomous approval.
+- Not Workforce / Predator OSS features.
+- Not long-running checkpoint mutation authority (deferred to a future line).
 
 ### Migration notes
 
