@@ -16,7 +16,7 @@ import yaml
 
 from ..app_config import load_contexts, resolve_active_context_name
 from ..app_paths import get_app_paths, runs_dir
-from ..execution_backends import claude_code, hermes_opensandbox
+from ..execution_backends import claude_code, cursor_sdk, hermes_opensandbox
 from ..orchestrator.events import EventLog
 from .intake import IntakeCliError, _is_read_only_intake, _validate_packet
 
@@ -51,12 +51,18 @@ RUNNER_STATUS_ALLOWED = {
 RUNNER_ELIGIBLE_STATUSES = {"available", "registered", "ready"}
 ALLOWED_MUTATION_MODES = {"read_only", "bounded_worktree"}
 REQUIRED_MATCH_CAPABILITIES = {"intake.validate", "intake.plan"}
-SUPPORTED_TEMPLATE_KINDS = ("local-planning", "hermes-opensandbox", "claude-code")
+SUPPORTED_TEMPLATE_KINDS = (
+    "local-planning",
+    "hermes-opensandbox",
+    "claude-code",
+    "cursor-sdk",
+)
 LOCAL_FORENSIC_TIMEOUT_SECONDS = 15.0
 SUPPORTED_BACKENDS = {
     "planning_only",
     hermes_opensandbox.BACKEND_TYPE,
     claude_code.BACKEND_TYPE,
+    cursor_sdk.BACKEND_TYPE,
 }
 HERMES_ALLOWED_EXECUTION_CAPABILITIES = {"read", "bounded_write", "shell_limited", "focused_tests"}
 HERMES_DENIED_CAPABILITIES = {
@@ -268,7 +274,11 @@ def _validate_backend_payload(payload: dict[str, Any], *, mutation_modes: list[s
                 f"planning-only runners may include read_only mutation mode only; found: {', '.join(sorted(set(unsupported_modes)))}"
             )
         return
-    if backend in {hermes_opensandbox.BACKEND_TYPE, claude_code.BACKEND_TYPE}:
+    if backend in {
+        hermes_opensandbox.BACKEND_TYPE,
+        claude_code.BACKEND_TYPE,
+        cursor_sdk.BACKEND_TYPE,
+    }:
         dangerous = sorted({item for item in capabilities if item in HERMES_DENIED_CAPABILITIES})
         if dangerous:
             raise RunnerCliError(f"{backend} backend does not support dangerous capabilities: {', '.join(dangerous)}")
@@ -461,6 +471,61 @@ def _template_payload(kind: str) -> dict[str, Any]:
                 "event_log_required": True,
             },
         }
+    if kind == "cursor-sdk":
+        return {
+            "version": "1.0.0",
+            "runner_id": "cursor-sdk-ticket-write",
+            "name": "Cursor SDK Ticket Write",
+            "context": "local",
+            "status": "available",
+            "backend": cursor_sdk.BACKEND_TYPE,
+            "backend_contract_version": cursor_sdk.BACKEND_CONTRACT_VERSION,
+            "runtime_contract": cursor_sdk.RUNTIME_CONTRACT,
+            "isolation_model": cursor_sdk.ISOLATION_MODEL,
+            "capabilities": [
+                "intake.validate",
+                "intake.plan",
+                "execution.scan_report",
+                "read",
+                "bounded_write",
+                "shell_limited",
+                "focused_tests",
+            ],
+            "supported_task_kinds": [
+                "other",
+                "documentation",
+            ],
+            "allowed_mutation_modes": [
+                "read_only",
+                "bounded_worktree",
+            ],
+            "max_concurrency": 1,
+            "labels": [
+                "local",
+                "cursor-sdk",
+                "cursor",
+                "worker-delegated",
+            ],
+            "trust_level": "local",
+            "registration_source": "amof.runner.template.cursor-sdk",
+            "endpoint_ref": "cursor-sdk-local",
+            "execution": {
+                "mode": "ticket_write",
+                "max_runtime_seconds": 2700,
+            },
+            "authority": {
+                "mutation": "bounded_worktree",
+                "writable_roots_required": True,
+                "commit": "denied",
+                "push": "denied",
+                "promote": "denied",
+                "deploy": "denied",
+            },
+            "evidence": {
+                "canonical_result_required": True,
+                "event_log_required": True,
+            },
+        }
     if kind != "local-planning":
         supported = ", ".join(SUPPORTED_TEMPLATE_KINDS)
         raise RunnerCliError(f"unsupported runner template kind: {kind} (supported: {supported})")
@@ -584,12 +649,20 @@ def _cmd_register(args: argparse.Namespace) -> int:
         print(json.dumps(record, indent=2))
     else:
         backend = str(record.get("backend") or "planning_only")
-        backend_module = (
-            claude_code if backend == claude_code.BACKEND_TYPE else hermes_opensandbox
-        )
+        if backend == claude_code.BACKEND_TYPE:
+            backend_module = claude_code
+        elif backend == cursor_sdk.BACKEND_TYPE:
+            backend_module = cursor_sdk
+        else:
+            backend_module = hermes_opensandbox
         dispatch = (
             "yes"
-            if backend in {hermes_opensandbox.BACKEND_TYPE, claude_code.BACKEND_TYPE}
+            if backend
+            in {
+                hermes_opensandbox.BACKEND_TYPE,
+                claude_code.BACKEND_TYPE,
+                cursor_sdk.BACKEND_TYPE,
+            }
             and backend_module.runtime_health()["dispatch_available"]
             else "no"
         )
@@ -678,6 +751,8 @@ def _doctor_backend_records() -> list[dict[str, Any]]:
             records.append(hermes_opensandbox.doctor_record(record))
         elif backend == claude_code.BACKEND_TYPE:
             records.append(claude_code.doctor_record(record))
+        elif backend == cursor_sdk.BACKEND_TYPE:
+            records.append(cursor_sdk.doctor_record(record))
         else:
             records.append(
                 {

@@ -21,10 +21,14 @@ Dispatch entry point: `scripts/amof/commands/handoff.py` →
 | --- | --- | --- |
 | `hermes_opensandbox.py` | `hermes_opensandbox` | Hermes CLI + Remote IAL |
 | `claude_code.py` | `claude_code` | Claude Code CLI (headless) + Anthropic API; reuses shared governance helpers from the Hermes module |
+| `cursor_sdk.py` | `cursor_sdk` | Cursor Python SDK (lazy import); Worker/delegated only; `CURSOR_API_KEY` substrate secret; empty `setting_sources` by default |
 
-Both declare `isolation_model = runtime_owner_workspace` (workspace-level
+All declare `isolation_model = runtime_owner_workspace` (workspace-level
 containment). Stronger isolation models are listed as future options on the
 modules and are not current shipped containment.
+
+Cursor SDK limitations (non-K8s VM, billing, IDE bleed, evidence density):
+see `NOTES-cursor-sdk.md`.
 
 When no runner / builtin path is selected, handoff may use the builtin
 plan-execute envelope instead of these modules; that path still emits

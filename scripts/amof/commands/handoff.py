@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from ..app_paths import ensure_app_roots, get_app_paths
 from ..commands import agent_cmd
-from ..execution_backends import claude_code, hermes_opensandbox
+from ..execution_backends import claude_code, cursor_sdk, hermes_opensandbox
 from ..manifest import list_available_ecosystems, load_manifest
 from ..state import get_state
 from ..utils import get_ecosystem_from_branch, get_ecosystem_from_path, get_git_toplevel
@@ -1885,6 +1885,7 @@ def _execute_agent_from_handoff(
             dispatch_backends = {
                 hermes_opensandbox.BACKEND_TYPE: hermes_opensandbox,
                 claude_code.BACKEND_TYPE: claude_code,
+                cursor_sdk.BACKEND_TYPE: cursor_sdk,
             }
             backend_module = dispatch_backends.get(backend)
             if backend_module is None:
