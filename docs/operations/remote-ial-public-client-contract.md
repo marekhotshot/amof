@@ -2,7 +2,8 @@
 
 Ticket: `AMOF-IAL-PUBLIC-CLIENT-001`
 
-Status: `PUBLIC_CLIENT_CONTRACT_ONLY`, updated for `v3.1.1`
+Status: `PUBLIC_CLIENT_CONTRACT_ONLY`  
+Related: `docs/operations/control-plane-api-authority.md`
 
 ## Purpose
 
@@ -55,8 +56,12 @@ Public `amof` may target the private gateway contract paths:
 - `GET /v1/ial/healthz`
 - `GET /v1/ial/providers`
 - `POST /v1/ial/chat`
+- `GET /v1/ial/intakes` and `GET /v1/ial/intakes/{intake_id}` (intake CLI remote read)
+- `POST /v1/ial/intakes` (intake CLI remote submit/create)
 
-Public `amof` must not host these routes.
+Public `amof` must not host these routes. Admin token mint
+(`POST /v1/ial/tokens/run`) and operator-console proxy paths are not part of the
+public client contract.
 
 ### Request payload
 

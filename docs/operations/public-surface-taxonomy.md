@@ -1,13 +1,19 @@
 # Public Surface Taxonomy
 
-Status: public v3.1.1 Runtime Authority taxonomy
-Date: 2026-06-01
+Status: public Runtime Authority taxonomy (command classification)  
+Date: 2026-08-04  
+Related: HTTP/MCP/contract authority —
+[`control-plane-api-authority.md`](./control-plane-api-authority.md)
 
 AMOF keeps more code than the first-run public path because the repo also
 contains source-checkout utilities, advanced evidence tooling, optional provider
 templates, and maintainer workflows. This taxonomy keeps those surfaces
 discoverable without turning first-run help or the README into an internal
 toolbox.
+
+This file classifies **CLI commands**. It is not the HTTP endpoint catalog.
+For control-plane HTTP, MCP, and JSON contracts, use
+`docs/operations/control-plane-api-authority.md`.
 
 ## Public First-Run Surface
 
