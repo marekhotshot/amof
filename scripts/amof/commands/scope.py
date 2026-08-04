@@ -4,7 +4,7 @@ Wave 1: list|show proposals (evidence only).
 Wave 2: approve|revoke + show/list approvals with TTL and revocation.
 Wave 3: show/list bindings; Approval alone still does not mutate — Binding does.
 Wave 4: enforcement + MutationReceipt (via execute path).
-Wave 5: audit|recover + migration honesty.
+Wave 5: audit|recover + migration honesty (scan|migrate).
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from ..write_scope_approvals import (
@@ -37,10 +38,16 @@ from ..write_scope_bindings import (
     list_bindings,
     load_binding,
 )
+from ..write_scope_migration import (
+    migrate_nested_proposals_from_result,
+    scan_write_scope_store,
+)
 from ..write_scope_proposals import (
     WriteScopeProposalError,
+    collect_candidate_bodies,
     list_proposals,
     load_proposal,
+    normalize_write_scope_body,
 )
 from ..write_scope_recovery import WriteScopeRecoveryError, recover_binding
 
@@ -238,6 +245,128 @@ def _print_recovery(record: dict[str, Any]) -> None:
     ]
     for key, value in pairs:
         print(f"{key}: {value}")
+
+
+def _print_scan(record: dict[str, Any]) -> None:
+    pairs = [
+        ("proposals_ok", record.get("proposals_ok")),
+        ("approvals_ok", record.get("approvals_ok")),
+        ("bindings_ok", record.get("bindings_ok")),
+        ("receipts_ok", record.get("receipts_ok")),
+        ("corrupt_count", len(record.get("corrupt") or [])),
+        ("legacy_flag_events_seen", record.get("legacy_flag_events_seen")),
+        ("legacy_approvals_fabricated", record.get("legacy_approvals_fabricated")),
+        ("legacy_policy", record.get("legacy_policy") or "-"),
+    ]
+    for key, value in pairs:
+        print(f"{key}: {value}")
+    for item in record.get("corrupt") or []:
+        print(
+            "corrupt:\t"
+            f"{item.get('kind') or '-'}\t"
+            f"{item.get('path') or '-'}\t"
+            f"{item.get('error') or '-'}\t"
+            f"{item.get('action') or '-'}"
+        )
+
+
+def _print_migrate(record: dict[str, Any]) -> None:
+    pairs = [
+        ("mode", record.get("mode") or "-"),
+        ("applied", record.get("applied")),
+        ("candidate_count", record.get("candidate_count")),
+        ("persisted_count", record.get("persisted_count")),
+        ("rejected_count", record.get("rejected_count")),
+        ("skipped_prose_only", record.get("skipped_prose_only")),
+        ("note", record.get("note") or "-"),
+    ]
+    for key, value in pairs:
+        print(f"{key}: {value}")
+
+
+def _resolve_scan_store(store: str) -> tuple[Path, Path, Path, Path, Path | None]:
+    root = Path(str(store or "").strip()).expanduser()
+    if not str(store or "").strip():
+        raise ScopeCliError(
+            "scan requires explicit --store <write-scopes-root> "
+            "(fail-closed: no implicit AMOF_HOME default)."
+        )
+    if not root.exists():
+        raise ScopeCliError(f"scan --store path does not exist: {root}")
+    if not root.is_dir():
+        raise ScopeCliError(f"scan --store must be a directory: {root}")
+    proposals = root / "proposals"
+    approvals = root / "approvals"
+    bindings = root / "bindings"
+    receipts = root / "receipts"
+    events_dir = root / "events"
+    events_path: Path | None = None
+    if events_dir.is_dir():
+        # Prefer a single events.jsonl if present; else leave unset.
+        candidate = events_dir / "events.jsonl"
+        if candidate.is_file():
+            events_path = candidate
+    return proposals, approvals, bindings, receipts, events_path
+
+
+def _load_result_json(path_text: str) -> dict[str, Any]:
+    text = str(path_text or "").strip()
+    if not text:
+        raise ScopeCliError("migrate requires --result <path-to-AgentRunResult.json>.")
+    path = Path(text).expanduser()
+    if not path.is_file():
+        raise ScopeCliError(f"migrate --result file not found: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ScopeCliError(f"migrate --result is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ScopeCliError("migrate --result must be a JSON object (AgentRunResult).")
+    return payload
+
+
+def _migrate_dry_run_preview(
+    result: dict[str, Any],
+    *,
+    run_id: str | None,
+) -> dict[str, Any]:
+    """Preview migrate without calling the persist helper (no writes)."""
+    parent = str(run_id or result.get("session_id") or result.get("run_id") or "").strip()
+    candidates, rejected = collect_candidate_bodies(result)
+    normalizable = 0
+    for index, candidate in enumerate(candidates):
+        frozen = normalize_write_scope_body(candidate)
+        if frozen is None:
+            rejected.append(
+                {
+                    "reason": "malformed_proposal",
+                    "index": index,
+                    "detail": "proposal failed WriteScopeBody normalization",
+                }
+            )
+            continue
+        normalizable += 1
+    if candidates and not parent:
+        rejected.append(
+            {
+                "reason": "missing_parent_run_id",
+                "detail": "proposals require a parent run_id / session_id",
+            }
+        )
+        normalizable = 0
+    return {
+        "kind": "write_scope_migrate",
+        "mode": "dry-run",
+        "applied": False,
+        "run_id": parent or None,
+        "candidate_count": normalizable,
+        "persisted_count": 0,
+        "rejected_count": len(rejected),
+        "rejected": rejected,
+        "skipped_prose_only": not candidates,
+        "persisted": [],
+        "note": "dry-run only; pass --apply to persist via migrate_nested_proposals_from_result",
+    }
 
 
 def _load_show_record(ref: str) -> dict[str, Any]:
@@ -463,8 +592,76 @@ def cmd_scope(args: argparse.Namespace) -> int:
                 _print_recovery(record)
             return 0
 
+        if action == "scan":
+            store = str(getattr(args, "store", "") or "").strip()
+            if not store:
+                raise ScopeCliError(
+                    "scan requires explicit --store <write-scopes-root> "
+                    "(fail-closed: no implicit AMOF_HOME default)."
+                )
+            proposals_dir, approvals_dir, bindings_dir, receipts_dir, auto_events = (
+                _resolve_scan_store(store)
+            )
+            events_override = str(getattr(args, "events_path", "") or "").strip()
+            events_path = Path(events_override).expanduser() if events_override else auto_events
+            if events_override and (events_path is None or not events_path.is_file()):
+                raise ScopeCliError(f"scan --events file not found: {events_override}")
+            scan = scan_write_scope_store(
+                proposals_dir=proposals_dir,
+                approvals_dir=approvals_dir,
+                bindings_dir=bindings_dir,
+                receipts_dir=receipts_dir,
+                events_path=events_path,
+            )
+            record = scan.to_dict()
+            if bool(getattr(args, "json", False)):
+                print(json.dumps(record, indent=2))
+            else:
+                _print_scan(record)
+            return 0
+
+        if action == "migrate":
+            result = _load_result_json(str(getattr(args, "result_path", "") or ""))
+            run_id = str(getattr(args, "run_id", "") or "").strip() or None
+            apply = bool(getattr(args, "apply", False))
+            base_dir_text = str(getattr(args, "base_dir", "") or "").strip()
+            base_dir = Path(base_dir_text).expanduser() if base_dir_text else None
+            if not apply:
+                record = _migrate_dry_run_preview(result, run_id=run_id)
+                if bool(getattr(args, "json", False)):
+                    print(json.dumps(record, indent=2))
+                else:
+                    _print_migrate(record)
+                return 0
+            outcome = migrate_nested_proposals_from_result(
+                result,
+                run_id=run_id,
+                base_dir=base_dir,
+            )
+            record = {
+                "kind": "write_scope_migrate",
+                "mode": "apply",
+                "applied": True,
+                "run_id": run_id or result.get("session_id") or result.get("run_id"),
+                "candidate_count": len(outcome.persisted),
+                "persisted_count": len(outcome.persisted),
+                "rejected_count": len(outcome.rejected),
+                "rejected": list(outcome.rejected),
+                "skipped_prose_only": outcome.skipped_prose_only,
+                "persisted": list(outcome.persisted),
+                "note": (
+                    "persisted durable Proposal records; "
+                    "AgentRunResult was not rewritten"
+                ),
+            }
+            if bool(getattr(args, "json", False)):
+                print(json.dumps(record, indent=2))
+            else:
+                _print_migrate(record)
+            return 0
+
         sys.stderr.write(
-            "Usage: amof scope {list,show,approve,revoke,audit,recover} ...\n"
+            "Usage: amof scope {list,show,approve,revoke,audit,recover,scan,migrate} ...\n"
         )
         return 1
     except ScopeCliError as exc:

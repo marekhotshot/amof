@@ -1134,6 +1134,69 @@ def parse_args() -> argparse.Namespace:
     scope_recover.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON"
     )
+    scope_scan = scope_sub.add_parser(
+        "scan",
+        help=(
+            "Scan durable write-scope stores for OK/corrupt records; "
+            "never fabricates Approvals from legacy path-elevation events "
+            "(requires explicit --store)"
+        ),
+    )
+    scope_scan.add_argument(
+        "--store",
+        required=True,
+        dest="store",
+        help=(
+            "Write-scopes store root containing proposals/, approvals/, "
+            "bindings/, receipts/ (and optional events/)"
+        ),
+    )
+    scope_scan.add_argument(
+        "--events",
+        dest="events_path",
+        help="Optional events.jsonl path for legacy writable-root flag detection",
+    )
+    scope_scan.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    scope_migrate = scope_sub.add_parser(
+        "migrate",
+        help=(
+            "Migrate nested write_scope_proposal(s) from an AgentRunResult JSON "
+            "into durable Proposal records (dry-run by default; pass --apply to persist)"
+        ),
+    )
+    scope_migrate.add_argument(
+        "--result",
+        required=True,
+        dest="result_path",
+        help="Path to AgentRunResult-shaped JSON (nested proposals are read, not rewritten)",
+    )
+    scope_migrate.add_argument(
+        "--run-id",
+        dest="run_id",
+        help="Optional parent run_id override when result lacks session_id/run_id",
+    )
+    scope_migrate.add_argument(
+        "--base-dir",
+        dest="base_dir",
+        help=(
+            "Optional proposals store directory for --apply "
+            "(default: AMOF_HOME write-scopes/proposals)"
+        ),
+    )
+    scope_migrate.add_argument(
+        "--apply",
+        action="store_true",
+        dest="apply",
+        help=(
+            "Persist durable Proposal records via migrate_nested_proposals_from_result "
+            "(default is dry-run preview only)"
+        ),
+    )
+    scope_migrate.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     runs_logs = runs_sub.add_parser(
         "logs",
