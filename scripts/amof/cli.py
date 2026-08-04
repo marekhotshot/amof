@@ -503,13 +503,17 @@ def parse_args() -> argparse.Namespace:
     preview_sub = preview_parser.add_subparsers(dest="preview_cmd", required=True)
     preview_check_url = preview_sub.add_parser(
         "check-url",
-        help="Fetch one preview URL with the local-http backend and emit a preview evidence receipt",
+        help="Check one preview URL over HTTP or Playwright and emit an evidence receipt",
     )
     preview_check_url.add_argument(
         "--url", required=True, help="Explicit preview URL to validate"
     )
     preview_check_url.add_argument(
         "--run-id", required=True, help="Opaque run identifier for the preview check"
+    )
+    preview_check_url.add_argument(
+        "--deployment-id",
+        help="Optional deployment or staging identity recorded as screenshot provenance",
     )
     preview_check_url.add_argument(
         "--require-text",
@@ -541,15 +545,15 @@ def parse_args() -> argparse.Namespace:
     )
     preview_check_url.add_argument(
         "--browser-backend",
-        choices=["local-http"],
+        choices=["local-http", "local-playwright"],
         default=None,
-        help="Preview backend to use for this MVP (default: local-http)",
+        help="Preview backend to use (default: local-http)",
     )
     preview_check_url.add_argument(
         "--timeout-seconds",
         type=int,
         default=10,
-        help="HTTP fetch timeout in seconds (default: 10)",
+        help="Bounded HTTP or browser readiness timeout in seconds (default: 10)",
     )
 
     # Manifest command
