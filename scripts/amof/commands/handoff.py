@@ -20,9 +20,13 @@ from ..state import get_state
 from ..utils import get_ecosystem_from_branch, get_ecosystem_from_path, get_git_toplevel
 from ..trust_layer import (
     TrustIntegrityError,
+    build_provenance_document,
+    evidence_bundle_dir,
     seal_evidence_artifacts,
+    verify_evidence_consistency,
     verify_evidence_seal,
     verify_execution_result_integrity,
+    write_canonical_evidence_bundle,
 )
 from ..write_scope_bindings import (
     WriteScopeBindingError,
@@ -1227,6 +1231,19 @@ def _verify_consumed_execution_result(
     )
     if state_finalized or _receipt_is_finalized(receipt):
         verify_evidence_seal(_handoff_seal_dir(handoff_id))
+        bundle_path = None
+        if isinstance(receipt, dict):
+            evidence = receipt.get("evidence")
+            if isinstance(evidence, dict):
+                bundle_path = str(evidence.get("bundle_path") or "").strip() or None
+        if bundle_path:
+            verify_evidence_consistency(bundle_path)
+        else:
+            # Wave 002 finalizations always emit a bundle; require it when state is finalized.
+            if state_finalized:
+                verify_evidence_consistency(
+                    evidence_bundle_dir(get_app_paths().data_root, handoff_id)
+                )
 
 
 def _seal_and_finalize_execution(
@@ -1236,14 +1253,16 @@ def _seal_and_finalize_execution(
     result_path: Path,
     receipt_path: Path,
     state: HandoffExecutionState,
+    packet: PreparedHandoffPacket | None = None,
+    binding: dict[str, Any] | None = None,
 ) -> HandoffExecutionReceipt:
-    """Seal evidence after COMPLETE; FINALIZED only when seal verifies.
+    """Seal evidence after COMPLETE; emit canonical bundle; FINALIZED only when verified.
 
     Preserves receipt.status (completed/failed/...) for backward compatibility.
-    Finalization is recorded via finalized=true, evidence_seal_path, and state.
+    Finalization is recorded via finalized=true, evidence_seal_path, bundle_path, and state.
     """
     seal_dir = _ensure_operator_only_dir(_handoff_seal_dir(handoff_id))
-    seal_evidence_artifacts(
+    seal_receipt = seal_evidence_artifacts(
         seal_dir=seal_dir,
         receipt_id=f"handoff-seal-{handoff_id}",
         claim_summary=(
@@ -1261,6 +1280,50 @@ def _seal_and_finalize_execution(
         },
     )
     verify_evidence_seal(seal_dir)
+
+    result_payload = json.loads(result_path.read_text(encoding="utf-8"))
+    if not isinstance(result_payload, dict):
+        raise TrustIntegrityError("execution result must be a JSON object", code="invalid_result")
+
+    workspace_root = None
+    base_sha = None
+    if isinstance(binding, dict):
+        workspace_root = str(binding.get("workspace_root") or "").strip() or None
+        base_sha = str(binding.get("base_sha") or "").strip().lower() or None
+
+    bundle_receipt = {
+        **receipt.to_dict(),
+        "finalized": True,
+        "workspace_root": workspace_root,
+        "base_sha": base_sha,
+        "evidence": {
+            **dict(receipt.evidence),
+            "evidence_seal_path": str(seal_dir / "receipt.json"),
+            "finalization": "FINALIZED",
+        },
+    }
+    provenance = build_provenance_document(
+        run_id=handoff_id,
+        receipt=bundle_receipt,
+        result=result_payload,
+        seal_receipt=seal_receipt,
+        mission_id=handoff_id,
+        payload_sha256=packet.payload.sha256 if packet is not None else None,
+        workspace_root=workspace_root,
+        git_sha=base_sha,
+        base_sha=base_sha,
+        why=str(result_payload.get("stop_reason") or receipt.stop_reason or "") or None,
+    )
+    bundle_dir = evidence_bundle_dir(get_app_paths().data_root, handoff_id)
+    write_canonical_evidence_bundle(
+        bundle_dir,
+        run_id=handoff_id,
+        receipt=bundle_receipt,
+        result=result_payload,
+        provenance=provenance,
+        result_source=result_path,
+    )
+
     finalized = HandoffExecutionReceipt(
         schema_version=receipt.schema_version,
         handoff_id=receipt.handoff_id,
@@ -1275,6 +1338,7 @@ def _seal_and_finalize_execution(
         evidence={
             **dict(receipt.evidence),
             "evidence_seal_path": str(seal_dir / "receipt.json"),
+            "bundle_path": str(bundle_dir),
             "finalization": "FINALIZED",
         },
         receipt_path=receipt.receipt_path,
@@ -1673,11 +1737,13 @@ def _handoff_status_payload(
         payload["evidence_seal_path"] = _optional_text(
             receipt_evidence.get("evidence_seal_path")
         )
+        payload["bundle_path"] = _optional_text(receipt_evidence.get("bundle_path"))
         payload["execution_status"] = _optional_text(
             receipt_evidence.get("execution_status")
         )
     else:
         payload["evidence_seal_path"] = None
+        payload["bundle_path"] = None
         payload["execution_status"] = None
     payload["finalized"] = lifecycle_state == "finalized" or _receipt_is_finalized(receipt)
     if loaded_packet.payload_kind == "canonical_mission_packet":
@@ -2143,6 +2209,8 @@ def _execute_agent_from_handoff(
             result_path=result_path,
             receipt_path=receipt_path,
             state=state,
+            packet=packet,
+            binding=binding,
         )
 
     success = int(result_payload.get("exit_code") or 0) == 0 and str(
@@ -2200,6 +2268,8 @@ def _execute_agent_from_handoff(
         result_path=result_path,
         receipt_path=receipt_path,
         state=state,
+        packet=packet,
+        binding=binding,
     )
 
 

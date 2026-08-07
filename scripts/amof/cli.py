@@ -638,6 +638,25 @@ def parse_args() -> argparse.Namespace:
         help="Emit machine-readable verification JSON",
     )
 
+    trust_parser = subparsers.add_parser(
+        "trust",
+        help="Trust Layer evidence provenance verify",
+    )
+    trust_sub = trust_parser.add_subparsers(dest="trust_cmd", required=True)
+    trust_verify = trust_sub.add_parser(
+        "verify",
+        help="Fail-closed verify a finalized run evidence bundle (PASS/FAIL)",
+    )
+    trust_verify.add_argument(
+        "run_id",
+        help="Run id (handoff id) or path to a canonical evidence bundle directory",
+    )
+    trust_verify.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable verification JSON",
+    )
+
     paths_parser = subparsers.add_parser(
         "paths",
         help="Show resolved AMOF app-data paths",
