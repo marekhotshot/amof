@@ -11,7 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import shutil
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -405,6 +407,143 @@ def evidence_bundle_dir(data_root: Path | str, run_id: str) -> Path:
     return Path(data_root) / "trust" / "runs" / rid
 
 
+def _bundle_claims_finalized(receipt: Mapping[str, Any]) -> bool:
+    """True when receipt asserts durable FINALIZED terminality."""
+    if bool(receipt.get("finalized")):
+        return True
+    evidence = receipt.get("evidence") if isinstance(receipt.get("evidence"), dict) else {}
+    return str(evidence.get("finalization") or "").strip().upper() == "FINALIZED"
+
+
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_tree(root: Path) -> None:
+    """Best-effort durability of a staging tree before atomic rename."""
+    for dirpath, _dirnames, filenames in os.walk(root, topdown=False):
+        base = Path(dirpath)
+        for name in filenames:
+            with open(base / name, "rb") as handle:
+                handle.flush()
+                os.fsync(handle.fileno())
+        try:
+            _fsync_dir(base)
+        except OSError:
+            pass
+
+
+def make_evidence_bundle_staging_dir(bundle_dir: Path | str) -> Path:
+    """Return a unique staging sibling path. Refuses if final bundle already exists (BL-2)."""
+    final = Path(bundle_dir)
+    if final.exists():
+        raise TrustIntegrityError(
+            f"refuse overwrite of existing evidence bundle: {final}",
+            code="bundle_exists",
+        )
+    parent = final.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_hex(8)
+    return parent / f".staging-{final.name}-{os.getpid()}-{token}"
+
+
+def publish_evidence_bundle_dir(staging_dir: Path | str, bundle_dir: Path | str) -> None:
+    """Atomically publish a signed staging bundle to the final path.
+
+    Final path must not exist (never replaces a pre-existing signed FINALIZED bundle).
+    Refuses to publish a FINALIZED-claiming unsigned tree.
+    """
+    staging = Path(staging_dir)
+    final = Path(bundle_dir)
+    if not staging.is_dir():
+        raise TrustIntegrityError(
+            f"staging bundle missing: {staging}",
+            code="missing_bundle",
+        )
+    if final.exists():
+        raise TrustIntegrityError(
+            f"refuse overwrite of existing evidence bundle: {final}",
+            code="bundle_exists",
+        )
+    receipt = _read_json_object(staging / "receipt.json", code="invalid_receipt")
+    if _bundle_claims_finalized(receipt) and not (staging / BUNDLE_SIGNATURE_FILE).is_file():
+        raise TrustIntegrityError(
+            "refuse publish of FINALIZED-claiming unsigned bundle",
+            code="unsigned_finalized",
+        )
+    _fsync_tree(staging)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    # Directory rename is atomic on the same filesystem when dest is absent.
+    os.rename(staging, final)
+    try:
+        _fsync_dir(final.parent)
+    except OSError:
+        pass
+
+
+def abandon_evidence_bundle_staging(staging_dir: Path | str) -> None:
+    """Remove a staging directory only. Never deletes a final bundle path."""
+    staging = Path(staging_dir)
+    if not staging.exists():
+        return
+    # Do not use ignore_errors: callers must observe cleanup failure.
+    shutil.rmtree(staging)
+
+
+def finalize_signed_evidence_bundle(
+    bundle_dir: Path | str,
+    *,
+    run_id: str,
+    receipt: Mapping[str, Any],
+    result: Mapping[str, Any],
+    provenance: Mapping[str, Any],
+    result_source: Path | str | None = None,
+    receipt_source: Path | str | None = None,
+    signer: Callable[[Path], Any],
+) -> dict[str, Any]:
+    """Write→sign→verify in staging, then atomically publish to ``bundle_dir``.
+
+    Crash / failure semantics:
+    - Staging leftovers may remain (not operator-visible FINALIZED at final path).
+    - Final path is either a complete signed bundle or absent.
+    - Never deletes a pre-existing final bundle (BL-2 ``bundle_exists`` coexistence).
+    """
+    final = Path(bundle_dir)
+    if final.exists():
+        raise TrustIntegrityError(
+            f"refuse overwrite of existing evidence bundle: {final}",
+            code="bundle_exists",
+        )
+    staging = make_evidence_bundle_staging_dir(final)
+    published = False
+    try:
+        manifest = write_canonical_evidence_bundle(
+            staging,
+            run_id=run_id,
+            receipt=receipt,
+            result=result,
+            provenance=provenance,
+            result_source=result_source,
+            receipt_source=receipt_source,
+        )
+        signer(Path(staging))
+        verify_evidence_consistency(staging)
+        publish_evidence_bundle_dir(staging, final)
+        published = True
+        return manifest
+    finally:
+        if not published and Path(staging).exists():
+            try:
+                abandon_evidence_bundle_staging(staging)
+            except OSError:
+                # Power-failure style: staging may remain; final stays absent.
+                pass
+
+
 def _read_json_object(path: Path, *, code: str) -> dict[str, Any]:
     if not path.is_file():
         raise TrustIntegrityError(f"missing file: {path.name}", code=code)
@@ -689,7 +828,12 @@ def write_canonical_evidence_bundle(
         }
         write_json_exclusive(root / BUNDLE_MANIFEST_FILE, manifest_payload)
     except Exception:
-        shutil.rmtree(root, ignore_errors=True)
+        # Best-effort staging cleanup; do not silently ignore via ignore_errors.
+        if root.exists():
+            try:
+                shutil.rmtree(root)
+            except OSError:
+                pass
         raise
 
     verify_evidence_bundle(root)
@@ -770,11 +914,17 @@ def verify_evidence_consistency(
     *,
     check_signature: bool = True,
     allowed_extra_files: frozenset[str] | set[str] | tuple[str, ...] | None = None,
+    require_producer_seal: bool = True,
 ) -> dict[str, Any]:
     """Cross-check receipt/result/evidence/hashes/seal/workspace/git/base_sha.
 
     When check_signature=False, skip Wave 003 signature verify (used while writing
     the unsigned canonical files before sign_evidence_bundle).
+
+    When require_producer_seal=False (export / offline LOCAL_INTEGRITY), never open,
+    stat, or verify absolute evidence_seal_path — even if that path exists on the
+    verifier host. Integrity is package-bytes-only; producer filesystem seals and
+    absolute seal locations must not affect PASS/FAIL.
     """
     root = Path(bundle_dir)
     manifest = verify_evidence_bundle(root, allowed_extra_files=allowed_extra_files)
@@ -896,12 +1046,24 @@ def verify_evidence_consistency(
             code="git_sha_mismatch",
         )
 
-    # Optional seal binding: if provenance names a seal id, Wave-001 seal dir must verify when present
-    # beside the bundle (../seals/<run_id>) or via absolute evidence path on receipt.
+    # Optional seal binding: Wave-001 seal via absolute evidence_seal_path on receipt.
+    # Export / offline verify (require_producer_seal=False) must never consult the
+    # producer host path — existence of that absolute path on the verifier must not
+    # change LOCAL_INTEGRITY. In-bundle digests remain the sole authority.
     receipt_evidence = receipt.get("evidence") if isinstance(receipt.get("evidence"), dict) else {}
     seal_path = str(receipt_evidence.get("evidence_seal_path") or "").strip()
-    if seal_path:
+    if seal_path and require_producer_seal:
         seal_receipt_path = Path(seal_path)
+        seal_available = (
+            seal_receipt_path.is_file()
+            or seal_receipt_path.is_dir()
+            or (seal_receipt_path.name == "receipt.json" and seal_receipt_path.parent.is_dir())
+        )
+        if not seal_available:
+            raise TrustIntegrityError(
+                f"missing seal receipt: {seal_path}",
+                code="missing_seal",
+            )
         if seal_receipt_path.name == "receipt.json":
             verify_evidence_seal(seal_receipt_path.parent)
         elif seal_receipt_path.is_dir():
@@ -913,7 +1075,9 @@ def verify_evidence_consistency(
             )
         seal_meta = evidence.get("seal") if isinstance(evidence.get("seal"), dict) else {}
         sealed = _read_json_object(
-            seal_receipt_path if seal_receipt_path.is_file() else seal_receipt_path / "receipt.json",
+            seal_receipt_path
+            if seal_receipt_path.is_file()
+            else seal_receipt_path / "receipt.json",
             code="invalid_seal",
         )
         if seal_meta.get("seal_receipt_id") and str(seal_meta.get("seal_receipt_id")) != str(
@@ -924,9 +1088,16 @@ def verify_evidence_consistency(
                 code="seal_mismatch",
             )
 
-    # Wave 003: cryptographic signature over manifest + evidence digests.
+    # Wave 003 / BL-5: cryptographic signature over manifest + evidence digests.
+    # FINALIZED-claiming bundles are fail-closed for missing signatures even when
+    # empty/default policy has allow_unsigned=True (crash leftover rejection).
     signature_result: dict[str, Any] | None = None
     if check_signature:
+        if _bundle_claims_finalized(receipt) and not (root / BUNDLE_SIGNATURE_FILE).is_file():
+            raise TrustIntegrityError(
+                "bundle claims FINALIZED but signature.json is missing",
+                code="unsigned_finalized",
+            )
         from .trust_crypto.bundle_sign import verify_bundle_signature
 
         signature_result = verify_bundle_signature(root)
@@ -957,9 +1128,13 @@ __all__ = [
     "PROVENANCE_SCHEMA",
     "TRUST_SEAL_SCHEMA",
     "TrustIntegrityError",
+    "abandon_evidence_bundle_staging",
     "build_provenance_document",
     "evidence_bundle_dir",
+    "finalize_signed_evidence_bundle",
     "load_verified_bootstrap_summary",
+    "make_evidence_bundle_staging_dir",
+    "publish_evidence_bundle_dir",
     "seal_evidence_artifacts",
     "sha256_file",
     "utc_now",

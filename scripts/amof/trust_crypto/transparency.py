@@ -317,8 +317,16 @@ class AppendOnlyTransparencyLog:
                 "log_public_key_b64": base64.b64encode(pub).decode("ascii"),
             },
             "semantics": {
-                "proves": "append_only_binding_of_digests_and_key_id",
+                # Offline verify only checks Merkle inclusion vs a checkpoint
+                # signed by the package-embedded log key — not append-only /
+                # non-equivocation against any external log state (BL3-2).
+                "proves": (
+                    "merkle_inclusion_of_digests_and_key_id_vs_embedded_checkpoint"
+                ),
                 "does_not_prove": [
+                    "append_only",
+                    "non_equivocation",
+                    "log_consistency",
                     "global_immutability",
                     "signer_authorization",
                     "future_non_revocation",

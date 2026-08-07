@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -31,10 +32,10 @@ from .export_package import (
     VERIFICATION_METADATA_FILENAME,
 )
 from .interfaces import PublicKeyRecord
+from .path_safety import materialize_hermetic_export_package
 from .policy import load_trust_policy
 from .snapshot import evaluate_trust_now, verify_trust_snapshot
 from .transparency import EXTERNAL_ANCHOR_FILENAME, verify_external_anchor
-
 
 REQUIRED_EXPORT_FILES = (
     *BUNDLE_CONTENT_FILES,
@@ -131,11 +132,24 @@ def verify_export_package(
     *,
     require_external_anchor: bool | None = None,
     evaluate_trust_now_policy: bool = True,
+    expect_key_id: str | None = None,
+    allow_missing_external_anchor: bool = False,
 ) -> dict[str, Any]:
-    """Fail-closed offline verify. No workspace/DB/private key/git required."""
-    root = Path(path).resolve()
-    if not root.is_dir():
-        raise TrustIntegrityError(f"export path missing: {root}", code="missing_export")
+    """Fail-closed package self-consistency verify.
+
+    Does not require producer private keys, DB, or git. Does not establish
+    signer authorization unless expect_key_id is provided (verifier trust root).
+    Producer absolute seal paths are not required (require_producer_seal=False).
+
+    H-1: package members are acquired via hermetic scan + O_NOFOLLOW
+    descriptor-stable reads into a private snapshot before any content verify,
+    so symlink substitution after the hermetic preflight cannot be followed.
+    """
+    source_root = Path(path).resolve()
+    if not source_root.is_dir():
+        raise TrustIntegrityError(
+            f"export path missing: {source_root}", code="missing_export"
+        )
 
     modes: dict[str, Any] = {
         "LOCAL_INTEGRITY": _status(False, reason="not checked"),
@@ -144,8 +158,37 @@ def verify_export_package(
         "TRUST_NOW": _status(False, reason="not checked"),
     }
 
+    with tempfile.TemporaryDirectory(prefix="amof-trust-verify-") as tmp:
+        snap_root = Path(tmp) / "package"
+        try:
+            actual = materialize_hermetic_export_package(source_root, snap_root)
+        except TrustIntegrityError as exc:
+            modes["LOCAL_INTEGRITY"] = _status(False, reason=str(exc), code=exc.code)
+            raise
+        return _verify_export_package_at(
+            snap_root,
+            source_export_dir=source_root,
+            actual=actual,
+            modes=modes,
+            require_external_anchor=require_external_anchor,
+            evaluate_trust_now_policy=evaluate_trust_now_policy,
+            expect_key_id=expect_key_id,
+            allow_missing_external_anchor=allow_missing_external_anchor,
+        )
+
+
+def _verify_export_package_at(
+    root: Path,
+    *,
+    source_export_dir: Path,
+    actual: set[str],
+    modes: dict[str, Any],
+    require_external_anchor: bool | None,
+    evaluate_trust_now_policy: bool,
+    expect_key_id: str | None,
+    allow_missing_external_anchor: bool,
+) -> dict[str, Any]:
     # Closed export set: required files present; forbid private key materials.
-    actual = {p.name for p in root.iterdir() if p.is_file()}
     for name in ("private.raw", "private_key", "private_key.raw"):
         if name in actual:
             raise TrustIntegrityError(
@@ -166,7 +209,6 @@ def verify_export_package(
         raise TrustIntegrityError(f"extra file: {extras[0]}", code="extra_file")
 
     meta = load_json_object(root / VERIFICATION_METADATA_FILENAME, code="invalid_metadata")
-    run_id = str(meta.get("run_id") or root.name)
 
     # LOCAL_INTEGRITY: reuse Wave 002 consistency (hashes + provenance).
     # Skip live signature policy path by using check_signature=False then
@@ -176,16 +218,58 @@ def verify_export_package(
             root,
             check_signature=False,
             allowed_extra_files=EXPORT_METADATA_FILES,
+            require_producer_seal=False,
         )
         modes["LOCAL_INTEGRITY"] = _status(True)
     except TrustIntegrityError as exc:
         modes["LOCAL_INTEGRITY"] = _status(False, reason=str(exc), code=exc.code)
         raise
 
-    # SIGNATURE_TRUST: authenticity + local pin + TRUST_AT_FINALIZATION snapshot.
+    # Canonical execution identity is the signed manifest run_id only.
+    # Unsigned metadata / directory name must never redefine identity.
+    manifest = load_json_object(root / BUNDLE_MANIFEST_FILE, code="invalid_manifest")
+    run_id = str(manifest.get("run_id") or "").strip()
+    if not run_id:
+        modes["LOCAL_INTEGRITY"] = _status(False, reason="signed manifest missing run_id")
+        raise TrustIntegrityError(
+            "signed manifest missing run_id",
+            code="missing_run_id",
+        )
+    meta_run_id = str(meta.get("run_id") or "").strip()
+    if not meta_run_id:
+        modes["LOCAL_INTEGRITY"] = _status(
+            False, reason="verification_metadata missing run_id", code="run_id_mismatch"
+        )
+        raise TrustIntegrityError(
+            "verification_metadata missing run_id",
+            code="run_id_mismatch",
+        )
+    if meta_run_id != run_id:
+        modes["LOCAL_INTEGRITY"] = _status(
+            False,
+            reason=(
+                f"verification_metadata run_id {meta_run_id!r} does not match "
+                f"signed manifest run_id {run_id!r}"
+            ),
+            code="run_id_mismatch",
+        )
+        raise TrustIntegrityError(
+            f"verification_metadata run_id {meta_run_id!r} does not match "
+            f"signed manifest run_id {run_id!r}",
+            code="run_id_mismatch",
+        )
+
+    # SIGNATURE_AUTHENTICITY: Ed25519 vs embedded public key + intra-package pin +
+    # export-time trust snapshot consistency. This is NOT policy authorization.
     try:
         pub_doc = load_json_object(root / PUBLIC_KEY_FILENAME, code="invalid_public_key")
         public_key_id = str(pub_doc.get("public_key_id") or "").strip().lower()
+        expected = str(expect_key_id or "").strip().lower() or None
+        if expected and public_key_id != expected:
+            raise TrustIntegrityError(
+                f"exported public_key_id {public_key_id} does not match expect_key_id",
+                code="unexpected_key_id",
+            )
         try:
             public_key_raw = base64.b64decode(
                 str(pub_doc.get("public_key_raw_b64") or ""), validate=True
@@ -207,6 +291,7 @@ def verify_export_package(
             public_key_id=public_key_id,
         )
         snapshot = load_json_object(root / TRUST_SNAPSHOT_FILENAME, code="invalid_trust_snapshot")
+        # Snapshot / anchor must bind to signed identity (FAIL_CLOSED on launder).
         verify_trust_snapshot(
             snapshot,
             run_id=run_id,
@@ -219,18 +304,26 @@ def verify_export_package(
         modes["SIGNATURE_TRUST"] = _status(
             True,
             public_key_id=public_key_id,
-            trust_at_finalization="ALLOWED",
+            meaning="package_signature_authenticity_not_authorization",
+            expect_key_id_enforced=bool(expected),
+            trust_at_export_packaging=snapshot.get("trust_decision"),
         )
     except TrustIntegrityError as exc:
         modes["SIGNATURE_TRUST"] = _status(False, reason=str(exc), code=exc.code)
         raise
 
-    # EXTERNAL_ANCHOR
+    # EXTERNAL_ANCHOR — package-embedded Merkle receipt (not a public transparency log).
+    # Unsigned verification_metadata MUST NOT relax the requirement (downgrade attack).
+    # Default: require external_anchor.json unless caller explicitly allows missing.
     anchor_path = root / EXTERNAL_ANCHOR_FILENAME
-    require_anchor = require_external_anchor
-    if require_anchor is None:
+    if require_external_anchor is None:
+        require_anchor = not allow_missing_external_anchor
         modes_meta = meta.get("modes") if isinstance(meta.get("modes"), dict) else {}
-        require_anchor = str(modes_meta.get("EXTERNAL_ANCHOR") or "") == "required"
+        # Metadata may only strengthen (require), never relax.
+        if str(modes_meta.get("EXTERNAL_ANCHOR") or "") == "required":
+            require_anchor = True
+    else:
+        require_anchor = bool(require_external_anchor)
     if not anchor_path.is_file():
         if require_anchor:
             modes["EXTERNAL_ANCHOR"] = _status(False, reason="missing external_anchor.json")
@@ -302,11 +395,10 @@ def verify_export_package(
         "ok": overall,
         "status": "PASS" if overall else "FAIL",
         "run_id": run_id,
-        "export_dir": str(root),
+        "export_dir": str(source_export_dir),
         "modes": modes,
         "required_ok": required_ok and overall,
     }
-
 
 def format_mode_report(result: dict[str, Any]) -> str:
     lines = []

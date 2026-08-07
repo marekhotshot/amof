@@ -22,11 +22,11 @@ from ..trust_layer import (
     TrustIntegrityError,
     build_provenance_document,
     evidence_bundle_dir,
+    finalize_signed_evidence_bundle,
     seal_evidence_artifacts,
     verify_evidence_consistency,
     verify_evidence_seal,
     verify_execution_result_integrity,
-    write_canonical_evidence_bundle,
 )
 from ..write_scope_bindings import (
     WriteScopeBindingError,
@@ -1313,6 +1313,11 @@ def _seal_or_preserve_durable_receipt(
             binding=binding,
         )
     except TrustIntegrityError as exc:
+        # Re-finalize against an existing immutable bundle must refuse explicitly —
+        # do not rewrite into a silent FINALIZE_FAILED receipt that obscures
+        # pre-existing FINALIZED evidence.
+        if getattr(exc, "code", None) == "bundle_exists":
+            raise
         return _preserve_durable_receipt_after_finalize_failure(receipt=receipt, exc=exc)
 
 
@@ -1385,38 +1390,51 @@ def _seal_and_finalize_execution(
         why=str(result_payload.get("stop_reason") or receipt.stop_reason or "") or None,
     )
     bundle_dir = evidence_bundle_dir(get_app_paths().data_root, handoff_id)
-    write_canonical_evidence_bundle(
+    # BL-2: FINALIZED evidence is immutable — refuse re-finalize before any
+    # write/sign work so a pre-existing signed bundle can never be destroyed.
+    # (Also enforced inside finalize_signed_evidence_bundle / publish.)
+    if bundle_dir.exists():
+        raise TrustIntegrityError(
+            f"refuse re-finalize: evidence bundle already exists (immutable): {bundle_dir}",
+            code="bundle_exists",
+        )
+
+    # BL-5 atomic finalize: write+sign in staging, then rename to final.
+    # Never rmtree(bundle_dir) on failure — that would destroy a pre-existing
+    # signed FINALIZED bundle (BL-2). Staging cleanup is owned by
+    # finalize_signed_evidence_bundle; final path is published only after sign.
+    def _sign_staging(staging_dir: Path) -> None:
+        # Wave 003: sign manifest + evidence digests (hashes remain canonical).
+        # Key creation is an explicit authority action (`amof trust keygen`) — never
+        # auto-created as a side effect of finalization.
+        from ..trust_crypto import (
+            FilesystemKeyProvider,
+            load_trust_policy,
+            sign_evidence_bundle,
+        )
+
+        key_provider = FilesystemKeyProvider()
+        policy = load_trust_policy()
+        preferred = str(policy.preferred_key_id or "").strip().lower()
+        if not preferred:
+            raise TrustIntegrityError(
+                "no preferred signing key; run `amof trust keygen` before finalize",
+                code="missing_signing_authority",
+            )
+        policy.assert_key_usable(preferred)
+        # Prove private key material is present and loadable before publish.
+        key_provider.get_private_key(preferred)
+        sign_evidence_bundle(staging_dir, key_provider=key_provider, policy=policy)
+
+    finalize_signed_evidence_bundle(
         bundle_dir,
         run_id=handoff_id,
         receipt=bundle_receipt,
         result=result_payload,
         provenance=provenance,
         result_source=result_path,
+        signer=_sign_staging,
     )
-    # Wave 003: sign manifest + evidence digests (hashes remain canonical).
-    # Key creation is an explicit authority action (`amof trust keygen`) — never
-    # auto-created as a side effect of finalization.
-    from ..trust_crypto import (
-        FilesystemKeyProvider,
-        load_trust_policy,
-        sign_evidence_bundle,
-    )
-    from ..trust_crypto.bundle_sign import verify_bundle_signature
-
-    key_provider = FilesystemKeyProvider()
-    policy = load_trust_policy()
-    preferred = str(policy.preferred_key_id or "").strip().lower()
-    if not preferred:
-        raise TrustIntegrityError(
-            "no preferred signing key; run `amof trust keygen` before finalize",
-            code="missing_signing_authority",
-        )
-    policy.assert_key_usable(preferred)
-    # Prove private key material is present and loadable before claiming FINALIZED.
-    key_provider.get_private_key(preferred)
-    sign_evidence_bundle(bundle_dir, key_provider=key_provider, policy=policy)
-    verify_evidence_consistency(bundle_dir)
-    verify_bundle_signature(bundle_dir, key_provider=key_provider, policy=policy)
 
     finalized = HandoffExecutionReceipt(
         schema_version=receipt.schema_version,

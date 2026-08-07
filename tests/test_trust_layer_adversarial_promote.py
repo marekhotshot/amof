@@ -337,14 +337,15 @@ class TrustAdversarialTests(unittest.TestCase):
             load_trust_policy(path)
         self.assertEqual(ctx.exception.code, "unsafe_symlink")
 
-    def test_policy_missing_allows_unsigned_legacy(self) -> None:
+    def test_policy_missing_rejects_unsigned_finalized(self) -> None:
+        # BL-5: empty/missing policy allow_unsigned must not accept FINALIZED leftovers.
         path = self.home / "config" / "trust" / "trust-policy.json"
         path.unlink()
         with tempfile.TemporaryDirectory() as tmp:
             bundle = _sample_bundle(Path(tmp), run_id="no-policy")
-            out = verify_evidence_consistency(bundle)
-            self.assertTrue(out["ok"])
-            self.assertFalse(out["signature"]["signed"])
+            with self.assertRaises(TrustIntegrityError) as ctx:
+                verify_evidence_consistency(bundle)
+            self.assertEqual(ctx.exception.code, "unsigned_finalized")
 
     def test_unknown_key_injected_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

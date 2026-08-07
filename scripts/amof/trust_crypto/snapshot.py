@@ -64,8 +64,10 @@ def build_trust_snapshot(
         "evidence_digest": evidence_digest.strip().lower(),
         "signature_digest": signature_digest.strip().lower(),
         "notes": (
-            "TRUST_AT_FINALIZATION records the trust decision at packaging/finalization. "
-            "It does not prove future non-revocation (TRUST_NOW is separate)."
+            "Wire kind TRUST_AT_FINALIZATION is historical. This snapshot is captured at "
+            "export packaging under the producer host's then-current trust-policy. "
+            "It is not sealed at finalize time. It does not prove future non-revocation "
+            "(TRUST_NOW is separate). It is not a verifier authorization root."
         ),
     }
 

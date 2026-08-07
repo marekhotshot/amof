@@ -23,11 +23,72 @@ from .interfaces import PrivateKeyRecord, PublicKeyRecord, SignatureResult
 ALGORITHM = "ed25519"
 ED25519_KEY_LEN = 32
 
+# Ed25519 field prime (RFC 8032). Canonical encodings require 0 <= y < p.
+_ED25519_FIELD_P = (1 << 255) - 19
+
+# Canonical encodings of the 8 torsion / small-order points on edwards25519.
+# Rejected before verify: identity (and other low-order) pubs admit universal
+# signatures under the cofactorless equation used by common libraries (BL3-1).
+_ED25519_LOW_ORDER_PUBLIC_KEYS = frozenset(
+    {
+        bytes.fromhex(
+            "0100000000000000000000000000000000000000000000000000000000000000"
+        ),
+        bytes.fromhex(
+            "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"
+        ),
+        bytes.fromhex(
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        ),
+        bytes.fromhex(
+            "0000000000000000000000000000000000000000000000000000000000000080"
+        ),
+        bytes.fromhex(
+            "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"
+        ),
+        bytes.fromhex(
+            "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"
+        ),
+        bytes.fromhex(
+            "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa"
+        ),
+        bytes.fromhex(
+            "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85"
+        ),
+    }
+)
+
+
+def assert_canonical_ed25519_public_key(public_key_raw: bytes) -> bytes:
+    """Reject low-order and non-canonical Ed25519 public-key encodings (BL3-1).
+
+    Non-canonical means the encoded y-coordinate is not reduced mod p (y >= p).
+    Low-order means one of the eight torsion subgroup encodings (including the
+    identity point), which otherwise yield universal signatures.
+    """
+    if not isinstance(public_key_raw, (bytes, bytearray)) or len(public_key_raw) != ED25519_KEY_LEN:
+        raise TrustIntegrityError(
+            f"public key must be exactly {ED25519_KEY_LEN} bytes",
+            code="malformed_key",
+        )
+    raw = bytes(public_key_raw)
+    y = int.from_bytes(raw, "little") & ((1 << 255) - 1)
+    if y >= _ED25519_FIELD_P:
+        raise TrustIntegrityError(
+            "ed25519 public key encoding is non-canonical (y >= p)",
+            code="noncanonical_public_key",
+        )
+    if raw in _ED25519_LOW_ORDER_PUBLIC_KEYS:
+        raise TrustIntegrityError(
+            "ed25519 public key has low order (torsion/identity)",
+            code="low_order_public_key",
+        )
+    return raw
+
 
 def public_key_id_from_raw(public_key_raw: bytes) -> str:
     """Stable key id: sha256(raw_public_key) hex (full 64 chars)."""
     return hashlib.sha256(public_key_raw).hexdigest()
-
 
 def generate_ed25519_keypair() -> PrivateKeyRecord:
     private = Ed25519PrivateKey.generate()
@@ -89,13 +150,9 @@ class Ed25519Verifier:
                 f"verifier algorithm mismatch: {public_key.algorithm}",
                 code="algorithm_mismatch",
             )
-        if len(public_key.public_key_raw) != ED25519_KEY_LEN:
-            raise TrustIntegrityError(
-                f"public key must be exactly {ED25519_KEY_LEN} bytes",
-                code="malformed_key",
-            )
+        raw = assert_canonical_ed25519_public_key(public_key.public_key_raw)
         try:
-            key = Ed25519PublicKey.from_public_bytes(public_key.public_key_raw)
+            key = Ed25519PublicKey.from_public_bytes(raw)
         except Exception as exc:
             raise TrustIntegrityError(
                 "malformed ed25519 public key",
@@ -108,7 +165,6 @@ class Ed25519Verifier:
                 "ed25519 signature verification failed",
                 code="signature_invalid",
             ) from exc
-
 
 def signer_for_algorithm(algorithm: str) -> Ed25519Signer:
     if algorithm != ALGORITHM:
