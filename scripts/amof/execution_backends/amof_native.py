@@ -39,6 +39,10 @@ AGENT_LABEL = "AMOF Native Agent"
 SCRIPT_PROVIDER = "amof_native_script"
 TRANSPORT_OPENAI = "openai_compatible"
 TRANSPORT_REMOTE_IAL = "remote_ial"
+# Per-call Remote IAL execution budget (see NATIVE-IAL-EXECUTION-BUDGET-CONTRACT).
+DEFAULT_NATIVE_IAL_TIMEOUT_SECONDS = 180.0
+DEFAULT_NATIVE_IAL_MAX_TOKENS = 4096
+STOP_REASON_REMOTE_IAL_TOTAL_TIMEOUT = "remote_ial_total_timeout"
 
 _SHELL_ESCAPE_RE = re.compile(
     r"(?:\.\./|/\.\.|^/|;\s*cd\s+/\s|>\s*/|`\s*cd\s+/\s)"
@@ -47,6 +51,56 @@ _SHELL_ESCAPE_RE = re.compile(
 
 class AmofNativeBackendError(RuntimeError):
     """Raised when the AMOF Native backend cannot be dispatched truthfully."""
+
+
+class AmofNativeTimeoutError(AmofNativeBackendError):
+    """Raised when a Native model HTTP call exceeds its execution budget."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        timeout_kind: str = "REMOTE_IAL_TOTAL_TIMEOUT",
+        timeout_seconds: float | None = None,
+        model_turn_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.timeout_kind = timeout_kind
+        self.timeout_seconds = timeout_seconds
+        self.model_turn_id = model_turn_id
+        self.attempt_id = attempt_id
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = str(os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = str(os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def native_ial_timeout_seconds() -> float:
+    """Per model-call total wait budget for Remote IAL (and other urlopen chats)."""
+    value = _env_float("AMOF_NATIVE_IAL_TIMEOUT_SECONDS", DEFAULT_NATIVE_IAL_TIMEOUT_SECONDS)
+    return max(1.0, value)
+
+
+def native_ial_max_tokens() -> int:
+    value = _env_int("AMOF_NATIVE_IAL_MAX_TOKENS", DEFAULT_NATIVE_IAL_MAX_TOKENS)
+    return max(256, value)
 
 
 @dataclass(frozen=True)
@@ -192,6 +246,12 @@ def runtime_health() -> dict[str, Any]:
         "writable_root_required": True,
         "cancellation_support": "timeout_deadline",
         "log_event_support": "events_jsonl",
+        "ial_execution_budget": {
+            "per_call_timeout_seconds": native_ial_timeout_seconds(),
+            "max_tokens": native_ial_max_tokens(),
+            "timeout_semantics": "urlopen_socket_timeout_effectively_total_when_gateway_non_streaming",
+            "stop_reason_on_timeout": STOP_REASON_REMOTE_IAL_TOTAL_TIMEOUT,
+        },
     }
 
 
@@ -706,13 +766,25 @@ def _openai_compatible_from_remote_ial(remote: dict[str, Any], *, model: str) ->
     }
 
 
+def _is_timeout_exc(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    text = str(exc).lower()
+    return "timed out" in text or "timeout" in text
+
+
 def _chat_completion(
     *,
     messages: list[dict[str, Any]],
     model: str,
     tools: list[dict[str, Any]] | None,
+    model_turn_id: str | None = None,
+    attempt_id: str | None = None,
+    abandoned_attempts: set[str] | None = None,
 ) -> dict[str, Any]:
     url, headers, transport = _chat_endpoint_and_headers()
+    timeout_seconds = native_ial_timeout_seconds()
+    max_tokens = native_ial_max_tokens()
     if transport == TRANSPORT_REMOTE_IAL:
         system, remote_messages = _shared._extract_remote_ial_messages(list(messages))
         payload = {
@@ -720,16 +792,21 @@ def _chat_completion(
             "messages": remote_messages,
             "tools": tools or [],
             "model": model,
-            "max_tokens": 8192,
+            "max_tokens": max_tokens,
             "temperature": 0.0,
         }
     else:
-        payload = {"model": model, "messages": messages, "temperature": 0}
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": min(max_tokens, 4096),
+        }
         if tools:
             payload["tools"] = tools
     request = Request(url, headers=headers, data=json.dumps(payload).encode("utf-8"), method="POST")
     try:
-        with urlopen(request, timeout=90) as response:
+        with urlopen(request, timeout=timeout_seconds) as response:
             body = json.loads(response.read().decode("utf-8") or "{}")
     except HTTPError as exc:
         detail = ""
@@ -740,8 +817,27 @@ def _chat_completion(
         raise AmofNativeBackendError(
             f"model transport HTTP {exc.code} for {url}: {detail or exc.reason}"
         ) from exc
-    except (OSError, URLError) as exc:
+    except (OSError, URLError, TimeoutError) as exc:
+        if _is_timeout_exc(exc):
+            if attempt_id and abandoned_attempts is not None:
+                abandoned_attempts.add(attempt_id)
+            raise AmofNativeTimeoutError(
+                f"model transport timed out after {timeout_seconds:g}s for {url}: {exc}",
+                timeout_kind="REMOTE_IAL_TOTAL_TIMEOUT",
+                timeout_seconds=timeout_seconds,
+                model_turn_id=model_turn_id,
+                attempt_id=attempt_id,
+            ) from exc
         raise AmofNativeBackendError(f"model transport request failed for {url}: {exc}") from exc
+    if attempt_id and abandoned_attempts is not None and attempt_id in abandoned_attempts:
+        # Late body for an already-abandoned attempt must not become authoritative.
+        raise AmofNativeTimeoutError(
+            f"late model response discarded for abandoned attempt {attempt_id}",
+            timeout_kind="REMOTE_IAL_TOTAL_TIMEOUT",
+            timeout_seconds=timeout_seconds,
+            model_turn_id=model_turn_id,
+            attempt_id=attempt_id,
+        )
     if not isinstance(body, dict):
         raise AmofNativeBackendError("chat completion returned non-object response")
     if transport == TRANSPORT_REMOTE_IAL:
@@ -757,6 +853,7 @@ def _run_model_loop(
     writable: bool,
     event_log_path: Path,
     deadline: float | None,
+    run_id: str | None = None,
 ) -> tuple[str, str, str]:
     messages: list[dict[str, Any]] = [
         {
@@ -767,10 +864,42 @@ def _run_model_loop(
     ]
     tool_specs = _TOOL_SPECS if writable else [spec for spec in _TOOL_SPECS if spec["function"]["name"] != "write_file"]
     findings: list[str] = []
-    for _turn in range(12):
+    abandoned_attempts: set[str] = set()
+    run_key = _safe_id(run_id or "native-run")
+    for turn_index in range(12):
         if deadline is not None and time.monotonic() >= deadline:
             return "failed", "timeout", "\n".join(findings)
-        response = _chat_completion(messages=messages, model=model, tools=tool_specs)
+        model_turn_id = f"{run_key}:turn:{turn_index + 1}"
+        # Native does not auto-retry timed-out model calls; attempt is always 1 per turn.
+        attempt_id = f"{model_turn_id}:attempt:1"
+        _shared._append_event(
+            event_log_path,
+            "model_turn",
+            model_turn_id=model_turn_id,
+            attempt_id=attempt_id,
+            timeout_seconds=native_ial_timeout_seconds(),
+            max_tokens=native_ial_max_tokens(),
+        )
+        try:
+            response = _chat_completion(
+                messages=messages,
+                model=model,
+                tools=tool_specs,
+                model_turn_id=model_turn_id,
+                attempt_id=attempt_id,
+                abandoned_attempts=abandoned_attempts,
+            )
+        except AmofNativeTimeoutError as exc:
+            _shared._append_event(
+                event_log_path,
+                "model_turn_timeout",
+                model_turn_id=exc.model_turn_id or model_turn_id,
+                attempt_id=exc.attempt_id or attempt_id,
+                timeout_kind=exc.timeout_kind,
+                timeout_seconds=exc.timeout_seconds,
+                error=str(exc),
+            )
+            raise
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
             raise AmofNativeBackendError("chat completion missing choices")
@@ -799,6 +928,8 @@ def _run_model_loop(
                     name=name,
                     arguments=arguments,
                     output_preview=output[:500],
+                    model_turn_id=model_turn_id,
+                    attempt_id=attempt_id,
                 )
                 messages.append(
                     {
@@ -1081,8 +1212,23 @@ def run(
                     writable=bool(selection.writable_roots_relative),
                     event_log_path=event_log_path,
                     deadline=deadline,
+                    run_id=request_id,
                 )
                 exit_code = 0 if status == "completed" else (124 if stop_reason == "timeout" else 1)
+        except AmofNativeTimeoutError as exc:
+            status = "failed"
+            stop_reason = STOP_REASON_REMOTE_IAL_TOTAL_TIMEOUT
+            exit_code = 124
+            raw_task_findings = str(exc)
+            _shared._append_event(
+                event_log_path,
+                STOP_REASON_REMOTE_IAL_TOTAL_TIMEOUT,
+                error=str(exc),
+                timeout_kind=exc.timeout_kind,
+                timeout_seconds=exc.timeout_seconds,
+                model_turn_id=exc.model_turn_id,
+                attempt_id=exc.attempt_id,
+            )
         except AmofNativeBackendError as exc:
             status = "failed"
             stop_reason = "grant_enforcement_failed"
