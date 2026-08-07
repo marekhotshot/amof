@@ -1405,6 +1405,49 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             self.assertIn("Execute-agent preview", stderr)
             self.assertNotIn("Execute this bounded goal.", stdout)
 
+    def test_finalize_failure_after_durable_success_preserves_semantic_exit(self) -> None:
+        """Job emptyDir has no signing keys; finalize must not rewrite exit_code=0 → 1."""
+        from amof.trust_layer import TrustIntegrityError
+
+        with TemporaryDirectory(prefix="amof-handoff-finalize-preserve-") as td:
+            amof_home = Path(td)
+            _write_packet(amof_home)
+            with (
+                patch(
+                    "amof.commands.handoff._load_execution_manifest",
+                    return_value={"ecosystem": "demo-repo", "repos": []},
+                ),
+                patch(
+                    "amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope",
+                    return_value=_correlation_envelope(),
+                ),
+                patch(
+                    "amof.commands.handoff._seal_and_finalize_execution",
+                    side_effect=TrustIntegrityError(
+                        "no preferred signing key; run `amof trust keygen` before finalize",
+                        code="missing_signing_authority",
+                    ),
+                ),
+            ):
+                # Intentionally skip trust keygen — mirrors execution Job emptyDir.
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        code = handoff.cmd_handoff_execute_agent(
+                            _execute_args(confirm=True)
+                        )
+            receipt = json.loads(stdout.getvalue())
+            self.assertEqual(code, 0)
+            self.assertEqual(receipt["exit_code"], 0)
+            self.assertEqual(receipt["status"], "completed")
+            self.assertFalse(receipt.get("finalized"))
+            self.assertEqual(
+                receipt["evidence"]["finalization"],
+                "FINALIZE_FAILED_AFTER_DURABLE_RESULT",
+            )
+            self.assertIn("missing_signing_authority", stderr.getvalue())
+
     def test_canonical_packet_execute_derives_bounded_goal_not_raw_json(self) -> None:
         captured: dict[str, object] = {}
         canonical_payload = _canonical_mission_packet(
