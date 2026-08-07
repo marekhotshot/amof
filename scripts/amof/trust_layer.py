@@ -698,7 +698,11 @@ def write_canonical_evidence_bundle(
     return manifest_payload
 
 
-def verify_evidence_bundle(bundle_dir: Path | str) -> dict[str, Any]:
+def verify_evidence_bundle(
+    bundle_dir: Path | str,
+    *,
+    allowed_extra_files: frozenset[str] | set[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     """Fail-closed manifest verification: missing / extra / modified files."""
     root = Path(bundle_dir)
     if not root.is_dir():
@@ -709,7 +713,7 @@ def verify_evidence_bundle(bundle_dir: Path | str) -> dict[str, Any]:
 
     actual = _list_bundle_files(root)
     expected = set(BUNDLE_REQUIRED_FILES)
-    allowed = expected | set(BUNDLE_OPTIONAL_FILES)
+    allowed = expected | set(BUNDLE_OPTIONAL_FILES) | set(allowed_extra_files or ())
     missing = sorted(expected - actual)
     extra = sorted(actual - allowed)
     if missing:
@@ -765,6 +769,7 @@ def verify_evidence_consistency(
     bundle_dir: Path | str,
     *,
     check_signature: bool = True,
+    allowed_extra_files: frozenset[str] | set[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Cross-check receipt/result/evidence/hashes/seal/workspace/git/base_sha.
 
@@ -772,7 +777,7 @@ def verify_evidence_consistency(
     the unsigned canonical files before sign_evidence_bundle).
     """
     root = Path(bundle_dir)
-    manifest = verify_evidence_bundle(root)
+    manifest = verify_evidence_bundle(root, allowed_extra_files=allowed_extra_files)
 
     receipt = _read_json_object(root / "receipt.json", code="invalid_receipt")
     result = _read_json_object(root / "result.json", code="invalid_result")
