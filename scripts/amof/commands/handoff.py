@@ -22,11 +22,11 @@ from ..trust_layer import (
     TrustIntegrityError,
     build_provenance_document,
     evidence_bundle_dir,
+    finalize_signed_evidence_bundle,
     seal_evidence_artifacts,
     verify_evidence_consistency,
     verify_evidence_seal,
     verify_execution_result_integrity,
-    write_canonical_evidence_bundle,
 )
 from ..write_scope_bindings import (
     WriteScopeBindingError,
@@ -1291,24 +1291,6 @@ def _preserve_durable_receipt_after_finalize_failure(
     return preserved
 
 
-def _cleanup_incomplete_finalize_bundle(
-    bundle_dir: Path,
-    *,
-    created_by_this_invocation: bool,
-) -> None:
-    """Remove incomplete finalize artifacts only when this invocation created them.
-
-    FINALIZED (and any pre-existing) evidence bundles are immutable: never
-    ``rmtree`` on ``bundle_exists`` / re-finalize. Signing failure after a
-    successful write by *this* invocation may clean up only that incomplete tree.
-    """
-    if not created_by_this_invocation:
-        return
-    import shutil
-
-    shutil.rmtree(bundle_dir, ignore_errors=True)
-
-
 def _seal_or_preserve_durable_receipt(
     *,
     handoff_id: str,
@@ -1408,27 +1390,20 @@ def _seal_and_finalize_execution(
         why=str(result_payload.get("stop_reason") or receipt.stop_reason or "") or None,
     )
     bundle_dir = evidence_bundle_dir(get_app_paths().data_root, handoff_id)
-    # FINALIZED evidence is immutable: refuse re-finalize before any write/sign
-    # work so a pre-existing signed bundle can never be destroyed by cleanup.
+    # BL-2: FINALIZED evidence is immutable — refuse re-finalize before any
+    # write/sign work so a pre-existing signed bundle can never be destroyed.
+    # (Also enforced inside finalize_signed_evidence_bundle / publish.)
     if bundle_dir.exists():
         raise TrustIntegrityError(
             f"refuse re-finalize: evidence bundle already exists (immutable): {bundle_dir}",
             code="bundle_exists",
         )
-    # Do not leave a durable bundle that claims FINALIZED if signing fails.
-    # Cleanup may remove only incomplete artifacts created by THIS invocation —
-    # never a pre-existing tree (including code=bundle_exists).
-    created_by_this_invocation = False
-    try:
-        write_canonical_evidence_bundle(
-            bundle_dir,
-            run_id=handoff_id,
-            receipt=bundle_receipt,
-            result=result_payload,
-            provenance=provenance,
-            result_source=result_path,
-        )
-        created_by_this_invocation = True
+
+    # BL-5 atomic finalize: write+sign in staging, then rename to final.
+    # Never rmtree(bundle_dir) on failure — that would destroy a pre-existing
+    # signed FINALIZED bundle (BL-2). Staging cleanup is owned by
+    # finalize_signed_evidence_bundle; final path is published only after sign.
+    def _sign_staging(staging_dir: Path) -> None:
         # Wave 003: sign manifest + evidence digests (hashes remain canonical).
         # Key creation is an explicit authority action (`amof trust keygen`) — never
         # auto-created as a side effect of finalization.
@@ -1437,7 +1412,6 @@ def _seal_and_finalize_execution(
             load_trust_policy,
             sign_evidence_bundle,
         )
-        from ..trust_crypto.bundle_sign import verify_bundle_signature
 
         key_provider = FilesystemKeyProvider()
         policy = load_trust_policy()
@@ -1448,17 +1422,19 @@ def _seal_and_finalize_execution(
                 code="missing_signing_authority",
             )
         policy.assert_key_usable(preferred)
-        # Prove private key material is present and loadable before claiming FINALIZED.
+        # Prove private key material is present and loadable before publish.
         key_provider.get_private_key(preferred)
-        sign_evidence_bundle(bundle_dir, key_provider=key_provider, policy=policy)
-        verify_evidence_consistency(bundle_dir)
-        verify_bundle_signature(bundle_dir, key_provider=key_provider, policy=policy)
-    except Exception:
-        _cleanup_incomplete_finalize_bundle(
-            bundle_dir,
-            created_by_this_invocation=created_by_this_invocation,
-        )
-        raise
+        sign_evidence_bundle(staging_dir, key_provider=key_provider, policy=policy)
+
+    finalize_signed_evidence_bundle(
+        bundle_dir,
+        run_id=handoff_id,
+        receipt=bundle_receipt,
+        result=result_payload,
+        provenance=provenance,
+        result_source=result_path,
+        signer=_sign_staging,
+    )
 
     finalized = HandoffExecutionReceipt(
         schema_version=receipt.schema_version,
