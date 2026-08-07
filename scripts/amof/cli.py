@@ -676,6 +676,46 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Update trust-policy to require signatures (disallow unsigned bundles)",
     )
+    trust_export = trust_sub.add_parser(
+        "export",
+        help="Export a portable trust package for offline external verification",
+    )
+    trust_export.add_argument(
+        "run_id",
+        help="Run id (handoff id) or path to a finalized evidence bundle directory",
+    )
+    trust_export.add_argument(
+        "--output",
+        help="Directory to write the export package into (default: data_root/trust/exports)",
+    )
+    trust_export.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable export JSON",
+    )
+    trust_export.add_argument(
+        "--no-external-anchor",
+        action="store_true",
+        help="Omit append-only transparency external_anchor.json",
+    )
+    trust_verify_export = trust_sub.add_parser(
+        "verify-export",
+        help="Offline fail-closed verify a portable trust export package",
+    )
+    trust_verify_export.add_argument(
+        "path",
+        help="Path to an exported trust package directory",
+    )
+    trust_verify_export.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable verification JSON",
+    )
+    trust_verify_export.add_argument(
+        "--offline-only",
+        action="store_true",
+        help="Skip TRUST_NOW evaluation against the local mutable trust-policy",
+    )
 
     paths_parser = subparsers.add_parser(
         "paths",

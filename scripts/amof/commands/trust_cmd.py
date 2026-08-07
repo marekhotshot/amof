@@ -1,4 +1,4 @@
-"""Trust Layer CLI — verify bundles, manage local signing keys."""
+"""Trust Layer CLI — verify, export, offline verify-export, keygen."""
 
 from __future__ import annotations
 
@@ -11,7 +11,10 @@ from ..app_paths import get_app_paths
 from ..trust_crypto import (
     FilesystemKeyProvider,
     enroll_key,
+    export_trust_package,
+    format_mode_report,
     load_trust_policy,
+    verify_export_package,
     write_trust_policy,
 )
 from ..trust_layer import (
@@ -22,6 +25,13 @@ from ..trust_layer import (
 )
 
 
+def _print_modes(result: dict[str, Any], *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+    print(format_mode_report(result))
+
+
 def cmd_trust_verify(args: Any) -> int:
     run_id = str(getattr(args, "run_id", "") or "").strip()
     if not run_id:
@@ -30,6 +40,11 @@ def cmd_trust_verify(args: Any) -> int:
 
     try:
         if Path(run_id).is_dir() and (Path(run_id) / "manifest.json").is_file():
+            # If this looks like an export package, use export verifier.
+            if (Path(run_id) / "verification_metadata.json").is_file():
+                result = verify_export_package(run_id)
+                _print_modes(result, as_json=bool(getattr(args, "json", False)))
+                return 0 if result.get("ok") else 1
             result = verify_evidence_consistency(run_id)
             bundle = str(Path(run_id).resolve())
         else:
@@ -55,22 +70,94 @@ def cmd_trust_verify(args: Any) -> int:
             print(str(exc))
         return 1
 
+    # Runtime verify: report Wave 004 mode breakdown (export package owns EXTERNAL_ANCHOR).
+    signed = bool((result.get("signature") or {}).get("signed"))
+    modes = {
+        "LOCAL_INTEGRITY": {"status": "PASS"},
+        "SIGNATURE_TRUST": {"status": "PASS" if signed else "SKIPPED"},
+        "EXTERNAL_ANCHOR": {
+            "status": "SKIPPED",
+            "reason": "use amof trust export + verify-export for external anchor",
+        },
+        "TRUST_NOW": {
+            "status": "SKIPPED",
+            "reason": "runtime verify uses live policy inside SIGNATURE_TRUST",
+        },
+    }
+    payload = {
+        "status": "PASS",
+        "run_id": result.get("run_id") or run_id,
+        "bundle_dir": result.get("bundle_dir") or bundle,
+        "signature": result.get("signature"),
+        "modes": modes,
+    }
     if bool(getattr(args, "json", False)):
-        print(
-            json.dumps(
-                {
-                    "status": "PASS",
-                    "run_id": result.get("run_id") or run_id,
-                    "bundle_dir": result.get("bundle_dir") or bundle,
-                    "signature": result.get("signature"),
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        print("PASS")
+        print(format_mode_report(payload))
     return 0
+
+
+def cmd_trust_export(args: Any) -> int:
+    run_id = str(getattr(args, "run_id", "") or "").strip()
+    if not run_id:
+        sys.stderr.write("Usage: amof trust export RUN [--output DIR]\n")
+        return 1
+    output = getattr(args, "output", None)
+    try:
+        result = export_trust_package(
+            run_id,
+            output_dir=output,
+            include_external_anchor=not bool(getattr(args, "no_external_anchor", False)),
+        )
+    except TrustIntegrityError as exc:
+        sys.stderr.write(f"[trust] FAIL_CLOSED: {exc}\n")
+        if bool(getattr(args, "json", False)):
+            print(
+                json.dumps(
+                    {
+                        "status": "FAIL",
+                        "reason": str(exc),
+                        "code": getattr(exc, "code", "integrity_error"),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        return 1
+    if bool(getattr(args, "json", False)):
+        print(json.dumps({"status": "PASS", **result}, indent=2, sort_keys=True))
+    else:
+        print(f"EXPORT_OK {result['export_dir']}")
+    return 0
+
+
+def cmd_trust_verify_export(args: Any) -> int:
+    path = str(getattr(args, "path", "") or "").strip()
+    if not path:
+        sys.stderr.write("Usage: amof trust verify-export PATH\n")
+        return 1
+    try:
+        result = verify_export_package(
+            path,
+            evaluate_trust_now_policy=not bool(getattr(args, "offline_only", False)),
+        )
+    except TrustIntegrityError as exc:
+        # Attempt partial mode report when possible.
+        payload = {
+            "status": "FAIL",
+            "export_dir": path,
+            "reason": str(exc),
+            "code": getattr(exc, "code", "integrity_error"),
+        }
+        if bool(getattr(args, "json", False)):
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print("FAIL")
+            print(str(exc))
+        return 1
+    _print_modes(result, as_json=bool(getattr(args, "json", False)))
+    return 0 if result.get("ok") else 1
 
 
 def cmd_trust_keygen(args: Any) -> int:
@@ -81,7 +168,6 @@ def cmd_trust_keygen(args: Any) -> int:
         policy = load_trust_policy()
         preferred = bool(getattr(args, "preferred", True))
         policy = enroll_key(policy, record.key_id, preferred=preferred)
-        # New signed runs should require signatures once a key exists.
         if bool(getattr(args, "require_signatures", False)):
             from ..trust_crypto.policy import TrustPolicy
 
@@ -116,10 +202,20 @@ def cmd_trust(args: Any) -> int:
     action = str(getattr(args, "trust_cmd", "") or "").strip()
     if action == "verify":
         return cmd_trust_verify(args)
+    if action == "export":
+        return cmd_trust_export(args)
+    if action == "verify-export":
+        return cmd_trust_verify_export(args)
     if action == "keygen":
         return cmd_trust_keygen(args)
-    sys.stderr.write("Usage: amof trust <verify|keygen> ...\n")
+    sys.stderr.write("Usage: amof trust <verify|export|verify-export|keygen> ...\n")
     return 1
 
 
-__all__ = ["cmd_trust", "cmd_trust_verify", "cmd_trust_keygen"]
+__all__ = [
+    "cmd_trust",
+    "cmd_trust_verify",
+    "cmd_trust_export",
+    "cmd_trust_verify_export",
+    "cmd_trust_keygen",
+]
