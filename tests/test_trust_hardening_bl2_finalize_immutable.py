@@ -167,6 +167,11 @@ class TrustHardeningBL2FinalizeImmutableTests(unittest.TestCase):
                 self.assertEqual(_file_tree_digests(bundle_dir), before)
 
     def test_bundle_exists_path_never_rmtrees(self) -> None:
+        """BL-2+BL-5: early refuse must not rmtree a pre-existing final bundle.
+
+        Integration: final-path ``_cleanup_incomplete_finalize_bundle`` was removed;
+        staging cleanup must never target the pre-existing FINALIZED path.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "amof-home"
             data_root = home / "data"
@@ -188,38 +193,35 @@ class TrustHardeningBL2FinalizeImmutableTests(unittest.TestCase):
                 real_rmtree = shutil.rmtree
 
                 def _tracking_rmtree(path, *args, **kwargs):
-                    rmtree_calls.append(Path(path))
+                    rmtree_calls.append(Path(path).resolve())
                     return real_rmtree(path, *args, **kwargs)
 
                 with patch.object(handoff_mod, "get_app_paths", return_value=paths):
                     with patch.object(handoff_mod, "ensure_app_roots", return_value=None):
                         with patch("shutil.rmtree", side_effect=_tracking_rmtree):
-                            with patch.object(
-                                handoff_mod,
-                                "_cleanup_incomplete_finalize_bundle",
-                                wraps=handoff_mod._cleanup_incomplete_finalize_bundle,
-                            ) as cleanup:
-                                with self.assertRaises(TrustIntegrityError) as ctx:
-                                    handoff_mod._seal_and_finalize_execution(
-                                        handoff_id=handoff_id,
-                                        receipt=receipt,
-                                        result_path=result_path,
-                                        receipt_path=receipt_path,
-                                        state=state,
-                                    )
+                            with self.assertRaises(TrustIntegrityError) as ctx:
+                                handoff_mod._seal_and_finalize_execution(
+                                    handoff_id=handoff_id,
+                                    receipt=receipt,
+                                    result_path=result_path,
+                                    receipt_path=receipt_path,
+                                    state=state,
+                                )
                 self.assertEqual(ctx.exception.code, "bundle_exists")
                 self.assertTrue(marker.is_file())
                 self.assertEqual(marker.read_bytes(), marker_bytes)
-                # Early refuse: cleanup helper must not run; no rmtree of prior bundle.
-                cleanup.assert_not_called()
-                self.assertEqual(rmtree_calls, [])
-
-                # Helper policy: created_by_this_invocation=False never deletes.
-                handoff_mod._cleanup_incomplete_finalize_bundle(
-                    sentinel, created_by_this_invocation=False
-                )
-                self.assertTrue(marker.is_file())
-                self.assertEqual(marker.read_bytes(), marker_bytes)
+                # Early refuse: no rmtree of the pre-existing final bundle path.
+                sentinel_resolved = sentinel.resolve()
+                for called in rmtree_calls:
+                    self.assertNotEqual(
+                        called,
+                        sentinel_resolved,
+                        "must never rmtree pre-existing FINALIZED bundle path",
+                    )
+                    self.assertFalse(
+                        str(called).startswith(str(sentinel_resolved) + os.sep),
+                        f"must never rmtree inside pre-existing bundle: {called}",
+                    )
 
     def test_signing_failure_cleans_only_this_invocation_incomplete_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
