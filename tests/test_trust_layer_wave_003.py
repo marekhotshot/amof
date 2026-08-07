@@ -314,7 +314,68 @@ class TrustLayerWave003SignatureTests(unittest.TestCase):
 
     def test_unsigned_legacy_allowed_when_policy_permits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            # allow_unsigned covers non-FINALIZED legacy only (BL-5).
             bundle = _sample_bundle(Path(tmp), run_id="legacy-unsigned")
+            receipt = json.loads((bundle / "receipt.json").read_text(encoding="utf-8"))
+            receipt["finalized"] = False
+            receipt["evidence"]["finalization"] = "COMPLETE"
+            (bundle / "receipt.json").write_text(
+                json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            # Re-sync hashes/manifest after receipt rewrite.
+            from amof.trust_layer import (
+                BUNDLE_CONTENT_FILES,
+                BUNDLE_HASHES_FILE,
+                BUNDLE_HASHES_SCHEMA,
+                BUNDLE_MANIFEST_SCHEMA,
+                utc_now,
+            )
+
+            content_hashes = {
+                name: {
+                    "sha256": sha256_file(bundle / name),
+                    "bytes": (bundle / name).stat().st_size,
+                }
+                for name in BUNDLE_CONTENT_FILES
+            }
+            (bundle / BUNDLE_HASHES_FILE).write_text(
+                json.dumps(
+                    {
+                        "schema": BUNDLE_HASHES_SCHEMA,
+                        "run_id": "legacy-unsigned",
+                        "hash_algorithm": "sha256",
+                        "generated_at": utc_now(),
+                        "artifacts": content_hashes,
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            files = [
+                {
+                    "name": name,
+                    "sha256": sha256_file(bundle / name),
+                    "bytes": (bundle / name).stat().st_size,
+                }
+                for name in (*BUNDLE_CONTENT_FILES, BUNDLE_HASHES_FILE)
+            ]
+            (bundle / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema": BUNDLE_MANIFEST_SCHEMA,
+                        "run_id": "legacy-unsigned",
+                        "hash_algorithm": "sha256",
+                        "generated_at": utc_now(),
+                        "files": files,
+                        "excluded": ["manifest.json"],
+                        "file_count": len(files),
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             legacy = TrustPolicy(
                 allowed_key_ids=frozenset({self.key_a.key_id}),
                 revoked_key_ids=frozenset(),

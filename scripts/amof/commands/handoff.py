@@ -22,11 +22,11 @@ from ..trust_layer import (
     TrustIntegrityError,
     build_provenance_document,
     evidence_bundle_dir,
+    finalize_signed_evidence_bundle,
     seal_evidence_artifacts,
     verify_evidence_consistency,
     verify_evidence_seal,
     verify_execution_result_integrity,
-    write_canonical_evidence_bundle,
 )
 from ..write_scope_bindings import (
     WriteScopeBindingError,
@@ -1385,16 +1385,12 @@ def _seal_and_finalize_execution(
         why=str(result_payload.get("stop_reason") or receipt.stop_reason or "") or None,
     )
     bundle_dir = evidence_bundle_dir(get_app_paths().data_root, handoff_id)
-    # Do not leave a durable bundle that claims FINALIZED if signing fails.
-    try:
-        write_canonical_evidence_bundle(
-            bundle_dir,
-            run_id=handoff_id,
-            receipt=bundle_receipt,
-            result=result_payload,
-            provenance=provenance,
-            result_source=result_path,
-        )
+
+    # BL-5 atomic finalize: write+sign in staging, then rename to final.
+    # Never rmtree(bundle_dir) on failure — that would destroy a pre-existing
+    # signed FINALIZED bundle (BL-2). Staging cleanup is owned by
+    # finalize_signed_evidence_bundle; final path is published only after sign.
+    def _sign_staging(staging_dir: Path) -> None:
         # Wave 003: sign manifest + evidence digests (hashes remain canonical).
         # Key creation is an explicit authority action (`amof trust keygen`) — never
         # auto-created as a side effect of finalization.
@@ -1403,7 +1399,6 @@ def _seal_and_finalize_execution(
             load_trust_policy,
             sign_evidence_bundle,
         )
-        from ..trust_crypto.bundle_sign import verify_bundle_signature
 
         key_provider = FilesystemKeyProvider()
         policy = load_trust_policy()
@@ -1414,16 +1409,19 @@ def _seal_and_finalize_execution(
                 code="missing_signing_authority",
             )
         policy.assert_key_usable(preferred)
-        # Prove private key material is present and loadable before claiming FINALIZED.
+        # Prove private key material is present and loadable before publish.
         key_provider.get_private_key(preferred)
-        sign_evidence_bundle(bundle_dir, key_provider=key_provider, policy=policy)
-        verify_evidence_consistency(bundle_dir)
-        verify_bundle_signature(bundle_dir, key_provider=key_provider, policy=policy)
-    except Exception:
-        import shutil
+        sign_evidence_bundle(staging_dir, key_provider=key_provider, policy=policy)
 
-        shutil.rmtree(bundle_dir, ignore_errors=True)
-        raise
+    finalize_signed_evidence_bundle(
+        bundle_dir,
+        run_id=handoff_id,
+        receipt=bundle_receipt,
+        result=result_payload,
+        provenance=provenance,
+        result_source=result_path,
+        signer=_sign_staging,
+    )
 
     finalized = HandoffExecutionReceipt(
         schema_version=receipt.schema_version,

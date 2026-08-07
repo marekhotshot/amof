@@ -40,14 +40,16 @@ def _sample_bundle(tmp: Path, *, run_id: str = "run-w2-1") -> Path:
         "session_id": "sess-1",
         "result_path": f"/tmp/{run_id}-result.json",
         "result_sha256": "",  # filled after result bytes known
+        # Wave 002 fixtures are content-integrity only (not FINALIZED terminal).
+        # BL-5: unsigned FINALIZED-claiming bundles fail closed under verify.
         "evidence": {
             "evidence_seal_path": "",
-            "finalization": "FINALIZED",
+            "finalization": "COMPLETE",
         },
         "receipt_path": f"/tmp/{run_id}-receipt.json",
         "started_at": "2026-08-07T10:00:00Z",
         "completed_at": "2026-08-07T10:00:01Z",
-        "finalized": True,
+        "finalized": False,
         "workspace_root": str(tmp / "workspace"),
         "base_sha": "a" * 40,
     }
