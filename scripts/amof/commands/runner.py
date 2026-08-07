@@ -16,7 +16,7 @@ import yaml
 
 from ..app_config import load_contexts, resolve_active_context_name
 from ..app_paths import get_app_paths, runs_dir
-from ..execution_backends import claude_code, hermes_opensandbox
+from ..execution_backends import amof_native, claude_code, cursor_agent, hermes_opensandbox
 from ..orchestrator.events import EventLog
 from .intake import IntakeCliError, _is_read_only_intake, _validate_packet
 
@@ -51,13 +51,21 @@ RUNNER_STATUS_ALLOWED = {
 RUNNER_ELIGIBLE_STATUSES = {"available", "registered", "ready"}
 ALLOWED_MUTATION_MODES = {"read_only", "bounded_worktree"}
 REQUIRED_MATCH_CAPABILITIES = {"intake.validate", "intake.plan"}
-SUPPORTED_TEMPLATE_KINDS = ("local-planning", "hermes-opensandbox", "claude-code")
+SUPPORTED_TEMPLATE_KINDS = (
+    "local-planning",
+    "hermes-opensandbox",
+    "claude-code",
+    "amof-native",
+    "cursor-agent",
+)
 LOCAL_FORENSIC_TIMEOUT_SECONDS = 15.0
-SUPPORTED_BACKENDS = {
-    "planning_only",
-    hermes_opensandbox.BACKEND_TYPE,
-    claude_code.BACKEND_TYPE,
+DISPATCH_BACKENDS = {
+    hermes_opensandbox.BACKEND_TYPE: hermes_opensandbox,
+    claude_code.BACKEND_TYPE: claude_code,
+    amof_native.BACKEND_TYPE: amof_native,
+    cursor_agent.BACKEND_TYPE: cursor_agent,
 }
+SUPPORTED_BACKENDS = {"planning_only", *DISPATCH_BACKENDS.keys()}
 HERMES_ALLOWED_EXECUTION_CAPABILITIES = {"read", "bounded_write", "shell_limited", "focused_tests"}
 HERMES_DENIED_CAPABILITIES = {
     "kubernetes",
@@ -268,7 +276,7 @@ def _validate_backend_payload(payload: dict[str, Any], *, mutation_modes: list[s
                 f"planning-only runners may include read_only mutation mode only; found: {', '.join(sorted(set(unsupported_modes)))}"
             )
         return
-    if backend in {hermes_opensandbox.BACKEND_TYPE, claude_code.BACKEND_TYPE}:
+    if backend in DISPATCH_BACKENDS:
         dangerous = sorted({item for item in capabilities if item in HERMES_DENIED_CAPABILITIES})
         if dangerous:
             raise RunnerCliError(f"{backend} backend does not support dangerous capabilities: {', '.join(dangerous)}")
@@ -461,6 +469,114 @@ def _template_payload(kind: str) -> dict[str, Any]:
                 "event_log_required": True,
             },
         }
+    if kind == "amof-native":
+        return {
+            "version": "1.0.0",
+            "runner_id": "amof-native-ticket-write",
+            "name": "AMOF Native Agent Runtime Ticket Write",
+            "context": "local",
+            "status": "available",
+            "backend": amof_native.BACKEND_TYPE,
+            "backend_contract_version": amof_native.BACKEND_CONTRACT_VERSION,
+            "runtime_contract": amof_native.RUNTIME_CONTRACT,
+            "isolation_model": amof_native.ISOLATION_MODEL,
+            "capabilities": [
+                "intake.validate",
+                "intake.plan",
+                "execution.scan_report",
+                "read",
+                "bounded_write",
+                "shell_limited",
+                "focused_tests",
+            ],
+            "supported_task_kinds": [
+                "other",
+                "documentation",
+            ],
+            "allowed_mutation_modes": [
+                "read_only",
+                "bounded_worktree",
+            ],
+            "max_concurrency": 1,
+            "labels": [
+                "local",
+                "amof-native",
+                "first-party",
+            ],
+            "trust_level": "local",
+            "registration_source": "amof.runner.template.amof-native",
+            "endpoint_ref": "amof-native-local",
+            "execution": {
+                "mode": "ticket_write",
+                "max_runtime_seconds": 2700,
+            },
+            "authority": {
+                "mutation": "bounded_worktree",
+                "writable_roots_required": True,
+                "commit": "denied",
+                "push": "denied",
+                "promote": "denied",
+                "deploy": "denied",
+            },
+            "evidence": {
+                "canonical_result_required": True,
+                "event_log_required": True,
+            },
+        }
+    if kind == "cursor-agent":
+        return {
+            "version": "1.0.0",
+            "runner_id": "cursor-agent-ticket-write",
+            "name": "Cursor Agent Ticket Write",
+            "context": "local",
+            "status": "available",
+            "backend": cursor_agent.BACKEND_TYPE,
+            "backend_contract_version": cursor_agent.BACKEND_CONTRACT_VERSION,
+            "runtime_contract": cursor_agent.RUNTIME_CONTRACT,
+            "isolation_model": cursor_agent.ISOLATION_MODEL,
+            "capabilities": [
+                "intake.validate",
+                "intake.plan",
+                "execution.scan_report",
+                "read",
+                "bounded_write",
+                "shell_limited",
+                "focused_tests",
+            ],
+            "supported_task_kinds": [
+                "other",
+                "documentation",
+            ],
+            "allowed_mutation_modes": [
+                "read_only",
+                "bounded_worktree",
+            ],
+            "max_concurrency": 1,
+            "labels": [
+                "local",
+                "cursor-agent",
+                "secondary",
+            ],
+            "trust_level": "local",
+            "registration_source": "amof.runner.template.cursor-agent",
+            "endpoint_ref": "cursor-agent-local",
+            "execution": {
+                "mode": "ticket_write",
+                "max_runtime_seconds": 2700,
+            },
+            "authority": {
+                "mutation": "bounded_worktree",
+                "writable_roots_required": True,
+                "commit": "denied",
+                "push": "denied",
+                "promote": "denied",
+                "deploy": "denied",
+            },
+            "evidence": {
+                "canonical_result_required": True,
+                "event_log_required": True,
+            },
+        }
     if kind != "local-planning":
         supported = ", ".join(SUPPORTED_TEMPLATE_KINDS)
         raise RunnerCliError(f"unsupported runner template kind: {kind} (supported: {supported})")
@@ -584,12 +700,10 @@ def _cmd_register(args: argparse.Namespace) -> int:
         print(json.dumps(record, indent=2))
     else:
         backend = str(record.get("backend") or "planning_only")
-        backend_module = (
-            claude_code if backend == claude_code.BACKEND_TYPE else hermes_opensandbox
-        )
+        backend_module = DISPATCH_BACKENDS.get(backend, hermes_opensandbox)
         dispatch = (
             "yes"
-            if backend in {hermes_opensandbox.BACKEND_TYPE, claude_code.BACKEND_TYPE}
+            if backend in DISPATCH_BACKENDS
             and backend_module.runtime_health()["dispatch_available"]
             else "no"
         )
@@ -678,6 +792,10 @@ def _doctor_backend_records() -> list[dict[str, Any]]:
             records.append(hermes_opensandbox.doctor_record(record))
         elif backend == claude_code.BACKEND_TYPE:
             records.append(claude_code.doctor_record(record))
+        elif backend == amof_native.BACKEND_TYPE:
+            records.append(amof_native.doctor_record(record))
+        elif backend == cursor_agent.BACKEND_TYPE:
+            records.append(cursor_agent.doctor_record(record))
         else:
             records.append(
                 {
@@ -1089,9 +1207,10 @@ def _cmd_match(args: argparse.Namespace) -> int:
             evidence = _authority_candidate_evidence(record, authority_gate=authority_gate, runner_reason=reason)
         if eligible:
             backend = hermes_opensandbox.runner_backend_type(record)
+            backend_module = DISPATCH_BACKENDS.get(backend)
             dispatch_available = (
-                bool(hermes_opensandbox.runtime_health()["dispatch_available"])
-                if backend == hermes_opensandbox.BACKEND_TYPE
+                bool(backend_module.runtime_health()["dispatch_available"])
+                if backend_module is not None
                 else False
             )
             candidate = {
