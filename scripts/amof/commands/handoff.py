@@ -1291,6 +1291,24 @@ def _preserve_durable_receipt_after_finalize_failure(
     return preserved
 
 
+def _cleanup_incomplete_finalize_bundle(
+    bundle_dir: Path,
+    *,
+    created_by_this_invocation: bool,
+) -> None:
+    """Remove incomplete finalize artifacts only when this invocation created them.
+
+    FINALIZED (and any pre-existing) evidence bundles are immutable: never
+    ``rmtree`` on ``bundle_exists`` / re-finalize. Signing failure after a
+    successful write by *this* invocation may clean up only that incomplete tree.
+    """
+    if not created_by_this_invocation:
+        return
+    import shutil
+
+    shutil.rmtree(bundle_dir, ignore_errors=True)
+
+
 def _seal_or_preserve_durable_receipt(
     *,
     handoff_id: str,
@@ -1313,6 +1331,11 @@ def _seal_or_preserve_durable_receipt(
             binding=binding,
         )
     except TrustIntegrityError as exc:
+        # Re-finalize against an existing immutable bundle must refuse explicitly —
+        # do not rewrite into a silent FINALIZE_FAILED receipt that obscures
+        # pre-existing FINALIZED evidence.
+        if getattr(exc, "code", None) == "bundle_exists":
+            raise
         return _preserve_durable_receipt_after_finalize_failure(receipt=receipt, exc=exc)
 
 
@@ -1385,7 +1408,17 @@ def _seal_and_finalize_execution(
         why=str(result_payload.get("stop_reason") or receipt.stop_reason or "") or None,
     )
     bundle_dir = evidence_bundle_dir(get_app_paths().data_root, handoff_id)
+    # FINALIZED evidence is immutable: refuse re-finalize before any write/sign
+    # work so a pre-existing signed bundle can never be destroyed by cleanup.
+    if bundle_dir.exists():
+        raise TrustIntegrityError(
+            f"refuse re-finalize: evidence bundle already exists (immutable): {bundle_dir}",
+            code="bundle_exists",
+        )
     # Do not leave a durable bundle that claims FINALIZED if signing fails.
+    # Cleanup may remove only incomplete artifacts created by THIS invocation —
+    # never a pre-existing tree (including code=bundle_exists).
+    created_by_this_invocation = False
     try:
         write_canonical_evidence_bundle(
             bundle_dir,
@@ -1395,6 +1428,7 @@ def _seal_and_finalize_execution(
             provenance=provenance,
             result_source=result_path,
         )
+        created_by_this_invocation = True
         # Wave 003: sign manifest + evidence digests (hashes remain canonical).
         # Key creation is an explicit authority action (`amof trust keygen`) — never
         # auto-created as a side effect of finalization.
@@ -1420,9 +1454,10 @@ def _seal_and_finalize_execution(
         verify_evidence_consistency(bundle_dir)
         verify_bundle_signature(bundle_dir, key_provider=key_provider, policy=policy)
     except Exception:
-        import shutil
-
-        shutil.rmtree(bundle_dir, ignore_errors=True)
+        _cleanup_incomplete_finalize_bundle(
+            bundle_dir,
+            created_by_this_invocation=created_by_this_invocation,
+        )
         raise
 
     finalized = HandoffExecutionReceipt(
