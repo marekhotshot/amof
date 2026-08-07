@@ -28,7 +28,10 @@ SHA256_HEX_RE_LEN = 64
 BUNDLE_CONTENT_FILES = ("receipt.json", "result.json", "evidence.json")
 BUNDLE_HASHES_FILE = "hashes.json"
 BUNDLE_MANIFEST_FILE = "manifest.json"
+BUNDLE_SIGNATURE_FILE = "signature.json"
 BUNDLE_REQUIRED_FILES = BUNDLE_CONTENT_FILES + (BUNDLE_HASHES_FILE, BUNDLE_MANIFEST_FILE)
+# signature.json authenticates digests; excluded from manifest self-set.
+BUNDLE_OPTIONAL_FILES = (BUNDLE_SIGNATURE_FILE,)
 
 
 class TrustIntegrityError(ValueError):
@@ -690,7 +693,8 @@ def write_canonical_evidence_bundle(
         raise
 
     verify_evidence_bundle(root)
-    verify_evidence_consistency(root)
+    # Signature is written after the canonical files exist (Wave 003 finalize).
+    verify_evidence_consistency(root, check_signature=False)
     return manifest_payload
 
 
@@ -705,8 +709,9 @@ def verify_evidence_bundle(bundle_dir: Path | str) -> dict[str, Any]:
 
     actual = _list_bundle_files(root)
     expected = set(BUNDLE_REQUIRED_FILES)
+    allowed = expected | set(BUNDLE_OPTIONAL_FILES)
     missing = sorted(expected - actual)
-    extra = sorted(actual - expected)
+    extra = sorted(actual - allowed)
     if missing:
         raise TrustIntegrityError(
             f"missing file: {missing[0]}",
@@ -756,8 +761,16 @@ def verify_evidence_bundle(bundle_dir: Path | str) -> dict[str, Any]:
     return manifest
 
 
-def verify_evidence_consistency(bundle_dir: Path | str) -> dict[str, Any]:
-    """Cross-check receipt/result/evidence/hashes/seal/workspace/git/base_sha."""
+def verify_evidence_consistency(
+    bundle_dir: Path | str,
+    *,
+    check_signature: bool = True,
+) -> dict[str, Any]:
+    """Cross-check receipt/result/evidence/hashes/seal/workspace/git/base_sha.
+
+    When check_signature=False, skip Wave 003 signature verify (used while writing
+    the unsigned canonical files before sign_evidence_bundle).
+    """
     root = Path(bundle_dir)
     manifest = verify_evidence_bundle(root)
 
@@ -906,10 +919,18 @@ def verify_evidence_consistency(bundle_dir: Path | str) -> dict[str, Any]:
                 code="seal_mismatch",
             )
 
+    # Wave 003: cryptographic signature over manifest + evidence digests.
+    signature_result: dict[str, Any] | None = None
+    if check_signature:
+        from .trust_crypto.bundle_sign import verify_bundle_signature
+
+        signature_result = verify_bundle_signature(root)
+
     return {
         "run_id": run_id,
         "bundle_dir": str(root),
         "manifest": manifest,
+        "signature": signature_result,
         "ok": True,
     }
 
@@ -923,7 +944,9 @@ def verify_run_evidence(data_root: Path | str, run_id: str) -> dict[str, Any]:
 __all__ = [
     "BUNDLE_HASHES_FILE",
     "BUNDLE_MANIFEST_FILE",
+    "BUNDLE_OPTIONAL_FILES",
     "BUNDLE_REQUIRED_FILES",
+    "BUNDLE_SIGNATURE_FILE",
     "BUNDLE_HASHES_SCHEMA",
     "BUNDLE_MANIFEST_SCHEMA",
     "PROVENANCE_SCHEMA",
@@ -945,4 +968,5 @@ __all__ = [
     "verify_result_sha256",
     "verify_run_evidence",
     "write_canonical_evidence_bundle",
+    "write_json_exclusive",
 ]

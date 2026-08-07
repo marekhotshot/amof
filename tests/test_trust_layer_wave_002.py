@@ -125,6 +125,18 @@ def _sample_bundle(tmp: Path, *, run_id: str = "run-w2-1") -> Path:
 
 
 class TrustLayerWave002BundleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Isolate trust-policy / keys from the operator home (Wave 003).
+        self._home_td = tempfile.TemporaryDirectory()
+        self._env = patch.dict(
+            os.environ, {"AMOF_HOME": self._home_td.name}, clear=False
+        )
+        self._env.start()
+
+    def tearDown(self) -> None:
+        self._env.stop()
+        self._home_td.cleanup()
+
     def test_valid_bundle_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bundle = _sample_bundle(Path(tmp))

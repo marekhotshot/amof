@@ -640,7 +640,7 @@ def parse_args() -> argparse.Namespace:
 
     trust_parser = subparsers.add_parser(
         "trust",
-        help="Trust Layer evidence provenance verify",
+        help="Trust Layer evidence provenance verify and local signing keys",
     )
     trust_sub = trust_parser.add_subparsers(dest="trust_cmd", required=True)
     trust_verify = trust_sub.add_parser(
@@ -655,6 +655,26 @@ def parse_args() -> argparse.Namespace:
         "--json",
         action="store_true",
         help="Emit machine-readable verification JSON",
+    )
+    trust_keygen = trust_sub.add_parser(
+        "keygen",
+        help="Generate a local Ed25519 operator keypair under AMOF runtime authority",
+    )
+    trust_keygen.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable keygen JSON",
+    )
+    trust_keygen.add_argument(
+        "--preferred",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enroll the new key as preferred signing key (default: true)",
+    )
+    trust_keygen.add_argument(
+        "--require-signatures",
+        action="store_true",
+        help="Update trust-policy to require signatures (disallow unsigned bundles)",
     )
 
     paths_parser = subparsers.add_parser(

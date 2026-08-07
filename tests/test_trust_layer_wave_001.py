@@ -193,8 +193,9 @@ class TrustLayerSealFinalizeTests(unittest.TestCase):
 
     def test_handoff_finalize_requires_valid_seal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            data_root = Path(tmp) / "data"
-            data_root.mkdir()
+            home = Path(tmp) / "amof-home"
+            data_root = home / "data"
+            data_root.mkdir(parents=True)
             handoff_id = "handoff-trust-layer-1"
             result_path = data_root / "handoff" / "results" / f"{handoff_id}.json"
             receipt_path = data_root / "handoff" / "receipts" / f"{handoff_id}.json"
@@ -242,44 +243,59 @@ class TrustLayerSealFinalizeTests(unittest.TestCase):
             class _Paths:
                 def __init__(self, root: Path) -> None:
                     self.data_root = root
+                    self.config_root = root.parent / "config"
+                    self.cache_root = root.parent / "cache"
+                    self.state_root = root.parent / "state"
 
-            with patch.object(handoff_mod, "get_app_paths", return_value=_Paths(data_root)):
-                with patch.object(handoff_mod, "ensure_app_roots", return_value=None):
-                    finalized = handoff_mod._seal_and_finalize_execution(
-                        handoff_id=handoff_id,
-                        receipt=receipt,
-                        result_path=result_path,
-                        receipt_path=receipt_path,
-                        state=state,
-                    )
-            self.assertTrue(finalized.finalized)
-            self.assertEqual(finalized.status, "completed")
-            self.assertTrue((data_root / "handoff" / "seals" / handoff_id / "receipt.json").is_file())
-
-            # Seal failure must prevent treating run as finalized on consume.
-            sealed_result = (
-                data_root / "handoff" / "seals" / handoff_id / "artifacts" / "result.json"
-            )
-            sealed_result.write_text('{"status":"completed","tampered":1}\n', encoding="utf-8")
-            live_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-            with patch.object(handoff_mod, "get_app_paths", return_value=_Paths(data_root)):
-                with self.assertRaises(TrustIntegrityError):
-                    handoff_mod._verify_consumed_execution_result(
-                        handoff_id,
-                        result=result_payload,
-                        receipt=live_receipt,
-                        state=handoff_mod.HandoffExecutionState(
-                            schema_version=1,
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                with patch.object(handoff_mod, "get_app_paths", return_value=_Paths(data_root)):
+                    with patch.object(handoff_mod, "ensure_app_roots", return_value=None):
+                        finalized = handoff_mod._seal_and_finalize_execution(
                             handoff_id=handoff_id,
-                            status="finalized",
-                            request_id=handoff_id,
-                            updated_at="2026-08-07T00:00:02Z",
-                            started_at="2026-08-07T00:00:00Z",
-                            completed_at="2026-08-07T00:00:01Z",
-                            receipt_path=str(receipt_path),
-                            result_path=str(result_path),
-                        ),
-                    )
+                            receipt=receipt,
+                            result_path=result_path,
+                            receipt_path=receipt_path,
+                            state=state,
+                        )
+                self.assertTrue(finalized.finalized)
+                self.assertEqual(finalized.status, "completed")
+                self.assertTrue(
+                    (data_root / "handoff" / "seals" / handoff_id / "receipt.json").is_file()
+                )
+                self.assertTrue(
+                    (
+                        data_root
+                        / "trust"
+                        / "runs"
+                        / handoff_id
+                        / "signature.json"
+                    ).is_file()
+                )
+
+                # Seal failure must prevent treating run as finalized on consume.
+                sealed_result = (
+                    data_root / "handoff" / "seals" / handoff_id / "artifacts" / "result.json"
+                )
+                sealed_result.write_text('{"status":"completed","tampered":1}\n', encoding="utf-8")
+                live_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                with patch.object(handoff_mod, "get_app_paths", return_value=_Paths(data_root)):
+                    with self.assertRaises(TrustIntegrityError):
+                        handoff_mod._verify_consumed_execution_result(
+                            handoff_id,
+                            result=result_payload,
+                            receipt=live_receipt,
+                            state=handoff_mod.HandoffExecutionState(
+                                schema_version=1,
+                                handoff_id=handoff_id,
+                                status="finalized",
+                                request_id=handoff_id,
+                                updated_at="2026-08-07T00:00:02Z",
+                                started_at="2026-08-07T00:00:00Z",
+                                completed_at="2026-08-07T00:00:01Z",
+                                receipt_path=str(receipt_path),
+                                result_path=str(result_path),
+                            ),
+                        )
 
     def test_legacy_completed_without_seal_still_verifies_result_hash(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

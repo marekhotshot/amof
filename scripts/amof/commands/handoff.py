@@ -1323,6 +1323,29 @@ def _seal_and_finalize_execution(
         provenance=provenance,
         result_source=result_path,
     )
+    # Wave 003: sign manifest + evidence digests (hashes remain canonical).
+    from ..trust_crypto import (
+        FilesystemKeyProvider,
+        enroll_key,
+        load_trust_policy,
+        sign_evidence_bundle,
+        write_trust_policy,
+    )
+    from ..trust_crypto.bundle_sign import verify_bundle_signature
+
+    key_provider = FilesystemKeyProvider()
+    policy = load_trust_policy()
+    if not policy.preferred_key_id and not key_provider.list_public_key_ids():
+        generated = key_provider.generate_keypair()
+        policy = enroll_key(policy, generated.key_id, preferred=True)
+        write_trust_policy(policy)
+    elif policy.preferred_key_id is None and key_provider.list_public_key_ids():
+        first = key_provider.list_public_key_ids()[0]
+        policy = enroll_key(policy, first, preferred=True)
+        write_trust_policy(policy)
+    sign_evidence_bundle(bundle_dir, key_provider=key_provider, policy=policy)
+    verify_evidence_consistency(bundle_dir)
+    verify_bundle_signature(bundle_dir, key_provider=key_provider, policy=policy)
 
     finalized = HandoffExecutionReceipt(
         schema_version=receipt.schema_version,
