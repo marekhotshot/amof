@@ -19,10 +19,12 @@ Dispatch entry point: `scripts/amof/commands/handoff.py` →
 
 | Module | `BACKEND_TYPE` | Substrate notes |
 | --- | --- | --- |
-| `hermes_opensandbox.py` | `hermes_opensandbox` | Hermes CLI + Remote IAL |
-| `claude_code.py` | `claude_code` | Claude Code CLI (headless) + Anthropic API; reuses shared governance helpers from the Hermes module |
+| `amof_native.py` | `amof_native` | **Primary first-party** AMOF agent loop + model adapter; repo-relative write grants |
+| `hermes_opensandbox.py` | `hermes_opensandbox` | Hermes CLI + Remote IAL (parked from critical path; still present) |
+| `claude_code.py` | `claude_code` | Claude Code CLI (headless) + Anthropic API |
+| `cursor_agent.py` | `cursor_agent` | Secondary Cursor SDK adapter; AMOF owns authority |
 
-Both declare `isolation_model = runtime_owner_workspace` (workspace-level
+Both Hermes and Claude declare `isolation_model = runtime_owner_workspace` (workspace-level
 containment). Stronger isolation models are listed as future options on the
 modules and are not current shipped containment.
 

@@ -1334,7 +1334,7 @@ def parse_args() -> argparse.Namespace:
     runner_template.add_argument(
         "--kind",
         default="local-planning",
-        choices=["local-planning", "hermes-opensandbox", "claude-code"],
+        choices=["local-planning", "hermes-opensandbox", "claude-code", "amof-native", "cursor-agent"],
         help="Template kind to print (default: local-planning)",
     )
 

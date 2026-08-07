@@ -29,7 +29,7 @@ canonical-mission-packet  (+ private operative-mission carrier when used)
 PreparedHandoffPacket / handoff dispatch
         |
         v
-duck-typed execution backends  (hermes_opensandbox | claude_code | builtin plan-execute)
+duck-typed execution backends  (amof_native | hermes_opensandbox | claude_code | cursor_agent | builtin plan-execute)
         |
         v
 agent-run-result  (result.json)
@@ -47,7 +47,7 @@ private outcome_class / delivery gate  (operator projection; not a public field)
 | --- | --- | --- |
 | Intent | Operative mission text; public packet `goal` / `objective` (short) | Mission prep / intake; `contracts/canonical-mission-packet.schema.json` |
 | Request | `PreparedHandoffPacket` + `amof handoff` prepare → accept → execute-agent | `scripts/amof/commands/handoff.py` |
-| Worker / substrate | Duck-typed backends: `build_selection(...)` + `run(...)` | `scripts/amof/execution_backends/` (`hermes_opensandbox`, `claude_code`); builtin plan-execute when no runner |
+| Worker / substrate | Duck-typed backends: `build_selection(...)` + `run(...)` | `scripts/amof/execution_backends/` (`amof_native`, `hermes_opensandbox`, `claude_code`, `cursor_agent`); builtin plan-execute when no runner |
 | Result | `agent_run_result` / `agent-run-v1` → `result.json` | `contracts/agent-run-result.schema.json` |
 | Evidence | Run dir artifacts + handoff evidence refs + optional Studio ledger | Backend `run()`; handoff receipts; `contracts/studio-lifecycle.md` |
 | Verdict | Public: lifecycle `status` / `stop_reason` / failure classification. Private operator projection: `outcome_class` for delivery gating | Public result envelope; private console/runtime projection |
