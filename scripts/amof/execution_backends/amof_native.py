@@ -23,6 +23,7 @@ from urllib.request import Request, urlopen
 from ..app_paths import runs_dir
 from . import hermes_opensandbox as _shared
 from .hermes_opensandbox import (
+    WRITE_SCOPE_PROPOSAL_REQUIRED,
     _manifest_repo_targets,
     _normalize_repository_relative_scope_path,
 )
@@ -1015,22 +1016,22 @@ def run(
         else:
             deadline = time.monotonic() + float(selection.timeout_seconds)
 
-    (run_dir / "request.json").write_text(
-        json.dumps(
-            {
-                "request_id": request_id,
-                "runner_id": selection.runner_id,
-                "backend": BACKEND_TYPE,
-                "writable_roots_relative": selection.writable_roots_relative,
-                "workspace": str(workspace),
-                "requested_provider": effective_provider,
-                "requested_model": requested_model,
-                "transport": transport,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    proposal_required = (
+        _shared._goal_requests_write_scope_proposal(goal)
+        and not selection.writable_roots
+    )
+    expected_proposal_paths = _shared._explicit_required_proposal_paths(goal)
+    write_scope_proposals: list[dict[str, Any]] = []
+    proposal_missing_reason: str | None = None
+    proposal_replan_used = False
+    read_only_replan_used = False
+    prompt = _shared._build_prompt(
+        goal,
+        selection,
+        workspace,
+        manifest,
+        agent_label=AGENT_LABEL,
+        backend_name=BACKEND_TYPE,
     )
 
     status = "failed"
@@ -1038,55 +1039,146 @@ def run(
     exit_code = 1
     task_findings = ""
     validation_status = "not_run"
+    changed: list[str] = []
 
-    try:
-        script = _load_script(selection) if transport == "scripted" else None
-        if script is not None:
-            effective_provider = str(script.get("provider") or SCRIPT_PROVIDER)
-            requested_model = str(script.get("model") or requested_model)
-            status, stop_reason, task_findings = _execute_scripted_loop(
-                script=script,
-                tools=tools,
-                event_log_path=event_log_path,
-                deadline=deadline,
+    while True:
+        (run_dir / "request.json").write_text(
+            json.dumps(
+                {
+                    "request_id": request_id,
+                    "runner_id": selection.runner_id,
+                    "backend": BACKEND_TYPE,
+                    "writable_roots_relative": selection.writable_roots_relative,
+                    "workspace": str(workspace),
+                    "requested_provider": effective_provider,
+                    "requested_model": requested_model,
+                    "transport": transport,
+                    "proposal_required": proposal_required,
+                    "proposal_replan_used": proposal_replan_used,
+                },
+                indent=2,
             )
-            exit_code = 0 if status == "completed" else (124 if stop_reason == "timeout" else 1)
-        else:
-            status, stop_reason, task_findings = _run_model_loop(
-                goal=goal,
-                tools=tools,
-                model=requested_model,
-                writable=bool(selection.writable_roots_relative),
-                event_log_path=event_log_path,
-                deadline=deadline,
-            )
-            exit_code = 0 if status == "completed" else (124 if stop_reason == "timeout" else 1)
-    except AmofNativeBackendError as exc:
-        status = "failed"
-        stop_reason = "grant_enforcement_failed"
-        exit_code = 1
-        task_findings = str(exc)
-        _shared._append_event(event_log_path, "grant_enforcement_failed", error=str(exc))
+            + "\n",
+            encoding="utf-8",
+        )
+        try:
+            script = _load_script(selection) if transport == "scripted" else None
+            if script is not None:
+                effective_provider = str(script.get("provider") or SCRIPT_PROVIDER)
+                requested_model = str(script.get("model") or requested_model)
+                status, stop_reason, raw_task_findings = _execute_scripted_loop(
+                    script=script,
+                    tools=tools,
+                    event_log_path=event_log_path,
+                    deadline=deadline,
+                )
+                exit_code = 0 if status == "completed" else (124 if stop_reason == "timeout" else 1)
+            else:
+                status, stop_reason, raw_task_findings = _run_model_loop(
+                    goal=prompt,
+                    tools=tools,
+                    model=requested_model,
+                    writable=bool(selection.writable_roots_relative),
+                    event_log_path=event_log_path,
+                    deadline=deadline,
+                )
+                exit_code = 0 if status == "completed" else (124 if stop_reason == "timeout" else 1)
+        except AmofNativeBackendError as exc:
+            status = "failed"
+            stop_reason = "grant_enforcement_failed"
+            exit_code = 1
+            raw_task_findings = str(exc)
+            _shared._append_event(event_log_path, "grant_enforcement_failed", error=str(exc))
 
-    changed = _shared._changed_paths_delta(preexisting_changed_paths, _shared._changed_paths(workspace))
-    outside = _changed_paths_outside_grants(changed, selection, workspace)
-    if outside and status == "completed":
-        status = "failed"
-        stop_reason = "write_outside_grant"
-        exit_code = 1
-        task_findings = f"Modified paths outside grant: {', '.join(outside)}"
-        _shared._append_event(
-            event_log_path,
-            "write_outside_grant",
-            changed_paths=list(changed),
-            outside_grant=list(outside),
+        write_scope_proposals, task_findings = _shared._extract_write_scope_proposal_outputs(
+            raw_task_findings or "",
+            expected_allowed_roots=expected_proposal_paths,
+        )
+        proposal_missing_reason = (
+            _shared._proposal_missing_reason(task_findings, "")
+            if proposal_required and not write_scope_proposals
+            else None
         )
 
-    validation_status = _shared._infer_validation_status(task_findings)
-    if status == "completed" and validation_status == "failed":
-        status = "failed"
-        stop_reason = "validation_failed"
-        exit_code = 1
+        changed = _shared._changed_paths_delta(
+            preexisting_changed_paths, _shared._changed_paths(workspace)
+        )
+        outside = _changed_paths_outside_grants(changed, selection, workspace)
+        if outside and status == "completed":
+            status = "failed"
+            stop_reason = "write_outside_grant"
+            exit_code = 1
+            task_findings = f"Modified paths outside grant: {', '.join(outside)}"
+            _shared._append_event(
+                event_log_path,
+                "write_outside_grant",
+                changed_paths=list(changed),
+                outside_grant=list(outside),
+            )
+            break
+
+        if status == "completed" and not selection.writable_roots and changed:
+            restored_paths = _shared._restore_read_only_paths(workspace, changed)
+            if read_only_replan_used:
+                status = "failed"
+                stop_reason = "read_only_mutation_detected"
+                exit_code = 1
+                _shared._append_event(
+                    event_log_path,
+                    "read_only_mutation_blocked",
+                    changed_paths=list(changed),
+                    restored_paths=list(restored_paths),
+                )
+                changed = []
+                break
+            _shared._append_event(
+                event_log_path,
+                "read_only_mutation_replan",
+                changed_paths=list(changed),
+                restored_paths=list(restored_paths),
+            )
+            read_only_replan_used = True
+            prompt = _shared._build_prompt(
+                goal,
+                selection,
+                workspace,
+                manifest,
+                read_only_replan=True,
+                agent_label=AGENT_LABEL,
+                backend_name=BACKEND_TYPE,
+            )
+            continue
+
+        validation_status = _shared._infer_validation_status(task_findings)
+        if status == "completed" and validation_status == "failed":
+            status = "failed"
+            stop_reason = "validation_failed"
+            exit_code = 1
+            break
+
+        if status == "completed" and proposal_required and not write_scope_proposals:
+            if not proposal_replan_used:
+                _shared._append_event(
+                    event_log_path,
+                    "proposal_contract_replan",
+                    reason=proposal_missing_reason or "structured proposal missing",
+                )
+                proposal_replan_used = True
+                prompt = _shared._build_prompt(
+                    goal,
+                    selection,
+                    workspace,
+                    manifest,
+                    proposal_replan=True,
+                    agent_label=AGENT_LABEL,
+                    backend_name=BACKEND_TYPE,
+                )
+                continue
+            status = "blocked"
+            stop_reason = WRITE_SCOPE_PROPOSAL_REQUIRED
+            exit_code = 1
+            validation_status = "failed"
+        break
 
     final_text = _runtime_summary_text(
         status=status,
@@ -1114,6 +1206,8 @@ def run(
         effective_model=requested_model if status != "blocked" else "unverified",
         effective_provider=effective_provider,
         transport=transport or "blocked",
+        write_scope_proposals=write_scope_proposals,
+        proposal_missing_reason=proposal_missing_reason,
     )
     result = _shared._apply_write_scope_enforcement_if_bound(
         result,
@@ -1161,7 +1255,10 @@ def _result_payload(
     effective_provider: str = "unverified",
     transport: str = "blocked",
     task_findings: str | None = None,
+    write_scope_proposals: list[dict[str, Any]] | None = None,
+    proposal_missing_reason: str | None = None,
 ) -> dict[str, Any]:
+    write_scope_proposal = write_scope_proposals[0] if write_scope_proposals else None
     return {
         "result_kind": "agent_run_result",
         "contract_version": "agent-run-v1",
@@ -1172,6 +1269,21 @@ def _result_payload(
         "stop_reason": stop_reason,
         "final_text": final_text,
         "task_findings": task_findings,
+        **(
+            {"write_scope_proposal": write_scope_proposal}
+            if write_scope_proposal is not None
+            else {}
+        ),
+        **(
+            {"write_scope_proposals": write_scope_proposals}
+            if write_scope_proposals
+            else {}
+        ),
+        **(
+            {"proposal_missing_reason": proposal_missing_reason}
+            if proposal_missing_reason is not None
+            else {}
+        ),
         "runner_id": selection.runner_id,
         "backend": BACKEND_TYPE,
         "requested_provider": effective_provider,

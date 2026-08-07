@@ -394,3 +394,84 @@ class AmofNativeRemoteIalTransportTests(unittest.TestCase):
         self.assertTrue(url.endswith("/v1/ial/chat"))
         self.assertNotIn("/v1/chat/completions", url)
         self.assertIn("Authorization", headers)
+
+
+class AmofNativeProposalContractTests(unittest.TestCase):
+    def test_extracts_structured_write_scope_proposal(self) -> None:
+        """Scripted discovery findings with marker blocks become write_scope_proposals[]."""
+        from amof.execution_backends.hermes_opensandbox import (
+            WRITE_SCOPE_PROPOSAL_END,
+            WRITE_SCOPE_PROPOSAL_START,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            (workspace / "docs").mkdir()
+            (workspace / "docs" / "note.md").write_text("x\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "docs/note.md"], cwd=workspace, check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "add note"], cwd=workspace, check=True, capture_output=True
+            )
+            sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=workspace, text=True
+            ).strip()
+            target_id = f"github_app:example/repo:{sha}"
+            proposal = {
+                "target_id": target_id,
+                "base_sha": sha,
+                "allowed_roots": ["docs/note.md"],
+                "denied_roots": [],
+                "reason": "bounded follow-up justified by inspected evidence",
+                "expected_checks": ["git diff --check"],
+                "docs_only": True,
+                "source_mutation": False,
+            }
+            findings = (
+                f"{WRITE_SCOPE_PROPOSAL_START}\n"
+                + json.dumps(proposal)
+                + f"\n{WRITE_SCOPE_PROPOSAL_END}\n"
+                + "Summary: truncation disclosure needed.\n"
+            )
+            script = Path(tmp) / "script.json"
+            _write_script(script, [{"type": "final", "text": findings}])
+            selection = amof_native.build_selection(
+                runner_id="amof-native-ticket-write",
+                requested_capabilities=["read"],
+                approve_writable_roots=[],
+                timeout_seconds=30,
+                readable_root=str(workspace),
+                accepted_base_sha=sha,
+                target_id=target_id,
+            )
+            manifest = {
+                "repos": [
+                    {
+                        "path": str(workspace),
+                        "target_id": target_id,
+                        "sha": sha,
+                        "name": "example/repo",
+                        "url": "https://github.com/example/repo.git",
+                    }
+                ]
+            }
+            with patch.dict(os.environ, {"AMOF_NATIVE_SCRIPT": str(script)}, clear=False):
+                with patch.object(amof_native, "_run_dir", return_value=Path(tmp) / "run2"):
+                    (Path(tmp) / "run2").mkdir(exist_ok=True)
+                    result = amof_native.run(
+                        manifest=manifest,
+                        goal=(
+                            "Propose a write scope for truncated status/context preview "
+                            "disclosure. Emit a structured write_scope_proposal."
+                        ),
+                        request_id="proposal-contract-test",
+                        studio_session_id=None,
+                        selection=selection,
+                    )
+            self.assertEqual(result.get("status"), "completed", result.get("stop_reason"))
+            props = result.get("write_scope_proposals") or []
+            self.assertEqual(len(props), 1)
+            self.assertEqual(props[0].get("target_id"), target_id)
+            self.assertIn("docs/note.md", props[0].get("allowed_roots") or [])
