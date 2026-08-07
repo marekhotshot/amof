@@ -3,6 +3,14 @@
 The public distribution keeps candidate APIs importable and callable while
 failing closed. Candidate records that already exist locally are returned
 through a sanitized envelope so policy details are not republished.
+
+``audit_receipt_path`` is an intentional public-envelope placeholder:
+- ``promote_candidate`` always refuses in the public distribution and returns
+  an empty ``audit_receipt_path`` (no writer exists here by design).
+- ``list_candidates`` / ``load_candidate`` may surface a path if a locally
+  persisted record already carries one from an authorized private workflow.
+- Do not remove the field: consumers rely on envelope stability. Do not mint
+  public-side audit receipts from this stub.
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ def promote_candidate(request: Dict[str, Any], *, context: Optional[Dict[str, An
         "reasons": ["public_contract_only"],
         "missing_prerequisites": ["candidate_admission_result_from_authorized_workflow"],
         "refusal_conditions": ["candidate_promotion_not_available_in_public_distribution"],
+        # Intentional placeholder: public promote_candidate never writes audit receipts.
         "audit_receipt_path": "",
         "created_at": created_at,
     }

@@ -614,6 +614,29 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         help="Optional directory for the emitted bootstrap evidence bundle",
     )
+    bootstrap_verify = bootstrap_sub.add_parser(
+        "verify",
+        help="Fail-closed verify-on-consume for a bootstrap sha256 manifest/bundle",
+    )
+    bootstrap_verify.add_argument(
+        "--bundle-dir",
+        "--output-dir",
+        dest="bundle_dir",
+        help="Bootstrap evidence bundle directory containing bootstrap-sha256-manifest.json",
+    )
+    bootstrap_verify.add_argument(
+        "--manifest",
+        help="Path to bootstrap-sha256-manifest.json",
+    )
+    bootstrap_verify.add_argument(
+        "--summary",
+        help="Path to up10-bootstrap-summary.json (verifies linked manifest first)",
+    )
+    bootstrap_verify.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable verification JSON",
+    )
 
     paths_parser = subparsers.add_parser(
         "paths",

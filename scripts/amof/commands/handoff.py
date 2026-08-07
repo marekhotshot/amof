@@ -18,6 +18,12 @@ from ..execution_backends import amof_native, claude_code, cursor_agent, hermes_
 from ..manifest import list_available_ecosystems, load_manifest
 from ..state import get_state
 from ..utils import get_ecosystem_from_branch, get_ecosystem_from_path, get_git_toplevel
+from ..trust_layer import (
+    TrustIntegrityError,
+    seal_evidence_artifacts,
+    verify_evidence_seal,
+    verify_execution_result_integrity,
+)
 from ..write_scope_bindings import (
     WriteScopeBindingError,
     finalize_binding,
@@ -46,6 +52,7 @@ HANDOFF_EXECUTION_STATUSES = frozenset(
         "queued",
         "execution_started",
         "completed",
+        "finalized",
         "blocked",
         "failed",
         "timed_out",
@@ -352,6 +359,7 @@ class HandoffExecutionReceipt:
     receipt_path: Optional[str]
     started_at: str
     completed_at: str
+    finalized: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -373,6 +381,7 @@ class HandoffExecutionReceipt:
             "receipt_path": self.receipt_path,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
+            "finalized": bool(self.finalized),
         }
 
 
@@ -962,6 +971,14 @@ def _handoff_state_dir() -> Path:
     return _handoff_root_dir() / "state"
 
 
+def _handoff_seals_dir() -> Path:
+    return _handoff_root_dir() / "seals"
+
+
+def _handoff_seal_dir(handoff_id: str) -> Path:
+    return _handoff_seals_dir() / handoff_id
+
+
 def _ensure_operator_only_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     os.chmod(path, 0o700)
@@ -1180,6 +1197,106 @@ def _load_execution_result_payload(handoff_id: str) -> dict[str, Any] | None:
 
 def _load_execution_receipt_payload(handoff_id: str) -> dict[str, Any] | None:
     return _read_optional_json(_handoff_receipts_dir() / f"{handoff_id}.json")
+
+
+def _receipt_is_finalized(receipt: dict[str, Any] | None) -> bool:
+    if receipt is None:
+        return False
+    if bool(receipt.get("finalized")):
+        return True
+    evidence = receipt.get("evidence")
+    if isinstance(evidence, dict) and str(evidence.get("evidence_seal_path") or "").strip():
+        return True
+    return False
+
+
+def _verify_consumed_execution_result(
+    handoff_id: str,
+    *,
+    result: dict[str, Any] | None,
+    receipt: dict[str, Any] | None,
+    state: HandoffExecutionState | None = None,
+) -> None:
+    """Fail-closed verify-on-consume for result_sha256 (+ seal when finalized)."""
+    if result is None:
+        return
+    result_path = _handoff_results_dir() / f"{handoff_id}.json"
+    verify_execution_result_integrity(result_path=result_path, receipt=receipt)
+    state_finalized = bool(
+        state is not None and str(state.status or "").strip().lower() == "finalized"
+    )
+    if state_finalized or _receipt_is_finalized(receipt):
+        verify_evidence_seal(_handoff_seal_dir(handoff_id))
+
+
+def _seal_and_finalize_execution(
+    *,
+    handoff_id: str,
+    receipt: HandoffExecutionReceipt,
+    result_path: Path,
+    receipt_path: Path,
+    state: HandoffExecutionState,
+) -> HandoffExecutionReceipt:
+    """Seal evidence after COMPLETE; FINALIZED only when seal verifies.
+
+    Preserves receipt.status (completed/failed/...) for backward compatibility.
+    Finalization is recorded via finalized=true, evidence_seal_path, and state.
+    """
+    seal_dir = _ensure_operator_only_dir(_handoff_seal_dir(handoff_id))
+    seal_evidence_artifacts(
+        seal_dir=seal_dir,
+        receipt_id=f"handoff-seal-{handoff_id}",
+        claim_summary=(
+            f"Handoff {handoff_id} execution evidence "
+            f"(status={receipt.status}, exit_code={receipt.exit_code})"
+        ),
+        artifacts=(
+            ("result.json", result_path),
+            ("execution-receipt.json", receipt_path),
+        ),
+        producer={
+            "role": "runtime",
+            "model": "amof-trust-layer",
+            "session_ref": handoff_id,
+        },
+    )
+    verify_evidence_seal(seal_dir)
+    finalized = HandoffExecutionReceipt(
+        schema_version=receipt.schema_version,
+        handoff_id=receipt.handoff_id,
+        request_id=receipt.request_id,
+        status=receipt.status,
+        exit_code=receipt.exit_code,
+        stop_reason=receipt.stop_reason,
+        session_id=receipt.session_id,
+        studio_session_id=receipt.studio_session_id,
+        result_path=receipt.result_path,
+        result_sha256=receipt.result_sha256,
+        evidence={
+            **dict(receipt.evidence),
+            "evidence_seal_path": str(seal_dir / "receipt.json"),
+            "finalization": "FINALIZED",
+        },
+        receipt_path=receipt.receipt_path,
+        started_at=receipt.started_at,
+        completed_at=receipt.completed_at,
+        finalized=True,
+    )
+    _write_execution_receipt(finalized)
+    _write_execution_state(
+        HandoffExecutionState(
+            schema_version=state.schema_version,
+            handoff_id=state.handoff_id,
+            status="finalized",
+            request_id=state.request_id,
+            updated_at=_now_iso(),
+            started_at=state.started_at,
+            completed_at=state.completed_at,
+            receipt_path=state.receipt_path,
+            result_path=state.result_path,
+        )
+    )
+    return finalized
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -1471,15 +1588,28 @@ def _handoff_status_payload(
     loaded_state = state if state is not None else _load_execution_state(handoff_id)
     result = _load_execution_result_payload(handoff_id)
     receipt = _load_execution_receipt_payload(handoff_id)
+    _verify_consumed_execution_result(
+        handoff_id, result=result, receipt=receipt, state=loaded_state
+    )
     run_info = _load_run_info(handoff_id, result)
     raw_status = (
         str(loaded_state.status or "").strip().lower()
         if loaded_state is not None
         else str(loaded_packet.state or "prepared").strip().lower()
     )
-    if result is not None:
+    if raw_status == "finalized" or _receipt_is_finalized(receipt):
+        lifecycle_state = "finalized"
+    elif result is not None:
         lifecycle_state = _lifecycle_status_from_result(result)
-    elif raw_status in {"completed", "blocked", "failed", "timed_out", "cancelled", "result_missing"}:
+    elif raw_status in {
+        "completed",
+        "finalized",
+        "blocked",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "result_missing",
+    }:
         lifecycle_state = "result_missing"
     else:
         lifecycle_state = _project_inflight_lifecycle(loaded_state, run_info)
@@ -1533,9 +1663,23 @@ def _handoff_status_payload(
             if lifecycle_state == "result_missing"
             else "poll"
             if lifecycle_state in {"accepted", "queued", "planning", "executing", "waiting"}
+            else "finalized"
+            if lifecycle_state == "finalized"
             else "complete"
         ),
     }
+    receipt_evidence = (receipt or {}).get("evidence")
+    if isinstance(receipt_evidence, dict):
+        payload["evidence_seal_path"] = _optional_text(
+            receipt_evidence.get("evidence_seal_path")
+        )
+        payload["execution_status"] = _optional_text(
+            receipt_evidence.get("execution_status")
+        )
+    else:
+        payload["evidence_seal_path"] = None
+        payload["execution_status"] = None
+    payload["finalized"] = lifecycle_state == "finalized" or _receipt_is_finalized(receipt)
     if loaded_packet.payload_kind == "canonical_mission_packet":
         canonical_packet, _canonical_text = _parse_canonical_mission_packet_text(
             loaded_packet.payload.text,
@@ -1981,20 +2125,25 @@ def _execute_agent_from_handoff(
             completed_at=completed_at,
         )
         _write_execution_receipt(receipt)
-        _write_execution_state(
-            HandoffExecutionState(
-                schema_version=HANDOFF_RECEIPT_SCHEMA_VERSION,
-                handoff_id=handoff_id,
-                status=receipt.status,
-                request_id=handoff_id,
-                updated_at=completed_at,
-                started_at=started_at,
-                completed_at=completed_at,
-                receipt_path=str(receipt_path),
-                result_path=str(result_path),
-            )
+        state = HandoffExecutionState(
+            schema_version=HANDOFF_RECEIPT_SCHEMA_VERSION,
+            handoff_id=handoff_id,
+            status=receipt.status,
+            request_id=handoff_id,
+            updated_at=completed_at,
+            started_at=started_at,
+            completed_at=completed_at,
+            receipt_path=str(receipt_path),
+            result_path=str(result_path),
         )
-        return receipt
+        _write_execution_state(state)
+        return _seal_and_finalize_execution(
+            handoff_id=handoff_id,
+            receipt=receipt,
+            result_path=result_path,
+            receipt_path=receipt_path,
+            state=state,
+        )
 
     success = int(result_payload.get("exit_code") or 0) == 0 and str(
         result_payload.get("status") or ""
@@ -2033,20 +2182,25 @@ def _execute_agent_from_handoff(
         completed_at=completed_at,
     )
     _write_execution_receipt(receipt)
-    _write_execution_state(
-        HandoffExecutionState(
-            schema_version=HANDOFF_RECEIPT_SCHEMA_VERSION,
-            handoff_id=handoff_id,
-            status=receipt.status,
-            request_id=handoff_id,
-            updated_at=completed_at,
-            started_at=started_at,
-            completed_at=completed_at,
-            receipt_path=str(receipt_path),
-            result_path=str(result_path),
-        )
+    state = HandoffExecutionState(
+        schema_version=HANDOFF_RECEIPT_SCHEMA_VERSION,
+        handoff_id=handoff_id,
+        status=receipt.status,
+        request_id=handoff_id,
+        updated_at=completed_at,
+        started_at=started_at,
+        completed_at=completed_at,
+        receipt_path=str(receipt_path),
+        result_path=str(result_path),
     )
-    return receipt
+    _write_execution_state(state)
+    return _seal_and_finalize_execution(
+        handoff_id=handoff_id,
+        receipt=receipt,
+        result_path=result_path,
+        receipt_path=receipt_path,
+        state=state,
+    )
 
 
 def cmd_handoff_accept_agent(args: Any) -> int:
@@ -2139,6 +2293,9 @@ def cmd_handoff_status(args: Any) -> int:
     try:
         handoff_id = _validate_handoff_id(str(getattr(args, "handoff_id", "")))
         payload = _handoff_status_payload(handoff_id)
+    except TrustIntegrityError as exc:
+        _stderr(f"[handoff] FAIL_CLOSED integrity: {exc}")
+        return 1
     except (FileNotFoundError, ValueError) as exc:
         _stderr(f"[handoff] {exc}")
         return 1
@@ -2164,6 +2321,9 @@ def cmd_handoff_execute_agent(args: Any) -> int:
             )
             return 0
         _stderr(f"[handoff] {exc}")
+        return 1
+    except TrustIntegrityError as exc:
+        _stderr(f"[handoff] FAIL_CLOSED integrity: {exc}")
         return 1
     except (FileNotFoundError, ValueError) as exc:
         _stderr(f"[handoff] {exc}")
