@@ -1246,6 +1246,76 @@ def _verify_consumed_execution_result(
                 )
 
 
+def _preserve_durable_receipt_after_finalize_failure(
+    *,
+    receipt: HandoffExecutionReceipt,
+    exc: TrustIntegrityError,
+) -> HandoffExecutionReceipt:
+    """Keep semantic exit_code after durable result when post-result finalize fails.
+
+    Execution Jobs run without trust signing keys (emptyDir). Finalize/signing is
+    post-result evidence work and must not rewrite a durable semantic exit into a
+    non-zero process exit (which becomes Job BackoffLimitExceeded).
+    """
+    code = getattr(exc, "code", None)
+    _stderr(
+        "[handoff] finalize failed after durable result; "
+        f"preserving semantic exit_code={receipt.exit_code}"
+        + (f" code={code}" if code else "")
+        + f": {exc}"
+    )
+    evidence = {
+        **dict(receipt.evidence),
+        "finalization": "FINALIZE_FAILED_AFTER_DURABLE_RESULT",
+        "finalize_error": str(exc)[:500],
+        "finalize_error_code": str(code or "trust_integrity"),
+    }
+    preserved = HandoffExecutionReceipt(
+        schema_version=receipt.schema_version,
+        handoff_id=receipt.handoff_id,
+        request_id=receipt.request_id,
+        status=receipt.status,
+        exit_code=receipt.exit_code,
+        stop_reason=receipt.stop_reason,
+        session_id=receipt.session_id,
+        studio_session_id=receipt.studio_session_id,
+        result_path=receipt.result_path,
+        result_sha256=receipt.result_sha256,
+        evidence=evidence,
+        receipt_path=receipt.receipt_path,
+        started_at=receipt.started_at,
+        completed_at=receipt.completed_at,
+        finalized=False,
+    )
+    _write_execution_receipt(preserved)
+    return preserved
+
+
+def _seal_or_preserve_durable_receipt(
+    *,
+    handoff_id: str,
+    receipt: HandoffExecutionReceipt,
+    result_path: Path,
+    receipt_path: Path,
+    state: HandoffExecutionState,
+    packet: PreparedHandoffPacket | None = None,
+    binding: dict[str, Any] | None = None,
+) -> HandoffExecutionReceipt:
+    """Finalize when possible; never override durable semantic exit on finalize failure."""
+    try:
+        return _seal_and_finalize_execution(
+            handoff_id=handoff_id,
+            receipt=receipt,
+            result_path=result_path,
+            receipt_path=receipt_path,
+            state=state,
+            packet=packet,
+            binding=binding,
+        )
+    except TrustIntegrityError as exc:
+        return _preserve_durable_receipt_after_finalize_failure(receipt=receipt, exc=exc)
+
+
 def _seal_and_finalize_execution(
     *,
     handoff_id: str,
@@ -2227,7 +2297,7 @@ def _execute_agent_from_handoff(
             result_path=str(result_path),
         )
         _write_execution_state(state)
-        return _seal_and_finalize_execution(
+        return _seal_or_preserve_durable_receipt(
             handoff_id=handoff_id,
             receipt=receipt,
             result_path=result_path,
@@ -2286,7 +2356,7 @@ def _execute_agent_from_handoff(
         result_path=str(result_path),
     )
     _write_execution_state(state)
-    return _seal_and_finalize_execution(
+    return _seal_or_preserve_durable_receipt(
         handoff_id=handoff_id,
         receipt=receipt,
         result_path=result_path,
