@@ -173,7 +173,6 @@ def verify_export_package(
         raise TrustIntegrityError(f"extra file: {extras[0]}", code="extra_file")
 
     meta = load_json_object(root / VERIFICATION_METADATA_FILENAME, code="invalid_metadata")
-    run_id = str(meta.get("run_id") or root.name)
 
     # LOCAL_INTEGRITY: reuse Wave 002 consistency (hashes + provenance).
     # Skip live signature policy path by using check_signature=False then
@@ -189,6 +188,40 @@ def verify_export_package(
     except TrustIntegrityError as exc:
         modes["LOCAL_INTEGRITY"] = _status(False, reason=str(exc), code=exc.code)
         raise
+
+    # Canonical execution identity is the signed manifest run_id only.
+    # Unsigned metadata / directory name must never redefine identity.
+    manifest = load_json_object(root / BUNDLE_MANIFEST_FILE, code="invalid_manifest")
+    run_id = str(manifest.get("run_id") or "").strip()
+    if not run_id:
+        modes["LOCAL_INTEGRITY"] = _status(False, reason="signed manifest missing run_id")
+        raise TrustIntegrityError(
+            "signed manifest missing run_id",
+            code="missing_run_id",
+        )
+    meta_run_id = str(meta.get("run_id") or "").strip()
+    if not meta_run_id:
+        modes["LOCAL_INTEGRITY"] = _status(
+            False, reason="verification_metadata missing run_id", code="run_id_mismatch"
+        )
+        raise TrustIntegrityError(
+            "verification_metadata missing run_id",
+            code="run_id_mismatch",
+        )
+    if meta_run_id != run_id:
+        modes["LOCAL_INTEGRITY"] = _status(
+            False,
+            reason=(
+                f"verification_metadata run_id {meta_run_id!r} does not match "
+                f"signed manifest run_id {run_id!r}"
+            ),
+            code="run_id_mismatch",
+        )
+        raise TrustIntegrityError(
+            f"verification_metadata run_id {meta_run_id!r} does not match "
+            f"signed manifest run_id {run_id!r}",
+            code="run_id_mismatch",
+        )
 
     # SIGNATURE_AUTHENTICITY: Ed25519 vs embedded public key + intra-package pin +
     # export-time trust snapshot consistency. This is NOT policy authorization.
@@ -222,6 +255,7 @@ def verify_export_package(
             public_key_id=public_key_id,
         )
         snapshot = load_json_object(root / TRUST_SNAPSHOT_FILENAME, code="invalid_trust_snapshot")
+        # Snapshot / anchor must bind to signed identity (FAIL_CLOSED on launder).
         verify_trust_snapshot(
             snapshot,
             run_id=run_id,
