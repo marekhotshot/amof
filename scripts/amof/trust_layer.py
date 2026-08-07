@@ -770,11 +770,15 @@ def verify_evidence_consistency(
     *,
     check_signature: bool = True,
     allowed_extra_files: frozenset[str] | set[str] | tuple[str, ...] | None = None,
+    require_producer_seal: bool = True,
 ) -> dict[str, Any]:
     """Cross-check receipt/result/evidence/hashes/seal/workspace/git/base_sha.
 
     When check_signature=False, skip Wave 003 signature verify (used while writing
     the unsigned canonical files before sign_evidence_bundle).
+
+    When require_producer_seal=False, a missing absolute evidence_seal_path does not
+    fail (portable export packages). Bundle content digests remain authoritative.
     """
     root = Path(bundle_dir)
     manifest = verify_evidence_bundle(root, allowed_extra_files=allowed_extra_files)
@@ -896,33 +900,49 @@ def verify_evidence_consistency(
             code="git_sha_mismatch",
         )
 
-    # Optional seal binding: if provenance names a seal id, Wave-001 seal dir must verify when present
-    # beside the bundle (../seals/<run_id>) or via absolute evidence path on receipt.
+    # Optional seal binding: Wave-001 seal via absolute evidence_seal_path on receipt.
+    # Portable exports may omit the producer seal directory; callers set
+    # require_producer_seal=False so LOCAL_INTEGRITY uses in-bundle digests only.
     receipt_evidence = receipt.get("evidence") if isinstance(receipt.get("evidence"), dict) else {}
     seal_path = str(receipt_evidence.get("evidence_seal_path") or "").strip()
     if seal_path:
         seal_receipt_path = Path(seal_path)
-        if seal_receipt_path.name == "receipt.json":
-            verify_evidence_seal(seal_receipt_path.parent)
-        elif seal_receipt_path.is_dir():
-            verify_evidence_seal(seal_receipt_path)
+        seal_available = (
+            seal_receipt_path.is_file()
+            or seal_receipt_path.is_dir()
+            or (seal_receipt_path.name == "receipt.json" and seal_receipt_path.parent.is_dir())
+        )
+        if not seal_available:
+            if require_producer_seal:
+                raise TrustIntegrityError(
+                    f"missing seal receipt: {seal_path}",
+                    code="missing_seal",
+                )
+            # Portable path: absolute producer seal not present; skip seal verify.
         else:
-            raise TrustIntegrityError(
-                f"seal path not verifiable: {seal_path}",
+            if seal_receipt_path.name == "receipt.json":
+                verify_evidence_seal(seal_receipt_path.parent)
+            elif seal_receipt_path.is_dir():
+                verify_evidence_seal(seal_receipt_path)
+            else:
+                raise TrustIntegrityError(
+                    f"seal path not verifiable: {seal_path}",
+                    code="invalid_seal",
+                )
+            seal_meta = evidence.get("seal") if isinstance(evidence.get("seal"), dict) else {}
+            sealed = _read_json_object(
+                seal_receipt_path
+                if seal_receipt_path.is_file()
+                else seal_receipt_path / "receipt.json",
                 code="invalid_seal",
             )
-        seal_meta = evidence.get("seal") if isinstance(evidence.get("seal"), dict) else {}
-        sealed = _read_json_object(
-            seal_receipt_path if seal_receipt_path.is_file() else seal_receipt_path / "receipt.json",
-            code="invalid_seal",
-        )
-        if seal_meta.get("seal_receipt_id") and str(seal_meta.get("seal_receipt_id")) != str(
-            sealed.get("receipt_id") or ""
-        ):
-            raise TrustIntegrityError(
-                "seal receipt id mismatch between provenance and seal",
-                code="seal_mismatch",
-            )
+            if seal_meta.get("seal_receipt_id") and str(seal_meta.get("seal_receipt_id")) != str(
+                sealed.get("receipt_id") or ""
+            ):
+                raise TrustIntegrityError(
+                    "seal receipt id mismatch between provenance and seal",
+                    code="seal_mismatch",
+                )
 
     # Wave 003: cryptographic signature over manifest + evidence digests.
     signature_result: dict[str, Any] | None = None

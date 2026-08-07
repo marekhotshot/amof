@@ -142,6 +142,10 @@ def cmd_trust_verify_export(args: Any) -> int:
         result = verify_export_package(
             path,
             evaluate_trust_now_policy=not bool(getattr(args, "offline_only", False)),
+            expect_key_id=getattr(args, "expect_key_id", None),
+            allow_missing_external_anchor=bool(
+                getattr(args, "allow_missing_external_anchor", False)
+            ),
         )
     except TrustIntegrityError as exc:
         # Attempt partial mode report when possible.

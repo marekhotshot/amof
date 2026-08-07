@@ -1385,38 +1385,45 @@ def _seal_and_finalize_execution(
         why=str(result_payload.get("stop_reason") or receipt.stop_reason or "") or None,
     )
     bundle_dir = evidence_bundle_dir(get_app_paths().data_root, handoff_id)
-    write_canonical_evidence_bundle(
-        bundle_dir,
-        run_id=handoff_id,
-        receipt=bundle_receipt,
-        result=result_payload,
-        provenance=provenance,
-        result_source=result_path,
-    )
-    # Wave 003: sign manifest + evidence digests (hashes remain canonical).
-    # Key creation is an explicit authority action (`amof trust keygen`) — never
-    # auto-created as a side effect of finalization.
-    from ..trust_crypto import (
-        FilesystemKeyProvider,
-        load_trust_policy,
-        sign_evidence_bundle,
-    )
-    from ..trust_crypto.bundle_sign import verify_bundle_signature
-
-    key_provider = FilesystemKeyProvider()
-    policy = load_trust_policy()
-    preferred = str(policy.preferred_key_id or "").strip().lower()
-    if not preferred:
-        raise TrustIntegrityError(
-            "no preferred signing key; run `amof trust keygen` before finalize",
-            code="missing_signing_authority",
+    # Do not leave a durable bundle that claims FINALIZED if signing fails.
+    try:
+        write_canonical_evidence_bundle(
+            bundle_dir,
+            run_id=handoff_id,
+            receipt=bundle_receipt,
+            result=result_payload,
+            provenance=provenance,
+            result_source=result_path,
         )
-    policy.assert_key_usable(preferred)
-    # Prove private key material is present and loadable before claiming FINALIZED.
-    key_provider.get_private_key(preferred)
-    sign_evidence_bundle(bundle_dir, key_provider=key_provider, policy=policy)
-    verify_evidence_consistency(bundle_dir)
-    verify_bundle_signature(bundle_dir, key_provider=key_provider, policy=policy)
+        # Wave 003: sign manifest + evidence digests (hashes remain canonical).
+        # Key creation is an explicit authority action (`amof trust keygen`) — never
+        # auto-created as a side effect of finalization.
+        from ..trust_crypto import (
+            FilesystemKeyProvider,
+            load_trust_policy,
+            sign_evidence_bundle,
+        )
+        from ..trust_crypto.bundle_sign import verify_bundle_signature
+
+        key_provider = FilesystemKeyProvider()
+        policy = load_trust_policy()
+        preferred = str(policy.preferred_key_id or "").strip().lower()
+        if not preferred:
+            raise TrustIntegrityError(
+                "no preferred signing key; run `amof trust keygen` before finalize",
+                code="missing_signing_authority",
+            )
+        policy.assert_key_usable(preferred)
+        # Prove private key material is present and loadable before claiming FINALIZED.
+        key_provider.get_private_key(preferred)
+        sign_evidence_bundle(bundle_dir, key_provider=key_provider, policy=policy)
+        verify_evidence_consistency(bundle_dir)
+        verify_bundle_signature(bundle_dir, key_provider=key_provider, policy=policy)
+    except Exception:
+        import shutil
+
+        shutil.rmtree(bundle_dir, ignore_errors=True)
+        raise
 
     finalized = HandoffExecutionReceipt(
         schema_version=receipt.schema_version,

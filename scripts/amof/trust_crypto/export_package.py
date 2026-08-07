@@ -181,10 +181,23 @@ def export_trust_package(
             },
             "semantics": {
                 "integrity": "content digests / closed artifact set",
-                "authenticity": "Ed25519 signature over digests",
-                "trust_at_finalization": "immutable trust_snapshot.json",
-                "trust_now": "optional current policy evaluation (not in package)",
-                "transparency": "external_anchor append-only binding (if present)",
+                "authenticity": (
+                    "Ed25519 signature over digests vs embedded public key "
+                    "(not verifier authorization unless expect_key_id used)"
+                ),
+                "trust_at_export_packaging": (
+                    "trust_snapshot.json captured at export under producer policy "
+                    "(wire kind may still say TRUST_AT_FINALIZATION)"
+                ),
+                "trust_now": "optional current policy evaluation (does not fail OVERALL)",
+                "package_merkle_receipt": (
+                    "external_anchor.json is a package-embedded Merkle receipt; "
+                    "checkpoint public key is embedded; not a public transparency log"
+                ),
+                "producer_seal_path": (
+                    "receipt may still contain absolute evidence_seal_path; "
+                    "verify-export ignores missing producer seal directories"
+                ),
             },
             "no_private_keys": True,
             "runtime_local_paths_required": False,

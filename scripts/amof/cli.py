@@ -716,6 +716,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip TRUST_NOW evaluation against the local mutable trust-policy",
     )
+    trust_verify_export.add_argument(
+        "--expect-key-id",
+        help=(
+            "Verifier trust root: require exported public_key_id to equal this value "
+            "(fail closed). Without this flag, OVERALL is package self-consistency only."
+        ),
+    )
+    trust_verify_export.add_argument(
+        "--allow-missing-external-anchor",
+        action="store_true",
+        help=(
+            "Permit OVERALL PASS when external_anchor.json is absent. "
+            "Unsigned verification_metadata cannot relax this by itself."
+        ),
+    )
     trust_tlog_init = trust_sub.add_parser(
         "tlog-init",
         help="Explicitly create local transparency-log checkpoint signing authority",
