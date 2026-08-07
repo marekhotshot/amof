@@ -50,6 +50,7 @@ NO_ECOSYSTEM_COMMANDS = {
     "promote-main",
     "promote-main-revert",
     "handoff",
+    "trust",
 }
 
 
@@ -221,6 +222,7 @@ cmd_ticket_env_upsert = _lazy_command("ticket", "cmd_ticket_env_upsert")
 cmd_promote_main = _lazy_command("promote_main", "cmd_promote_main")
 cmd_promote_main_revert = _lazy_command("promote_main", "cmd_promote_main_revert")
 cmd_handoff = _lazy_command("handoff", "cmd_handoff")
+cmd_trust = _lazy_command("trust_cmd", "cmd_trust")
 
 
 def main() -> None:
@@ -296,6 +298,8 @@ def main() -> None:
             sys.exit(cmd_shell(args))
         if args.command == "handoff":
             sys.exit(cmd_handoff(args))
+        if args.command == "trust":
+            sys.exit(cmd_trust(args))
         if args.command == "preview":
             from amof.commands.preview import cmd_preview
 

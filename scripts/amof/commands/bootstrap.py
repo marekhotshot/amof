@@ -13,6 +13,12 @@ import sys
 from typing import Any
 
 from ..app_paths import ensure_parent_dir, evidence_dir
+from ..trust_layer import (
+    TrustIntegrityError,
+    load_verified_bootstrap_summary,
+    verify_bootstrap_bundle,
+    verify_bootstrap_sha256_manifest,
+)
 from .doctor import topology_report
 
 
@@ -616,10 +622,66 @@ def _write_json(path: Path, payload: dict[str, Any]) -> Path:
     return target
 
 
+def cmd_bootstrap_verify(args: Any) -> int:
+    """Verify-on-consume for an existing bootstrap evidence bundle or manifest."""
+    try:
+        manifest_arg = str(getattr(args, "manifest", "") or "").strip()
+        bundle_arg = str(getattr(args, "bundle_dir", "") or getattr(args, "output_dir", "") or "").strip()
+        summary_arg = str(getattr(args, "summary", "") or "").strip()
+        if summary_arg:
+            summary = load_verified_bootstrap_summary(summary_arg)
+            payload = {
+                "ok": True,
+                "verified": "summary",
+                "summary_path": str(Path(summary_arg).expanduser().resolve(strict=False)),
+                "bootstrap_status": summary.get("bootstrap_status"),
+                "ready_for_up11": summary.get("ready_for_up11"),
+            }
+        elif manifest_arg:
+            manifest = verify_bootstrap_sha256_manifest(manifest_arg)
+            payload = {
+                "ok": True,
+                "verified": "manifest",
+                "manifest_path": str(Path(manifest_arg).expanduser().resolve(strict=False)),
+                "artifact_count": manifest.get("artifact_count"),
+            }
+        elif bundle_arg:
+            manifest = verify_bootstrap_bundle(bundle_arg)
+            payload = {
+                "ok": True,
+                "verified": "bundle",
+                "bundle_directory": str(Path(bundle_arg).expanduser().resolve(strict=False)),
+                "artifact_count": manifest.get("artifact_count"),
+            }
+        else:
+            sys.stderr.write(
+                "Usage: amof bootstrap verify (--bundle-dir DIR | --manifest PATH | --summary PATH)\n"
+            )
+            return 1
+    except TrustIntegrityError as exc:
+        sys.stderr.write(f"[bootstrap] FAIL_CLOSED integrity: {exc}\n")
+        if bool(getattr(args, "json", False)):
+            print(
+                json.dumps(
+                    {"ok": False, "error": str(exc), "code": getattr(exc, "code", "integrity_error")},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        return 1
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"VERIFY_OK {payload['verified']}")
+    return 0
+
+
 def cmd_bootstrap(args: Any) -> int:
     bootstrap_cmd = str(getattr(args, "bootstrap_cmd", "") or "").strip()
+    if bootstrap_cmd == "verify":
+        return cmd_bootstrap_verify(args)
     if bootstrap_cmd not in {"contract", "bundle"}:
-        sys.stderr.write("Usage: amof bootstrap <contract|bundle> [options]\n")
+        sys.stderr.write("Usage: amof bootstrap <contract|bundle|verify> [options]\n")
         return 1
     report = topology_report()
     context_name = str(report.get("contexts", {}).get("current", {}).get("current_context") or "local")
@@ -719,6 +781,14 @@ def cmd_bootstrap(args: Any) -> int:
     )
     _write_json(sha256_manifest_path, sha256_manifest_payload)
 
+    # Immediate consume path: refuse to emit readiness from an unverified bundle.
+    try:
+        verify_bootstrap_sha256_manifest(sha256_manifest_path)
+        load_verified_bootstrap_summary(summary_path)
+    except TrustIntegrityError as exc:
+        sys.stderr.write(f"[bootstrap] FAIL_CLOSED integrity: {exc}\n")
+        return 1
+
     if bool(getattr(args, "json", False)):
         print(json.dumps(summary_payload, indent=2, sort_keys=False))
     else:
@@ -737,4 +807,8 @@ __all__ = [
     "build_summary",
     "build_sha256_manifest",
     "cmd_bootstrap",
+    "cmd_bootstrap_verify",
+    "load_verified_bootstrap_summary",
+    "verify_bootstrap_bundle",
+    "verify_bootstrap_sha256_manifest",
 ]

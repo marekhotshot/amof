@@ -48,10 +48,28 @@ def _execute_args(**overrides: object) -> SimpleNamespace:
     return SimpleNamespace(**payload)
 
 
+def _ensure_explicit_trust_signing_authority(amof_home: Path) -> None:
+    """Test fixture: simulate prior `amof trust keygen` (never auto in production)."""
+    from amof.trust_crypto import (
+        FilesystemKeyProvider,
+        enroll_key,
+        load_trust_policy,
+        write_trust_policy,
+    )
+
+    with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
+        policy = load_trust_policy()
+        if policy.preferred_key_id:
+            return
+        record = FilesystemKeyProvider().generate_keypair()
+        write_trust_policy(enroll_key(policy, record.key_id, preferred=True))
+
+
 def _run_execute(args: SimpleNamespace, amof_home: Path) -> tuple[int, str, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
     with patch.dict(os.environ, {"AMOF_HOME": str(amof_home)}, clear=False):
+        _ensure_explicit_trust_signing_authority(amof_home)
         with redirect_stdout(stdout), redirect_stderr(stderr):
             code = handoff.cmd_handoff_execute_agent(args)
     return code, stdout.getvalue(), stderr.getvalue()

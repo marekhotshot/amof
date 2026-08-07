@@ -614,6 +614,68 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         help="Optional directory for the emitted bootstrap evidence bundle",
     )
+    bootstrap_verify = bootstrap_sub.add_parser(
+        "verify",
+        help="Fail-closed verify-on-consume for a bootstrap sha256 manifest/bundle",
+    )
+    bootstrap_verify.add_argument(
+        "--bundle-dir",
+        "--output-dir",
+        dest="bundle_dir",
+        help="Bootstrap evidence bundle directory containing bootstrap-sha256-manifest.json",
+    )
+    bootstrap_verify.add_argument(
+        "--manifest",
+        help="Path to bootstrap-sha256-manifest.json",
+    )
+    bootstrap_verify.add_argument(
+        "--summary",
+        help="Path to up10-bootstrap-summary.json (verifies linked manifest first)",
+    )
+    bootstrap_verify.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable verification JSON",
+    )
+
+    trust_parser = subparsers.add_parser(
+        "trust",
+        help="Trust Layer evidence provenance verify and local signing keys",
+    )
+    trust_sub = trust_parser.add_subparsers(dest="trust_cmd", required=True)
+    trust_verify = trust_sub.add_parser(
+        "verify",
+        help="Fail-closed verify a finalized run evidence bundle (PASS/FAIL)",
+    )
+    trust_verify.add_argument(
+        "run_id",
+        help="Run id (handoff id) or path to a canonical evidence bundle directory",
+    )
+    trust_verify.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable verification JSON",
+    )
+    trust_keygen = trust_sub.add_parser(
+        "keygen",
+        help="Generate a local Ed25519 operator keypair under AMOF runtime authority",
+    )
+    trust_keygen.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable keygen JSON",
+    )
+    trust_keygen.add_argument(
+        "--preferred",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enroll the new key as preferred signing key (default: true)",
+    )
+    trust_keygen.add_argument(
+        "--require-signatures",
+        action="store_true",
+        help="Update trust-policy to require signatures (disallow unsigned bundles)",
+    )
 
     paths_parser = subparsers.add_parser(
         "paths",
