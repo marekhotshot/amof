@@ -31,6 +31,7 @@ from .export_package import (
     VERIFICATION_METADATA_FILENAME,
 )
 from .interfaces import PublicKeyRecord
+from .path_safety import assert_hermetic_export_package
 from .policy import load_trust_policy
 from .snapshot import evaluate_trust_now, verify_trust_snapshot
 from .transparency import EXTERNAL_ANCHOR_FILENAME, verify_external_anchor
@@ -152,7 +153,13 @@ def verify_export_package(
     }
 
     # Closed export set: required files present; forbid private key materials.
-    actual = {p.name for p in root.iterdir() if p.is_file()}
+    # BL-4: hermetic enumeration — reject symlinks/hardlinks/traversal before
+    # any content-based PASS (Path.is_file() follows symlinks and is unsafe here).
+    try:
+        actual = assert_hermetic_export_package(root)
+    except TrustIntegrityError as exc:
+        modes["LOCAL_INTEGRITY"] = _status(False, reason=str(exc), code=exc.code)
+        raise
     for name in ("private.raw", "private_key", "private_key.raw"):
         if name in actual:
             raise TrustIntegrityError(
