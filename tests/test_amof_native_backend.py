@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import URLError
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_ROOT = ROOT / "scripts"
@@ -475,3 +476,327 @@ class AmofNativeProposalContractTests(unittest.TestCase):
             self.assertEqual(len(props), 1)
             self.assertEqual(props[0].get("target_id"), target_id)
             self.assertIn("docs/note.md", props[0].get("allowed_roots") or [])
+
+
+class AmofNativeExecutionBudgetTests(unittest.TestCase):
+    def test_default_budgets(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"AMOF_NATIVE_IAL_TIMEOUT_SECONDS": "", "AMOF_NATIVE_IAL_MAX_TOKENS": ""},
+            clear=False,
+        ):
+            os.environ.pop("AMOF_NATIVE_IAL_TIMEOUT_SECONDS", None)
+            os.environ.pop("AMOF_NATIVE_IAL_MAX_TOKENS", None)
+            self.assertEqual(amof_native.native_ial_timeout_seconds(), 180.0)
+            self.assertEqual(amof_native.native_ial_max_tokens(), 4096)
+
+    def test_fast_call_and_token_cap(self) -> None:
+        remote_body = {
+            "request_id": "req-fast",
+            "text": "IAL_OK",
+            "stop_reason": "stop",
+            "tool_calls": [],
+            "tokens": {"input": 10, "output": 2},
+            "model": "openai/gpt-4o-mini",
+        }
+        captured: dict[str, object] = {}
+
+        class _Resp:
+            def read(self) -> bytes:
+                return json.dumps(remote_body).encode("utf-8")
+
+            def __enter__(self) -> "_Resp":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        def fake_urlopen(request: object, timeout: float = 0) -> _Resp:
+            captured["timeout"] = timeout
+            payload = json.loads(request.data.decode("utf-8"))  # type: ignore[attr-defined]
+            captured["payload"] = payload
+            return _Resp()
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AMOF_REMOTE_IAL_BASE_URL": "http://ial.example:8787",
+                    "AMOF_REMOTE_IAL_API_KEY": "test-key",
+                    "AMOF_REMOTE_IAL_MODEL": "openai/gpt-4o-mini",
+                    "AMOF_NATIVE_IAL_TIMEOUT_SECONDS": "180",
+                    "AMOF_NATIVE_IAL_MAX_TOKENS": "4096",
+                    "AMOF_NATIVE_SCRIPT": "",
+                },
+                clear=False,
+            ),
+            patch.object(amof_native, "urlopen", side_effect=fake_urlopen),
+        ):
+            out = amof_native._chat_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                model="openai/gpt-4o-mini",
+                tools=None,
+            )
+        self.assertEqual(captured["timeout"], 180.0)
+        self.assertEqual((captured["payload"] or {}).get("max_tokens"), 4096)  # type: ignore[union-attr]
+        self.assertEqual(out["choices"][0]["message"]["content"], "IAL_OK")
+
+    def test_long_valid_call_uses_raised_budget(self) -> None:
+        """Simulated call longer than old 90s budget still accepted under 180s config."""
+        with patch.dict(os.environ, {"AMOF_NATIVE_IAL_TIMEOUT_SECONDS": "180"}, clear=False):
+            self.assertGreater(amof_native.native_ial_timeout_seconds(), 90.0)
+            self.assertEqual(amof_native.native_ial_timeout_seconds(), 180.0)
+
+    def test_beyond_budget_returns_canonical_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            (workspace / "docs").mkdir()
+            selection = amof_native.build_selection(
+                runner_id="amof-native-ticket-write",
+                requested_capabilities=["read", "bounded_write"],
+                approve_writable_roots=["docs/"],
+                timeout_seconds=900,
+                readable_root=str(workspace),
+            )
+
+            def boom(*_a: object, **_k: object) -> dict:
+                raise amof_native.AmofNativeTimeoutError(
+                    "model transport timed out after 180s",
+                    timeout_kind="REMOTE_IAL_TOTAL_TIMEOUT",
+                    timeout_seconds=180.0,
+                    model_turn_id="t1",
+                    attempt_id="t1:attempt:1",
+                )
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "AMOF_REMOTE_IAL_BASE_URL": "http://ial.example:8787",
+                        "AMOF_REMOTE_IAL_API_KEY": "k",
+                        "AMOF_REMOTE_IAL_MODEL": "openai/gpt-4o-mini",
+                        "AMOF_NATIVE_SCRIPT": "",
+                    },
+                    clear=False,
+                ),
+                patch.object(amof_native, "_script_path", return_value=None),
+                patch.object(amof_native, "_chat_completion", side_effect=boom),
+                patch.object(amof_native, "_run_dir", return_value=Path(tmp) / "run"),
+            ):
+                (Path(tmp) / "run").mkdir()
+                result = amof_native.run(
+                    manifest={"repos": [{"path": str(workspace)}]},
+                    goal="do work",
+                    request_id="timeout-budget-test",
+                    studio_session_id=None,
+                    selection=selection,
+                )
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(
+                result["stop_reason"], amof_native.STOP_REASON_REMOTE_IAL_TOTAL_TIMEOUT
+            )
+            self.assertNotEqual(result["stop_reason"], "grant_enforcement_failed")
+
+    def test_late_response_for_abandoned_attempt_discarded(self) -> None:
+        abandoned = {"run:turn:1:attempt:1"}
+        remote_body = {
+            "request_id": "late",
+            "text": "should-not-win",
+            "stop_reason": "stop",
+            "tool_calls": [],
+            "tokens": {"input": 1, "output": 1},
+        }
+
+        class _Resp:
+            def read(self) -> bytes:
+                return json.dumps(remote_body).encode("utf-8")
+
+            def __enter__(self) -> "_Resp":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AMOF_REMOTE_IAL_BASE_URL": "http://ial.example:8787",
+                    "AMOF_REMOTE_IAL_API_KEY": "k",
+                    "AMOF_REMOTE_IAL_MODEL": "openai/gpt-4o-mini",
+                },
+                clear=False,
+            ),
+            patch.object(amof_native, "urlopen", return_value=_Resp()),
+        ):
+            with self.assertRaises(amof_native.AmofNativeTimeoutError) as ctx:
+                amof_native._chat_completion(
+                    messages=[{"role": "user", "content": "hi"}],
+                    model="openai/gpt-4o-mini",
+                    tools=None,
+                    model_turn_id="run:turn:1",
+                    attempt_id="run:turn:1:attempt:1",
+                    abandoned_attempts=abandoned,
+                )
+        self.assertIn("abandoned attempt", str(ctx.exception))
+
+    def test_retry_identity_late_attempt1_cannot_satisfy_attempt2(self) -> None:
+        abandoned = {"run:turn:1:attempt:1"}
+        # Attempt 2 is a different identity and may succeed.
+        remote_body = {
+            "request_id": "ok2",
+            "text": "attempt2-ok",
+            "stop_reason": "stop",
+            "tool_calls": [],
+            "tokens": {"input": 1, "output": 1},
+        }
+
+        class _Resp:
+            def read(self) -> bytes:
+                return json.dumps(remote_body).encode("utf-8")
+
+            def __enter__(self) -> "_Resp":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AMOF_REMOTE_IAL_BASE_URL": "http://ial.example:8787",
+                    "AMOF_REMOTE_IAL_API_KEY": "k",
+                    "AMOF_REMOTE_IAL_MODEL": "openai/gpt-4o-mini",
+                },
+                clear=False,
+            ),
+            patch.object(amof_native, "urlopen", return_value=_Resp()),
+        ):
+            out = amof_native._chat_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                model="openai/gpt-4o-mini",
+                tools=None,
+                model_turn_id="run:turn:1",
+                attempt_id="run:turn:1:attempt:2",
+                abandoned_attempts=abandoned,
+            )
+        self.assertEqual(out["choices"][0]["message"]["content"], "attempt2-ok")
+
+    def test_tool_loop_timeout_does_not_duplicate_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            (workspace / "docs").mkdir()
+            target = workspace / "docs" / "out.md"
+            selection = amof_native.build_selection(
+                runner_id="amof-native-ticket-write",
+                requested_capabilities=["read", "bounded_write"],
+                approve_writable_roots=["docs/"],
+                timeout_seconds=900,
+                readable_root=str(workspace),
+            )
+            writes = {"count": 0}
+
+            def chat_side_effect(**kwargs: object) -> dict:
+                # First turn: request a write; second turn: timeout (no auto-retry).
+                if writes["count"] == 0:
+                    return {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "",
+                                    "tool_calls": [
+                                        {
+                                            "id": "call-1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "write_file",
+                                                "arguments": json.dumps(
+                                                    {
+                                                        "path": "docs/out.md",
+                                                        "content": "once\n",
+                                                    }
+                                                ),
+                                            },
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                raise amof_native.AmofNativeTimeoutError(
+                    "follow-up timed out",
+                    timeout_seconds=180.0,
+                    model_turn_id="t2",
+                    attempt_id="t2:attempt:1",
+                )
+
+            real_write = amof_native.NativeAgentTools.write_file
+
+            def counting_write(self: object, path: str, content: str) -> str:
+                writes["count"] += 1
+                return real_write(self, path, content)  # type: ignore[arg-type]
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "AMOF_REMOTE_IAL_BASE_URL": "http://ial.example:8787",
+                        "AMOF_REMOTE_IAL_API_KEY": "k",
+                        "AMOF_REMOTE_IAL_MODEL": "openai/gpt-4o-mini",
+                        "AMOF_NATIVE_SCRIPT": "",
+                    },
+                    clear=False,
+                ),
+                patch.object(amof_native, "_script_path", return_value=None),
+                patch.object(amof_native, "_chat_completion", side_effect=chat_side_effect),
+                patch.object(amof_native.NativeAgentTools, "write_file", counting_write),
+                patch.object(amof_native, "_run_dir", return_value=Path(tmp) / "run"),
+            ):
+                (Path(tmp) / "run").mkdir()
+                result = amof_native.run(
+                    manifest={"repos": [{"path": str(workspace)}]},
+                    goal="write once then infer",
+                    request_id="tool-idempotency-test",
+                    studio_session_id=None,
+                    selection=selection,
+                )
+            self.assertEqual(writes["count"], 1)
+            self.assertEqual(target.read_text(encoding="utf-8"), "once\n")
+            self.assertEqual(
+                result["stop_reason"], amof_native.STOP_REASON_REMOTE_IAL_TOTAL_TIMEOUT
+            )
+
+    def test_urlopen_timeout_maps_to_timeout_error(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AMOF_REMOTE_IAL_BASE_URL": "http://ial.example:8787",
+                    "AMOF_REMOTE_IAL_API_KEY": "k",
+                    "AMOF_REMOTE_IAL_MODEL": "openai/gpt-4o-mini",
+                    "AMOF_NATIVE_IAL_TIMEOUT_SECONDS": "12",
+                },
+                clear=False,
+            ),
+            patch.object(
+                amof_native,
+                "urlopen",
+                side_effect=URLError("timed out"),
+            ),
+        ):
+            abandoned: set[str] = set()
+            with self.assertRaises(amof_native.AmofNativeTimeoutError) as ctx:
+                amof_native._chat_completion(
+                    messages=[{"role": "user", "content": "hi"}],
+                    model="openai/gpt-4o-mini",
+                    tools=None,
+                    model_turn_id="m1",
+                    attempt_id="m1:attempt:1",
+                    abandoned_attempts=abandoned,
+                )
+            self.assertIn("m1:attempt:1", abandoned)
+            self.assertEqual(ctx.exception.timeout_seconds, 12.0)
