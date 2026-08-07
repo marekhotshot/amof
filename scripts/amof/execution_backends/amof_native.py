@@ -658,7 +658,8 @@ def _chat_endpoint_and_headers() -> tuple[str, dict[str, str], str]:
     if _remote_ial_configured():
         base = str(os.environ.get("AMOF_REMOTE_IAL_BASE_URL") or "").strip().rstrip("/")
         key = str(os.environ.get("AMOF_REMOTE_IAL_API_KEY") or "").strip()
-        return f"{base}/v1/chat/completions", {
+        # Remote IAL owns /v1/ial/chat — not OpenAI /v1/chat/completions (404).
+        return f"{base}/v1/ial/chat", {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
         }, TRANSPORT_REMOTE_IAL
@@ -676,21 +677,74 @@ def _chat_endpoint_and_headers() -> tuple[str, dict[str, str], str]:
     }, TRANSPORT_OPENAI
 
 
+def _openai_compatible_from_remote_ial(remote: dict[str, Any], *, model: str) -> dict[str, Any]:
+    """Normalize Remote IAL /v1/ial/chat into an OpenAI-like chat.completion object."""
+    tool_calls = [
+        _shared._remote_ial_tool_to_openai(item, index)
+        for index, item in enumerate(remote.get("tool_calls") or [], start=1)
+        if isinstance(item, dict)
+    ]
+    message: dict[str, Any] = {"role": "assistant", "content": remote.get("text") or ""}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return {
+        "id": str(remote.get("request_id") or "chatcmpl-amof-native"),
+        "object": "chat.completion",
+        "model": str(remote.get("model") or remote.get("upstream_model") or model),
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": _shared._finish_reason(remote.get("stop_reason"), tool_calls),
+            }
+        ],
+        "usage": {
+            "prompt_tokens": int(((remote.get("tokens") or {}) if isinstance(remote.get("tokens"), dict) else {}).get("input") or 0),
+            "completion_tokens": int(((remote.get("tokens") or {}) if isinstance(remote.get("tokens"), dict) else {}).get("output") or 0),
+        },
+    }
+
+
 def _chat_completion(
     *,
     messages: list[dict[str, Any]],
     model: str,
     tools: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    url, headers, _transport = _chat_endpoint_and_headers()
-    payload: dict[str, Any] = {"model": model, "messages": messages, "temperature": 0}
-    if tools:
-        payload["tools"] = tools
+    url, headers, transport = _chat_endpoint_and_headers()
+    if transport == TRANSPORT_REMOTE_IAL:
+        system, remote_messages = _shared._extract_remote_ial_messages(list(messages))
+        payload = {
+            "system": system,
+            "messages": remote_messages,
+            "tools": tools or [],
+            "model": model,
+            "max_tokens": 8192,
+            "temperature": 0.0,
+        }
+    else:
+        payload = {"model": model, "messages": messages, "temperature": 0}
+        if tools:
+            payload["tools"] = tools
     request = Request(url, headers=headers, data=json.dumps(payload).encode("utf-8"), method="POST")
-    with urlopen(request, timeout=90) as response:
-        body = json.loads(response.read().decode("utf-8") or "{}")
+    try:
+        with urlopen(request, timeout=90) as response:
+            body = json.loads(response.read().decode("utf-8") or "{}")
+    except HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            detail = str(exc)
+        raise AmofNativeBackendError(
+            f"model transport HTTP {exc.code} for {url}: {detail or exc.reason}"
+        ) from exc
+    except (OSError, URLError) as exc:
+        raise AmofNativeBackendError(f"model transport request failed for {url}: {exc}") from exc
     if not isinstance(body, dict):
         raise AmofNativeBackendError("chat completion returned non-object response")
+    if transport == TRANSPORT_REMOTE_IAL:
+        return _openai_compatible_from_remote_ial(body, model=model)
     return body
 
 
