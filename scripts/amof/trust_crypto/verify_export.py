@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -31,11 +32,10 @@ from .export_package import (
     VERIFICATION_METADATA_FILENAME,
 )
 from .interfaces import PublicKeyRecord
-from .path_safety import assert_hermetic_export_package
+from .path_safety import materialize_hermetic_export_package
 from .policy import load_trust_policy
 from .snapshot import evaluate_trust_now, verify_trust_snapshot
 from .transparency import EXTERNAL_ANCHOR_FILENAME, verify_external_anchor
-
 
 REQUIRED_EXPORT_FILES = (
     *BUNDLE_CONTENT_FILES,
@@ -140,10 +140,16 @@ def verify_export_package(
     Does not require producer private keys, DB, or git. Does not establish
     signer authorization unless expect_key_id is provided (verifier trust root).
     Producer absolute seal paths are not required (require_producer_seal=False).
+
+    H-1: package members are acquired via hermetic scan + O_NOFOLLOW
+    descriptor-stable reads into a private snapshot before any content verify,
+    so symlink substitution after the hermetic preflight cannot be followed.
     """
-    root = Path(path).resolve()
-    if not root.is_dir():
-        raise TrustIntegrityError(f"export path missing: {root}", code="missing_export")
+    source_root = Path(path).resolve()
+    if not source_root.is_dir():
+        raise TrustIntegrityError(
+            f"export path missing: {source_root}", code="missing_export"
+        )
 
     modes: dict[str, Any] = {
         "LOCAL_INTEGRITY": _status(False, reason="not checked"),
@@ -152,14 +158,37 @@ def verify_export_package(
         "TRUST_NOW": _status(False, reason="not checked"),
     }
 
+    with tempfile.TemporaryDirectory(prefix="amof-trust-verify-") as tmp:
+        snap_root = Path(tmp) / "package"
+        try:
+            actual = materialize_hermetic_export_package(source_root, snap_root)
+        except TrustIntegrityError as exc:
+            modes["LOCAL_INTEGRITY"] = _status(False, reason=str(exc), code=exc.code)
+            raise
+        return _verify_export_package_at(
+            snap_root,
+            source_export_dir=source_root,
+            actual=actual,
+            modes=modes,
+            require_external_anchor=require_external_anchor,
+            evaluate_trust_now_policy=evaluate_trust_now_policy,
+            expect_key_id=expect_key_id,
+            allow_missing_external_anchor=allow_missing_external_anchor,
+        )
+
+
+def _verify_export_package_at(
+    root: Path,
+    *,
+    source_export_dir: Path,
+    actual: set[str],
+    modes: dict[str, Any],
+    require_external_anchor: bool | None,
+    evaluate_trust_now_policy: bool,
+    expect_key_id: str | None,
+    allow_missing_external_anchor: bool,
+) -> dict[str, Any]:
     # Closed export set: required files present; forbid private key materials.
-    # BL-4: hermetic enumeration — reject symlinks/hardlinks/traversal before
-    # any content-based PASS (Path.is_file() follows symlinks and is unsafe here).
-    try:
-        actual = assert_hermetic_export_package(root)
-    except TrustIntegrityError as exc:
-        modes["LOCAL_INTEGRITY"] = _status(False, reason=str(exc), code=exc.code)
-        raise
     for name in ("private.raw", "private_key", "private_key.raw"):
         if name in actual:
             raise TrustIntegrityError(
@@ -366,11 +395,10 @@ def verify_export_package(
         "ok": overall,
         "status": "PASS" if overall else "FAIL",
         "run_id": run_id,
-        "export_dir": str(root),
+        "export_dir": str(source_export_dir),
         "modes": modes,
         "required_ok": required_ok and overall,
     }
-
 
 def format_mode_report(result: dict[str, Any]) -> str:
     lines = []

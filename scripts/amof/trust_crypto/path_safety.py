@@ -234,6 +234,14 @@ def assert_hermetic_export_package(package_root: Path | str) -> set[str]:
     BL-4: package self-containment / hermeticity boundary. Enumeration uses
     ``os.scandir`` + ``lstat`` semantics (``follow_symlinks=False``).
     """
+    names, _inodes = _enumerate_hermetic_export_package(package_root)
+    return names
+
+
+def _enumerate_hermetic_export_package(
+    package_root: Path | str,
+) -> tuple[set[str], dict[str, tuple[int, int]]]:
+    """Hermetic scandir + lstat; return member names and ``(st_dev, st_ino)``."""
     root = Path(package_root)
     # Do not follow a symlink package root via is_dir()/iterdir surprises.
     if root.is_symlink():
@@ -246,6 +254,7 @@ def assert_hermetic_export_package(package_root: Path | str) -> set[str]:
 
     names: set[str] = set()
     seen_inodes: dict[tuple[int, int], str] = {}
+    inode_by_name: dict[str, tuple[int, int]] = {}
     try:
         entries = list(os.scandir(root))
     except OSError as exc:
@@ -273,11 +282,73 @@ def assert_hermetic_export_package(package_root: Path | str) -> set[str]:
                 f"unexpected non-regular package member: {name}",
                 code="unsafe_path",
             )
-        assert_hermetic_package_member(
+        st = assert_hermetic_package_member(
             root,
             member,
             what=name,
             seen_inodes=seen_inodes,
         )
+        inode_by_name[name] = (int(st.st_dev), int(st.st_ino))
         names.add(name)
-    return names
+    return names, inode_by_name
+
+
+def snapshot_hermetic_export_package(package_root: Path | str) -> dict[str, bytes]:
+    """Hermetic scan then nofollow descriptor-stable reads of every member (H-1).
+
+    Closes the TOCTOU gap where a symlink substituted after
+    ``assert_hermetic_export_package`` would otherwise be followed by later
+    ``Path.read_text`` / ``sha256_file`` calls. Each member is re-opened with
+    ``O_NOFOLLOW`` and must retain the same ``(st_dev, st_ino)`` recorded at
+    scan time.
+    """
+    root = Path(package_root)
+    names, inode_by_name = _enumerate_hermetic_export_package(root)
+    out: dict[str, bytes] = {}
+    for name in sorted(names):
+        member = root / name
+        expected = inode_by_name[name]
+        fd = open_nofollow(member)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise TrustIntegrityError(
+                    f"{name} must be a regular file at read time",
+                    code="unsafe_path",
+                )
+            if _HARDLINK_NLINK_DETECTABLE and int(getattr(st, "st_nlink", 1) or 1) > 1:
+                raise TrustIntegrityError(
+                    f"{name} must not be hardlinked (nlink={st.st_nlink}): {member}",
+                    code="unsafe_hardlink",
+                )
+            actual = (int(st.st_dev), int(st.st_ino))
+            if actual != expected:
+                raise TrustIntegrityError(
+                    f"{name} replaced during verify (inode changed)",
+                    code="unsafe_toctou",
+                )
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            out[name] = b"".join(chunks)
+        finally:
+            os.close(fd)
+    return out
+
+
+def materialize_hermetic_export_package(
+    package_root: Path | str,
+    dest_root: Path | str,
+) -> set[str]:
+    """Snapshot hermetic package bytes into ``dest_root`` (private verify copy)."""
+    dest = Path(dest_root)
+    dest.mkdir(parents=True, exist_ok=True)
+    members = snapshot_hermetic_export_package(package_root)
+    for name, data in members.items():
+        assert_safe_package_member_name(name)
+        target = dest / name
+        write_bytes_exclusive(target, data, mode=0o600)
+    return set(members)
