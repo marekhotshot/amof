@@ -9,6 +9,7 @@ from typing import Any
 
 from ..trust_layer import TrustIntegrityError
 from .filesystem_keys import trust_authority_root
+from .path_safety import assert_not_symlink
 
 
 POLICY_SCHEMA = "amof.trust_policy/v1"
@@ -102,6 +103,8 @@ def policy_from_dict(payload: dict[str, Any]) -> TrustPolicy:
 
 def load_trust_policy(path: Path | None = None) -> TrustPolicy:
     policy_path = path if path is not None else default_policy_path()
+    if policy_path.exists() or policy_path.is_symlink():
+        assert_not_symlink(policy_path, what="trust-policy.json")
     if not policy_path.is_file():
         # No policy file: unsigned legacy OK; signatures present still need known keys
         # unless allow_unknown. Default fail-closed for unknown keys.
@@ -121,6 +124,8 @@ def load_trust_policy(path: Path | None = None) -> TrustPolicy:
 def write_trust_policy(policy: TrustPolicy, path: Path | None = None) -> Path:
     policy_path = path if path is not None else default_policy_path()
     policy_path.parent.mkdir(parents=True, exist_ok=True)
+    if policy_path.exists() or policy_path.is_symlink():
+        assert_not_symlink(policy_path, what="trust-policy.json")
     payload = {
         "schema": POLICY_SCHEMA,
         "allowed_key_ids": sorted(policy.allowed_key_ids),
@@ -130,6 +135,8 @@ def write_trust_policy(policy: TrustPolicy, path: Path | None = None) -> Path:
         "allow_unknown_keys": policy.allow_unknown_keys,
         "allow_unsigned": policy.allow_unsigned,
     }
+    # Policy updates are intentional authority actions; overwrite in place is allowed
+    # but never via symlink.
     policy_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return policy_path
 

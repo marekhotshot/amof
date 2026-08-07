@@ -21,6 +21,7 @@ from .interfaces import PrivateKeyRecord, PublicKeyRecord, SignatureResult
 
 
 ALGORITHM = "ed25519"
+ED25519_KEY_LEN = 32
 
 
 def public_key_id_from_raw(public_key_raw: bytes) -> str:
@@ -52,7 +53,18 @@ class Ed25519Signer:
                 f"signer algorithm mismatch: {private_key.algorithm}",
                 code="algorithm_mismatch",
             )
-        key = Ed25519PrivateKey.from_private_bytes(private_key.private_key_raw)
+        if len(private_key.private_key_raw) != ED25519_KEY_LEN:
+            raise TrustIntegrityError(
+                f"private key must be exactly {ED25519_KEY_LEN} bytes",
+                code="malformed_key",
+            )
+        try:
+            key = Ed25519PrivateKey.from_private_bytes(private_key.private_key_raw)
+        except Exception as exc:
+            raise TrustIntegrityError(
+                "malformed ed25519 private key",
+                code="malformed_key",
+            ) from exc
         signature = key.sign(payload)
         return SignatureResult(
             algorithm=ALGORITHM,
@@ -77,7 +89,18 @@ class Ed25519Verifier:
                 f"verifier algorithm mismatch: {public_key.algorithm}",
                 code="algorithm_mismatch",
             )
-        key = Ed25519PublicKey.from_public_bytes(public_key.public_key_raw)
+        if len(public_key.public_key_raw) != ED25519_KEY_LEN:
+            raise TrustIntegrityError(
+                f"public key must be exactly {ED25519_KEY_LEN} bytes",
+                code="malformed_key",
+            )
+        try:
+            key = Ed25519PublicKey.from_public_bytes(public_key.public_key_raw)
+        except Exception as exc:
+            raise TrustIntegrityError(
+                "malformed ed25519 public key",
+                code="malformed_key",
+            ) from exc
         try:
             key.verify(signature, payload)
         except InvalidSignature as exc:

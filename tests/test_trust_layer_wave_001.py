@@ -248,6 +248,19 @@ class TrustLayerSealFinalizeTests(unittest.TestCase):
                     self.state_root = root.parent / "state"
 
             with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                # Explicit trust authority — finalize must not auto-keygen.
+                from amof.trust_crypto import (
+                    FilesystemKeyProvider,
+                    enroll_key,
+                    load_trust_policy,
+                    write_trust_policy,
+                )
+
+                provider = FilesystemKeyProvider()
+                generated = provider.generate_keypair()
+                write_trust_policy(
+                    enroll_key(load_trust_policy(), generated.key_id, preferred=True)
+                )
                 with patch.object(handoff_mod, "get_app_paths", return_value=_Paths(data_root)):
                     with patch.object(handoff_mod, "ensure_app_roots", return_value=None):
                         finalized = handoff_mod._seal_and_finalize_execution(
