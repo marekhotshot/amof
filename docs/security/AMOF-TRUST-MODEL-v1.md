@@ -321,9 +321,9 @@ Not RFC 6962 CT wire format. Tree shape rule differs from RFC 6962. Not Sigstore
 | No finalize auto-keygen / no export auto-tlog-keygen | **Guaranteed** | Finalize/export paths + errors |
 | Package self-consistency OVERALL without producer private keys/DB/git/seal dir | **Guaranteed** | `verify_export_package` + recovery tests |
 | Ed25519 authenticity vs **embedded** export public key | **Guaranteed** | `verify_signature_with_exported_key` |
-| Intra-package public-key / trust_anchor equality | **Guaranteed** (self-consistency only) | `LocalPinnedTrustAnchor` |
-| Export-time snapshot consistent with digests/key id | **Guaranteed** (self-consistency) | `verify_trust_snapshot` |
-| Package Merkle inclusion vs **embedded** checkpoint | **Guaranteed** (self-consistency) | `verify_external_anchor` |
+| Intra-package public-key / trust_anchor equality (self-consistency only) | **Guaranteed** | `LocalPinnedTrustAnchor` |
+| Export-time snapshot consistent with digests/key id (self-consistency) | **Guaranteed** | `verify_trust_snapshot` |
+| Package Merkle inclusion vs **embedded** checkpoint (self-consistency) | **Guaranteed** | `verify_external_anchor` |
 | `--expect-key-id` enforcement when provided | **Guaranteed** | `unexpected_key_id` |
 | TRUST_NOW reporting | **Verified** | Non-gating on OVERALL |
 | Unsigned bundle integrity under permissive policy | **Best Effort** | Authenticity absent |
@@ -334,7 +334,8 @@ Not RFC 6962 CT wire format. Tree shape rule differs from RFC 6962. Not Sigstore
 | Sigstore/Fulcio/public Rekor / TSA / HSM / KMS / PQC on baseline | **Out of Scope** | — |
 | Dual-control policy / revocation distribution | **Out of Scope** | — |
 | SLSA level / in-toto layouts / SCITT service | **Out of Scope** | — |
-| Legal non-repudiation / intent correctness | **Out of Scope** / **Non-Claim** | — |
+| Legal non-repudiation | **Out of Scope** | — |
+| Semantic correctness of mission/intent/write-scope | **Non-Claim** | Recorded IDs/hashes only |
 
 ---
 
