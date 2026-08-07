@@ -777,8 +777,10 @@ def verify_evidence_consistency(
     When check_signature=False, skip Wave 003 signature verify (used while writing
     the unsigned canonical files before sign_evidence_bundle).
 
-    When require_producer_seal=False, a missing absolute evidence_seal_path does not
-    fail (portable export packages). Bundle content digests remain authoritative.
+    When require_producer_seal=False (export / offline LOCAL_INTEGRITY), never open,
+    stat, or verify absolute evidence_seal_path — even if that path exists on the
+    verifier host. Integrity is package-bytes-only; producer filesystem seals and
+    absolute seal locations must not affect PASS/FAIL.
     """
     root = Path(bundle_dir)
     manifest = verify_evidence_bundle(root, allowed_extra_files=allowed_extra_files)
@@ -901,11 +903,12 @@ def verify_evidence_consistency(
         )
 
     # Optional seal binding: Wave-001 seal via absolute evidence_seal_path on receipt.
-    # Portable exports may omit the producer seal directory; callers set
-    # require_producer_seal=False so LOCAL_INTEGRITY uses in-bundle digests only.
+    # Export / offline verify (require_producer_seal=False) must never consult the
+    # producer host path — existence of that absolute path on the verifier must not
+    # change LOCAL_INTEGRITY. In-bundle digests remain the sole authority.
     receipt_evidence = receipt.get("evidence") if isinstance(receipt.get("evidence"), dict) else {}
     seal_path = str(receipt_evidence.get("evidence_seal_path") or "").strip()
-    if seal_path:
+    if seal_path and require_producer_seal:
         seal_receipt_path = Path(seal_path)
         seal_available = (
             seal_receipt_path.is_file()
@@ -913,36 +916,33 @@ def verify_evidence_consistency(
             or (seal_receipt_path.name == "receipt.json" and seal_receipt_path.parent.is_dir())
         )
         if not seal_available:
-            if require_producer_seal:
-                raise TrustIntegrityError(
-                    f"missing seal receipt: {seal_path}",
-                    code="missing_seal",
-                )
-            # Portable path: absolute producer seal not present; skip seal verify.
+            raise TrustIntegrityError(
+                f"missing seal receipt: {seal_path}",
+                code="missing_seal",
+            )
+        if seal_receipt_path.name == "receipt.json":
+            verify_evidence_seal(seal_receipt_path.parent)
+        elif seal_receipt_path.is_dir():
+            verify_evidence_seal(seal_receipt_path)
         else:
-            if seal_receipt_path.name == "receipt.json":
-                verify_evidence_seal(seal_receipt_path.parent)
-            elif seal_receipt_path.is_dir():
-                verify_evidence_seal(seal_receipt_path)
-            else:
-                raise TrustIntegrityError(
-                    f"seal path not verifiable: {seal_path}",
-                    code="invalid_seal",
-                )
-            seal_meta = evidence.get("seal") if isinstance(evidence.get("seal"), dict) else {}
-            sealed = _read_json_object(
-                seal_receipt_path
-                if seal_receipt_path.is_file()
-                else seal_receipt_path / "receipt.json",
+            raise TrustIntegrityError(
+                f"seal path not verifiable: {seal_path}",
                 code="invalid_seal",
             )
-            if seal_meta.get("seal_receipt_id") and str(seal_meta.get("seal_receipt_id")) != str(
-                sealed.get("receipt_id") or ""
-            ):
-                raise TrustIntegrityError(
-                    "seal receipt id mismatch between provenance and seal",
-                    code="seal_mismatch",
-                )
+        seal_meta = evidence.get("seal") if isinstance(evidence.get("seal"), dict) else {}
+        sealed = _read_json_object(
+            seal_receipt_path
+            if seal_receipt_path.is_file()
+            else seal_receipt_path / "receipt.json",
+            code="invalid_seal",
+        )
+        if seal_meta.get("seal_receipt_id") and str(seal_meta.get("seal_receipt_id")) != str(
+            sealed.get("receipt_id") or ""
+        ):
+            raise TrustIntegrityError(
+                "seal receipt id mismatch between provenance and seal",
+                code="seal_mismatch",
+            )
 
     # Wave 003: cryptographic signature over manifest + evidence digests.
     signature_result: dict[str, Any] | None = None
