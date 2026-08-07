@@ -372,3 +372,25 @@ class AmofNativeRunnerRegistryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AmofNativeRemoteIalTransportTests(unittest.TestCase):
+    def test_remote_ial_uses_ial_chat_endpoint(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AMOF_REMOTE_IAL_BASE_URL": "http://ial.example:8787",
+                    "AMOF_REMOTE_IAL_API_KEY": "test-key",
+                    "AMOF_REMOTE_IAL_MODEL": "openai/gpt-4o-mini",
+                    "AMOF_NATIVE_SCRIPT": "",
+                },
+                clear=False,
+            ),
+            patch.object(amof_native, "_script_path", return_value=None),
+        ):
+            url, headers, transport = amof_native._chat_endpoint_and_headers()
+        self.assertEqual(transport, amof_native.TRANSPORT_REMOTE_IAL)
+        self.assertTrue(url.endswith("/v1/ial/chat"))
+        self.assertNotIn("/v1/chat/completions", url)
+        self.assertIn("Authorization", headers)
