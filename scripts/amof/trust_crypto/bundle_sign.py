@@ -14,15 +14,18 @@ from ..trust_layer import (
     utc_now,
     write_json_exclusive,
 )
-from .ed25519_provider import ALGORITHM, signer_for_algorithm, verifier_for_algorithm
 from .filesystem_keys import FilesystemKeyProvider
 from .interfaces import KeyProvider, PrivateKeyRecord
 from .policy import TrustPolicy, load_trust_policy
+from .registry import assert_supported_signing_algorithm, signer_for_algorithm, verifier_for_algorithm
 
 
 SIGNATURE_SCHEMA = "amof.bundle_signature/v1"
 SIGNATURE_FILENAME = "signature.json"
 SIGNATURE_VERSION = 1
+
+# Backward-compatible alias (Wave 003 tests / imports).
+ALGORITHM = "ed25519"
 
 
 def canonical_signed_payload(
@@ -107,6 +110,7 @@ def sign_evidence_bundle(
         "version": SIGNATURE_VERSION,
         "algorithm": signed.algorithm,
         "public_key_id": signed.public_key_id,
+        "public_key_fingerprint": signed.public_key_id,
         "signature": base64.b64encode(signed.signature).decode("ascii"),
         "manifest_digest": manifest_digest,
         "evidence_digest": evidence_digest,
@@ -151,18 +155,16 @@ def verify_bundle_signature(
             code="invalid_signature",
         )
 
-    algorithm = str(signature_obj.get("algorithm") or "").strip().lower()
+    algorithm = assert_supported_signing_algorithm(
+        str(signature_obj.get("algorithm") or "")
+    )
     key_id = str(signature_obj.get("public_key_id") or "").strip().lower()
+    fingerprint = str(signature_obj.get("public_key_fingerprint") or "").strip().lower()
     manifest_digest = str(signature_obj.get("manifest_digest") or "").strip().lower()
     evidence_digest = str(signature_obj.get("evidence_digest") or "").strip().lower()
     version = int(signature_obj.get("version") or 0)
     sig_b64 = str(signature_obj.get("signature") or "").strip()
 
-    if algorithm != ALGORITHM:
-        raise TrustIntegrityError(
-            f"unsupported signature algorithm: {algorithm}",
-            code="unsupported_algorithm",
-        )
     if version != SIGNATURE_VERSION:
         raise TrustIntegrityError(
             f"unsupported signature version: {version}",
@@ -170,9 +172,20 @@ def verify_bundle_signature(
         )
     if not sig_b64:
         raise TrustIntegrityError("signature missing", code="invalid_signature")
+    # Backward compatible: Wave 003 signatures omit public_key_fingerprint.
+    if fingerprint and fingerprint != key_id:
+        raise TrustIntegrityError(
+            "public_key_fingerprint does not match public_key_id",
+            code="key_id_mismatch",
+        )
 
     trust_policy.assert_key_usable(key_id)
     public_key = provider.get_public_key(key_id)
+    if public_key.algorithm != algorithm:
+        raise TrustIntegrityError(
+            f"algorithm/key mismatch: signature={algorithm} key={public_key.algorithm}",
+            code="algorithm_mismatch",
+        )
 
     actual_manifest = sha256_file(root / BUNDLE_MANIFEST_FILE)
     actual_evidence = sha256_file(root / "evidence.json")

@@ -82,11 +82,19 @@ def build_local_pinned_trust_anchor(
     *,
     public_key_id: str,
     public_key_raw: bytes,
+    algorithm: str | None = None,
 ) -> dict[str, Any]:
+    from .algorithms import infer_algorithm_from_public_key_len, normalize_algorithm
+
+    alg = (
+        normalize_algorithm(algorithm)
+        if algorithm
+        else infer_algorithm_from_public_key_len(len(public_key_raw))
+    )
     return {
         "schema": "amof.local_pinned_trust_anchor/v1",
         "anchor_kind": "local_pinned",
-        "algorithm": ALGORITHM,
+        "algorithm": alg,
         "public_key_id": public_key_id.strip().lower(),
         "public_key_fingerprint": hashlib.sha256(public_key_raw).hexdigest(),
         "public_key_raw_b64": base64.b64encode(public_key_raw).decode("ascii"),

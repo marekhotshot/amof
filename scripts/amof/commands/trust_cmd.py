@@ -176,10 +176,15 @@ def cmd_trust_tlog_init(args: Any) -> int:
 
 
 def cmd_trust_keygen(args: Any) -> int:
-    """Generate a local Ed25519 operator keypair and enroll it in trust-policy."""
+    """Generate a local operator keypair (Ed25519 or ML-DSA) and enroll it."""
     try:
+        from ..trust_crypto.algorithms import algorithm_class, normalize_algorithm
+
+        algorithm = normalize_algorithm(
+            str(getattr(args, "algorithm", None) or "ed25519")
+        )
         provider = FilesystemKeyProvider()
-        record = provider.generate_keypair()
+        record = provider.generate_keypair(algorithm=algorithm)
         policy = load_trust_policy()
         preferred = bool(getattr(args, "preferred", True))
         policy = enroll_key(policy, record.key_id, preferred=preferred)
@@ -202,6 +207,7 @@ def cmd_trust_keygen(args: Any) -> int:
     payload = {
         "ok": True,
         "algorithm": record.algorithm,
+        "algorithm_class": algorithm_class(record.algorithm),
         "public_key_id": record.key_id,
         "policy_path": str(path),
         "preferred_key_id": policy.preferred_key_id,

@@ -110,19 +110,5 @@ class Ed25519Verifier:
             ) from exc
 
 
-def signer_for_algorithm(algorithm: str) -> Ed25519Signer:
-    if algorithm != ALGORITHM:
-        raise TrustIntegrityError(
-            f"unsupported signature algorithm: {algorithm}",
-            code="unsupported_algorithm",
-        )
-    return Ed25519Signer()
-
-
-def verifier_for_algorithm(algorithm: str) -> Ed25519Verifier:
-    if algorithm != ALGORITHM:
-        raise TrustIntegrityError(
-            f"unsupported signature algorithm: {algorithm}",
-            code="unsupported_algorithm",
-        )
-    return Ed25519Verifier()
+# Dispatch lives in registry.py (algorithm-neutral). Kept names are not re-exported
+# here to avoid circular imports with the ML-DSA provider.

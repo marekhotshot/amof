@@ -239,7 +239,7 @@ class TrustAdversarialTests(unittest.TestCase):
 
     def test_keygen_collision_overwrite_refused(self) -> None:
         with patch(
-            "amof.trust_crypto.filesystem_keys.generate_ed25519_keypair",
+            "amof.trust_crypto.filesystem_keys.generate_keypair_for_algorithm",
             return_value=self.key,
         ):
             with self.assertRaises(TrustIntegrityError) as ctx:
@@ -440,12 +440,17 @@ class TrustAdversarialTests(unittest.TestCase):
             self._sign(bundle)
             obj = json.loads(path.read_text(encoding="utf-8"))
             obj["public_key_id"] = "f" * 64
+            # Wave 005 signatures include public_key_fingerprint; mismatch fails closed
+            # before unknown_key when fingerprint is left pointing at the real key.
             path.write_text(json.dumps(obj) + "\n", encoding="utf-8")
             with self.assertRaises(TrustIntegrityError) as ctx4:
                 verify_bundle_signature(
                     bundle, key_provider=self.provider, policy=self.policy
                 )
-            self.assertIn(ctx4.exception.code, {"unknown_key", "missing_key"})
+            self.assertIn(
+                ctx4.exception.code,
+                {"unknown_key", "missing_key", "key_id_mismatch"},
+            )
 
             path.unlink()
             self._sign(bundle)

@@ -18,12 +18,11 @@ from ..trust_layer import (
 )
 from .anchors import LocalPinnedTrustAnchor, canonical_json_digest, load_json_object
 from .bundle_sign import (
-    ALGORITHM,
     SIGNATURE_SCHEMA,
     SIGNATURE_VERSION,
     canonical_signed_payload,
-    verifier_for_algorithm,
 )
+from .registry import assert_supported_signing_algorithm, verifier_for_algorithm
 from .export_package import (
     PUBLIC_KEY_FILENAME,
     TRUST_ANCHOR_FILENAME,
@@ -76,14 +75,28 @@ def verify_signature_with_exported_key(
     signature_obj = load_json_object(sig_path, code="invalid_signature")
     if signature_obj.get("schema") != SIGNATURE_SCHEMA:
         raise TrustIntegrityError("unexpected signature schema", code="invalid_signature")
-    algorithm = str(signature_obj.get("algorithm") or "").strip().lower()
+    try:
+        algorithm = assert_supported_signing_algorithm(
+            str(signature_obj.get("algorithm") or "")
+        )
+    except TrustIntegrityError as exc:
+        raise TrustIntegrityError(
+            "unsupported or incomplete signature",
+            code="invalid_signature",
+        ) from exc
     key_id = str(signature_obj.get("public_key_id") or "").strip().lower()
+    fingerprint = str(signature_obj.get("public_key_fingerprint") or "").strip().lower()
     manifest_digest = str(signature_obj.get("manifest_digest") or "").strip().lower()
     evidence_digest = str(signature_obj.get("evidence_digest") or "").strip().lower()
     version = int(signature_obj.get("version") or 0)
     sig_b64 = str(signature_obj.get("signature") or "").strip()
-    if algorithm != ALGORITHM or version != SIGNATURE_VERSION or not sig_b64:
+    if version != SIGNATURE_VERSION or not sig_b64:
         raise TrustIntegrityError("unsupported or incomplete signature", code="invalid_signature")
+    if fingerprint and fingerprint != key_id:
+        raise TrustIntegrityError(
+            "public_key_fingerprint does not match public_key_id",
+            code="key_id_mismatch",
+        )
     if key_id != public_key_id.strip().lower():
         raise TrustIntegrityError(
             "signature public_key_id does not match exported key",
@@ -120,6 +133,7 @@ def verify_signature_with_exported_key(
     return {
         "ok": True,
         "public_key_id": key_id,
+        "algorithm": algorithm,
         "manifest_digest": manifest_digest,
         "evidence_digest": evidence_digest,
         "signature_digest": sha256_file(sig_path),
@@ -186,6 +200,7 @@ def verify_export_package(
     try:
         pub_doc = load_json_object(root / PUBLIC_KEY_FILENAME, code="invalid_public_key")
         public_key_id = str(pub_doc.get("public_key_id") or "").strip().lower()
+        exported_algorithm = str(pub_doc.get("algorithm") or "").strip().lower()
         try:
             public_key_raw = base64.b64decode(
                 str(pub_doc.get("public_key_raw_b64") or ""), validate=True
@@ -206,6 +221,13 @@ def verify_export_package(
             public_key_raw=public_key_raw,
             public_key_id=public_key_id,
         )
+        if exported_algorithm:
+            exported_norm = assert_supported_signing_algorithm(exported_algorithm)
+            if exported_norm != sig_result.get("algorithm"):
+                raise TrustIntegrityError(
+                    "exported public key algorithm does not match signature algorithm",
+                    code="algorithm_mismatch",
+                )
         snapshot = load_json_object(root / TRUST_SNAPSHOT_FILENAME, code="invalid_trust_snapshot")
         verify_trust_snapshot(
             snapshot,

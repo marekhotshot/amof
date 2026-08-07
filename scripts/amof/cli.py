@@ -658,7 +658,12 @@ def parse_args() -> argparse.Namespace:
     )
     trust_keygen = trust_sub.add_parser(
         "keygen",
-        help="Generate a local Ed25519 operator keypair under AMOF runtime authority",
+        help="Generate a local operator signing keypair under AMOF runtime authority",
+    )
+    trust_keygen.add_argument(
+        "--algorithm",
+        default="ed25519",
+        help="Signing algorithm: ed25519 (CLASSICAL) or ml-dsa / ml-dsa-65 (PQC)",
     )
     trust_keygen.add_argument(
         "--json",

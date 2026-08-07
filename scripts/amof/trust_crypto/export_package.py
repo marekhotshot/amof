@@ -134,6 +134,7 @@ def export_trust_package(
         pin = build_local_pinned_trust_anchor(
             public_key_id=public.key_id,
             public_key_raw=public.public_key_raw,
+            algorithm=public.algorithm,
         )
         write_local_pinned_trust_anchor(export_dir / TRUST_ANCHOR_FILENAME, pin)
 
@@ -181,7 +182,10 @@ def export_trust_package(
             },
             "semantics": {
                 "integrity": "content digests / closed artifact set",
-                "authenticity": "Ed25519 signature over digests",
+                "authenticity": (
+                    f"{public.algorithm} signature over digests"
+                ),
+                "signing_algorithm": public.algorithm,
                 "trust_at_finalization": "immutable trust_snapshot.json",
                 "trust_now": "optional current policy evaluation (not in package)",
                 "transparency": "external_anchor append-only binding (if present)",

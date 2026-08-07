@@ -8,14 +8,18 @@ from pathlib import Path
 
 from ..app_paths import ensure_app_roots, get_app_paths
 from ..trust_layer import TrustIntegrityError
-from .ed25519_provider import (
-    ALGORITHM,
-    ED25519_KEY_LEN,
-    generate_ed25519_keypair,
-    public_key_id_from_raw,
+from .algorithms import (
+    ALGORITHM_ED25519,
+    algorithm_class,
+    infer_algorithm_from_public_key_len,
+    normalize_algorithm,
+    private_key_len,
+    public_key_len,
 )
+from .ed25519_provider import public_key_id_from_raw
 from .interfaces import PrivateKeyRecord, PublicKeyRecord
 from .path_safety import assert_not_symlink, assert_private_mode, write_bytes_exclusive
+from .registry import generate_keypair_for_algorithm
 
 
 def trust_authority_root() -> Path:
@@ -38,10 +42,11 @@ def keys_dir() -> Path:
     return path
 
 
-def _assert_key_material(raw: bytes, *, what: str) -> bytes:
-    if len(raw) != ED25519_KEY_LEN:
+def _assert_key_material(raw: bytes, *, algorithm: str, what: str, private: bool) -> bytes:
+    expected = private_key_len(algorithm) if private else public_key_len(algorithm)
+    if len(raw) != expected:
         raise TrustIntegrityError(
-            f"{what} must be exactly {ED25519_KEY_LEN} bytes (got {len(raw)})",
+            f"{what} must be exactly {expected} bytes for {algorithm} (got {len(raw)})",
             code="malformed_key",
         )
     return raw
@@ -75,13 +80,24 @@ class FilesystemKeyProvider:
             assert_not_symlink(key_dir, what="key directory")
         return key_dir
 
-    def generate_keypair(self, *, algorithm: str = ALGORITHM) -> PrivateKeyRecord:
-        if algorithm != ALGORITHM:
-            raise TrustIntegrityError(
-                f"unsupported key algorithm: {algorithm}",
-                code="unsupported_algorithm",
-            )
-        record = generate_ed25519_keypair()
+    def _read_meta_algorithm(self, key_dir: Path, *, public_raw: bytes) -> str:
+        meta_path = key_dir / "meta.json"
+        if meta_path.is_file() and not meta_path.is_symlink():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise TrustIntegrityError(
+                    "key meta.json is not valid JSON",
+                    code="malformed_key",
+                ) from exc
+            if isinstance(meta, dict) and meta.get("algorithm"):
+                return normalize_algorithm(str(meta.get("algorithm")))
+        # Legacy Wave 003 keys: infer from public key length.
+        return infer_algorithm_from_public_key_len(len(public_raw))
+
+    def generate_keypair(self, *, algorithm: str = ALGORITHM_ED25519) -> PrivateKeyRecord:
+        alg = normalize_algorithm(algorithm)
+        record = generate_keypair_for_algorithm(alg)
         key_dir = self._key_dir(record.key_id)
         if key_dir.exists():
             raise TrustIntegrityError(
@@ -99,6 +115,7 @@ class FilesystemKeyProvider:
         meta = {
             "key_id": record.key_id,
             "algorithm": record.algorithm,
+            "algorithm_class": algorithm_class(record.algorithm),
             "public_key_sha256": record.key_id,
         }
         write_bytes_exclusive(
@@ -127,8 +144,17 @@ class FilesystemKeyProvider:
             )
         assert_private_mode(priv_path, what="private key")
         assert_private_mode(key_dir, what="key directory")
-        private_raw = _assert_key_material(priv_path.read_bytes(), what="private key")
-        public_raw = _assert_key_material(pub_path.read_bytes(), what="public key")
+        public_raw = pub_path.read_bytes()
+        algorithm = self._read_meta_algorithm(key_dir, public_raw=public_raw)
+        public_raw = _assert_key_material(
+            public_raw, algorithm=algorithm, what="public key", private=False
+        )
+        private_raw = _assert_key_material(
+            priv_path.read_bytes(),
+            algorithm=algorithm,
+            what="private key",
+            private=True,
+        )
         if public_key_id_from_raw(public_raw) != key_id.strip().lower():
             raise TrustIntegrityError(
                 f"public key id mismatch for {key_id}",
@@ -136,7 +162,7 @@ class FilesystemKeyProvider:
             )
         return PrivateKeyRecord(
             key_id=key_id.strip().lower(),
-            algorithm=ALGORITHM,
+            algorithm=algorithm,
             private_key_raw=private_raw,
             public_key_raw=public_raw,
         )
@@ -151,7 +177,11 @@ class FilesystemKeyProvider:
                 f"missing public key: {key_id}",
                 code="missing_key",
             )
-        public_raw = _assert_key_material(pub_path.read_bytes(), what="public key")
+        public_raw = pub_path.read_bytes()
+        algorithm = self._read_meta_algorithm(key_dir, public_raw=public_raw)
+        public_raw = _assert_key_material(
+            public_raw, algorithm=algorithm, what="public key", private=False
+        )
         actual_id = public_key_id_from_raw(public_raw)
         if actual_id != key_id.strip().lower():
             raise TrustIntegrityError(
@@ -160,7 +190,7 @@ class FilesystemKeyProvider:
             )
         return PublicKeyRecord(
             key_id=actual_id,
-            algorithm=ALGORITHM,
+            algorithm=algorithm,
             public_key_raw=public_raw,
         )
 
@@ -180,9 +210,21 @@ class FilesystemKeyProvider:
     def export_public_key_pem_or_raw(self, key_id: str) -> bytes:
         return self.get_public_key(key_id).public_key_raw
 
-    def install_public_key(self, *, key_id: str, public_key_raw: bytes) -> PublicKeyRecord:
+    def install_public_key(
+        self,
+        *,
+        key_id: str,
+        public_key_raw: bytes,
+        algorithm: str | None = None,
+    ) -> PublicKeyRecord:
         """Install a public key only (rotation / verify-old-runs). No overwrite."""
-        public_key_raw = _assert_key_material(public_key_raw, what="public key")
+        if algorithm is None:
+            algorithm = infer_algorithm_from_public_key_len(len(public_key_raw))
+        else:
+            algorithm = normalize_algorithm(algorithm)
+        public_key_raw = _assert_key_material(
+            public_key_raw, algorithm=algorithm, what="public key", private=False
+        )
         actual_id = public_key_id_from_raw(public_key_raw)
         if actual_id != key_id.strip().lower():
             raise TrustIntegrityError(
@@ -206,7 +248,7 @@ class FilesystemKeyProvider:
                 )
             return PublicKeyRecord(
                 key_id=actual_id,
-                algorithm=ALGORITHM,
+                algorithm=algorithm,
                 public_key_raw=public_key_raw,
             )
         write_bytes_exclusive(pub_path, public_key_raw, mode=0o600)
@@ -218,7 +260,8 @@ class FilesystemKeyProvider:
                     json.dumps(
                         {
                             "key_id": actual_id,
-                            "algorithm": ALGORITHM,
+                            "algorithm": algorithm,
+                            "algorithm_class": algorithm_class(algorithm),
                             "public_key_sha256": actual_id,
                             "public_only": True,
                         },
@@ -231,6 +274,6 @@ class FilesystemKeyProvider:
             )
         return PublicKeyRecord(
             key_id=actual_id,
-            algorithm=ALGORITHM,
+            algorithm=algorithm,
             public_key_raw=public_key_raw,
         )
