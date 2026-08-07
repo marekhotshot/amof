@@ -16,7 +16,7 @@ from ..trust_layer import (
     sha256_file,
     verify_evidence_consistency,
 )
-from .anchors import LocalPinnedTrustAnchor, load_json_object
+from .anchors import LocalPinnedTrustAnchor, canonical_json_digest, load_json_object
 from .bundle_sign import (
     ALGORITHM,
     SIGNATURE_SCHEMA,
@@ -242,6 +242,7 @@ def verify_export_package(
     else:
         try:
             receipt = load_json_object(anchor_path, code="invalid_anchor")
+            snapshot_digest = canonical_json_digest(snapshot)
             verify_external_anchor(
                 receipt,
                 run_id=run_id,
@@ -249,6 +250,7 @@ def verify_export_package(
                 evidence_digest=sig_result["evidence_digest"],
                 signature_digest=sig_result["signature_digest"],
                 public_key_id=public_key_id,
+                trust_snapshot_digest=snapshot_digest,
             )
             modes["EXTERNAL_ANCHOR"] = _status(True, anchor_kind=receipt.get("anchor_kind"))
         except TrustIntegrityError as exc:

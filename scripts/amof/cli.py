@@ -716,6 +716,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip TRUST_NOW evaluation against the local mutable trust-policy",
     )
+    trust_tlog_init = trust_sub.add_parser(
+        "tlog-init",
+        help="Explicitly create local transparency-log checkpoint signing authority",
+    )
+    trust_tlog_init.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable tlog-init JSON",
+    )
 
     paths_parser = subparsers.add_parser(
         "paths",

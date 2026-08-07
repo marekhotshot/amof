@@ -17,6 +17,7 @@ from .policy import (
     revoke_key,
     write_trust_policy,
 )
+from .transparency import init_transparency_log
 from .verify_export import format_mode_report, verify_export_package
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "enroll_key",
     "export_trust_package",
     "format_mode_report",
+    "init_transparency_log",
     "load_trust_policy",
     "revoke_key",
     "sign_evidence_bundle",

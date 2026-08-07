@@ -130,6 +130,50 @@ def tlog_root() -> Path:
     return root
 
 
+def init_transparency_log(*, root: Path | None = None) -> dict[str, Any]:
+    """Explicit authority action: create local tlog checkpoint signing identity.
+
+    Must be run via `amof trust tlog-init` before export can emit EXTERNAL_ANCHOR.
+    Never called as a side effect of export/finalize.
+    """
+    log_root = root if root is not None else tlog_root()
+    log_root.mkdir(parents=True, exist_ok=True)
+    os.chmod(log_root, 0o700)
+    assert_not_symlink(log_root, what="tlog root")
+    pub = log_root / "log-public.raw"
+    priv = log_root / "log-private.raw"
+    meta_path = log_root / "log-meta.json"
+    if pub.exists() or priv.exists() or meta_path.exists():
+        raise TrustIntegrityError(
+            "tlog identity already exists; refuse overwrite",
+            code="tlog_exists",
+        )
+    record = generate_ed25519_keypair()
+    write_bytes_exclusive(pub, record.public_key_raw, mode=0o600)
+    write_bytes_exclusive(priv, record.private_key_raw, mode=0o600)
+    meta = {
+        "schema": "amof.local_tlog_meta/v1",
+        "origin": LOG_ORIGIN,
+        "algorithm": ALGORITHM,
+        "log_key_id": record.key_id,
+        "selection_rationale": (
+            "append_only_hashedrekord chosen over public Sigstore/Rekor "
+            "(no Fulcio/PKI) and RFC3161 TSA (network/time authority out of scope)"
+        ),
+    }
+    write_bytes_exclusive(
+        meta_path,
+        (json.dumps(meta, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        mode=0o600,
+    )
+    return {
+        "ok": True,
+        "origin": LOG_ORIGIN,
+        "log_key_id": record.key_id,
+        "tlog_root": str(log_root),
+    }
+
+
 class AppendOnlyTransparencyLog:
     """Local append-only log with Ed25519-signed checkpoints."""
 
@@ -139,9 +183,10 @@ class AppendOnlyTransparencyLog:
         os.chmod(self.root, 0o700)
         self.leaves_path = self.root / "leaves.jsonl"
         self.meta_path = self.root / "log-meta.json"
-        self._ensure_log_identity()
+        self._require_log_identity()
 
-    def _ensure_log_identity(self) -> None:
+    def _require_log_identity(self) -> None:
+        """Fail closed unless an explicit tlog-init has created checkpoint keys."""
         pub = self.root / "log-public.raw"
         priv = self.root / "log-private.raw"
         if pub.is_file() and priv.is_file():
@@ -154,23 +199,9 @@ class AppendOnlyTransparencyLog:
                 "incomplete tlog key material",
                 code="invalid_tlog",
             )
-        record = generate_ed25519_keypair()
-        write_bytes_exclusive(pub, record.public_key_raw, mode=0o600)
-        write_bytes_exclusive(priv, record.private_key_raw, mode=0o600)
-        meta = {
-            "schema": "amof.local_tlog_meta/v1",
-            "origin": LOG_ORIGIN,
-            "algorithm": ALGORITHM,
-            "log_key_id": record.key_id,
-            "selection_rationale": (
-                "append_only_hashedrekord chosen over public Sigstore/Rekor "
-                "(no Fulcio/PKI) and RFC3161 TSA (network/time authority out of scope)"
-            ),
-        }
-        write_bytes_exclusive(
-            self.meta_path,
-            (json.dumps(meta, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-            mode=0o600,
+        raise TrustIntegrityError(
+            "no tlog checkpoint authority; run `amof trust tlog-init` before export",
+            code="missing_tlog_authority",
         )
 
     def _log_keys(self) -> tuple[bytes, bytes, str]:
@@ -198,6 +229,7 @@ class AppendOnlyTransparencyLog:
         evidence_digest: str,
         signature_digest: str,
         public_key_id: str,
+        trust_snapshot_digest: str,
     ) -> dict[str, Any]:
         body = {
             "kind": "hashedrekord",
@@ -207,6 +239,7 @@ class AppendOnlyTransparencyLog:
             "evidence_digest": evidence_digest.strip().lower(),
             "signature_digest": signature_digest.strip().lower(),
             "public_key_id": public_key_id.strip().lower(),
+            "trust_snapshot_digest": trust_snapshot_digest.strip().lower(),
         }
         body_digest = canonical_json_digest(body)
         rows = self._read_leaves()
@@ -304,6 +337,7 @@ def verify_external_anchor(
     evidence_digest: str,
     signature_digest: str,
     public_key_id: str,
+    trust_snapshot_digest: str,
 ) -> dict[str, Any]:
     if receipt.get("schema") != EXTERNAL_ANCHOR_SCHEMA:
         raise TrustIntegrityError(
@@ -326,6 +360,7 @@ def verify_external_anchor(
         "evidence_digest": evidence_digest.strip().lower(),
         "signature_digest": signature_digest.strip().lower(),
         "public_key_id": public_key_id.strip().lower(),
+        "trust_snapshot_digest": trust_snapshot_digest.strip().lower(),
     }
     for key, value in expected.items():
         if body.get(key) != value:

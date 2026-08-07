@@ -20,7 +20,11 @@ from ..trust_layer import (
     verify_evidence_consistency,
     write_json_exclusive,
 )
-from .anchors import build_local_pinned_trust_anchor, write_local_pinned_trust_anchor
+from .anchors import (
+    build_local_pinned_trust_anchor,
+    canonical_json_digest,
+    write_local_pinned_trust_anchor,
+)
 from .filesystem_keys import FilesystemKeyProvider
 from .policy import load_trust_policy
 from .snapshot import build_trust_snapshot, write_trust_snapshot
@@ -148,6 +152,7 @@ def export_trust_package(
                 code="snapshot_untrusted",
             )
         write_trust_snapshot(export_dir / TRUST_SNAPSHOT_FILENAME, snapshot)
+        snapshot_digest = canonical_json_digest(snapshot)
 
         external_anchor = None
         if include_external_anchor:
@@ -158,6 +163,7 @@ def export_trust_package(
                 evidence_digest=evidence_digest,
                 signature_digest=signature_digest,
                 public_key_id=public.key_id,
+                trust_snapshot_digest=snapshot_digest,
             )
             write_external_anchor(export_dir / EXTERNAL_ANCHOR_FILENAME, external_anchor)
 

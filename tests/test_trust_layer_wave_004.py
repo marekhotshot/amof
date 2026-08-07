@@ -22,6 +22,7 @@ from amof.trust_crypto import (
     FilesystemKeyProvider,
     TrustPolicy,
     export_trust_package,
+    init_transparency_log,
     sign_evidence_bundle,
     verify_export_package,
     write_trust_policy,
@@ -156,10 +157,25 @@ class TrustLayerWave004Tests(unittest.TestCase):
                 allow_unsigned=False,
             )
         )
+        # Explicit checkpoint authority — never auto-created by export.
+        init_transparency_log()
 
     def tearDown(self) -> None:
         self._env.stop()
         self._home_td.cleanup()
+
+    def test_export_without_tlog_init_fails_closed(self) -> None:
+        # Remove explicit tlog authority created in setUp.
+        shutil.rmtree(self.home / "config" / "trust" / "tlog")
+        with tempfile.TemporaryDirectory() as tmp:
+            _sample_signed_bundle(Path(tmp), self.home, run_id="run-no-tlog")
+            with self.assertRaises(TrustIntegrityError) as ctx:
+                export_trust_package(
+                    "run-no-tlog",
+                    output_dir=Path(tmp) / "ex",
+                    data_root=self.home / "share",
+                )
+            self.assertEqual(ctx.exception.code, "missing_tlog_authority")
 
     def test_export_and_offline_verify_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -13,6 +13,7 @@ from ..trust_crypto import (
     enroll_key,
     export_trust_package,
     format_mode_report,
+    init_transparency_log,
     load_trust_policy,
     verify_export_package,
     write_trust_policy,
@@ -160,6 +161,20 @@ def cmd_trust_verify_export(args: Any) -> int:
     return 0 if result.get("ok") else 1
 
 
+def cmd_trust_tlog_init(args: Any) -> int:
+    """Explicitly create local transparency-log checkpoint signing authority."""
+    try:
+        result = init_transparency_log()
+    except TrustIntegrityError as exc:
+        sys.stderr.write(f"[trust] FAIL_CLOSED: {exc}\n")
+        return 1
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(f"TLOG_INIT_OK log_key_id={result['log_key_id']}")
+    return 0
+
+
 def cmd_trust_keygen(args: Any) -> int:
     """Generate a local Ed25519 operator keypair and enroll it in trust-policy."""
     try:
@@ -208,7 +223,11 @@ def cmd_trust(args: Any) -> int:
         return cmd_trust_verify_export(args)
     if action == "keygen":
         return cmd_trust_keygen(args)
-    sys.stderr.write("Usage: amof trust <verify|export|verify-export|keygen> ...\n")
+    if action == "tlog-init":
+        return cmd_trust_tlog_init(args)
+    sys.stderr.write(
+        "Usage: amof trust <verify|export|verify-export|keygen|tlog-init> ...\n"
+    )
     return 1
 
 
@@ -218,4 +237,5 @@ __all__ = [
     "cmd_trust_export",
     "cmd_trust_verify_export",
     "cmd_trust_keygen",
+    "cmd_trust_tlog_init",
 ]
