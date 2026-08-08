@@ -434,6 +434,49 @@
         }
       },
       "additionalProperties": true
+    },
+    "warnings": {
+      "type": "array",
+      "description": "Inspectable warning records. UI may claim 'with warnings' only when this array is non-empty.",
+      "items": {
+        "type": "object",
+        "required": ["warning_id", "code", "source", "text", "action_required"],
+        "properties": {
+          "warning_id": { "type": "string", "minLength": 1 },
+          "code": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1 },
+          "action_required": { "type": "boolean" },
+          "evidence_ref": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "usage": {
+      "type": ["object", "null"],
+      "description": "Token/call usage when the substrate exposes it. Do not fabricate monetary cost here.",
+      "properties": {
+        "prompt_tokens": { "type": ["integer", "null"] },
+        "completion_tokens": { "type": ["integer", "null"] },
+        "cache_tokens": { "type": ["integer", "null"] },
+        "reasoning_tokens": { "type": ["integer", "null"] },
+        "model_calls": { "type": ["integer", "null"] },
+        "tool_calls": { "type": ["integer", "null"] },
+        "agent_calls": { "type": ["integer", "null"] },
+        "billing_model": {
+          "type": ["string", "null"],
+          "description": "subscription | metered | configured | unavailable"
+        },
+        "token_telemetry": {
+          "type": "string",
+          "enum": ["available", "unavailable"]
+        },
+        "subagent_telemetry": {
+          "type": "string",
+          "enum": ["available", "partial", "unavailable"]
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

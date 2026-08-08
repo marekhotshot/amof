@@ -1472,6 +1472,19 @@ def _result_payload(
             },
         },
         "budget_summary": {"limit": None, "spent": 0.0, "remaining": None},
+        "warnings": [],
+        "usage": {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "cache_tokens": None,
+            "reasoning_tokens": None,
+            "model_calls": None,
+            "tool_calls": None,
+            "agent_calls": None,
+            "billing_model": "metered",
+            "token_telemetry": "available",
+            "subagent_telemetry": "partial",
+        },
     }
 
 
