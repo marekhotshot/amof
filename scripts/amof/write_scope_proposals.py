@@ -99,24 +99,118 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _normalize_repository_relative_scope_path(value: Any) -> str | None:
+# Canonical repository-relative path classes for write-scope / grant authority.
+# Missing/empty and repository-root scope are distinct; never coerce "" → ".".
+PATH_CLASS_FILE_OR_DIRECTORY_RELATIVE = "FILE_OR_DIRECTORY_RELATIVE_PATH"
+PATH_CLASS_EXPLICIT_REPOSITORY_ROOT = "EXPLICIT_REPOSITORY_ROOT_SCOPE"
+PATH_CLASS_MISSING_OR_INVALID = "MISSING_OR_INVALID_PATH"
+
+
+@dataclass(frozen=True)
+class RepositoryRelativePathClassification:
+    path_class: str
+    normalized: str | None
+    detail: str
+    raw: Any
+
+
+def classify_repository_relative_scope_path(
+    value: Any,
+    *,
+    missing: bool = False,
+) -> RepositoryRelativePathClassification:
+    """Classify a candidate repository-relative scope/tool path.
+
+    Distinguishes:
+    - FILE_OR_DIRECTORY_RELATIVE_PATH — normal repo-relative file/dir
+    - EXPLICIT_REPOSITORY_ROOT_SCOPE — intentional root markers (``.``, ``./``)
+    - MISSING_OR_INVALID_PATH — absent, empty, absolute, traversal, wildcards
+
+    Empty string is never treated as repository-root scope.
+    """
+    if missing or value is None:
+        return RepositoryRelativePathClassification(
+            path_class=PATH_CLASS_MISSING_OR_INVALID,
+            normalized=None,
+            detail="missing_path",
+            raw=value,
+        )
     if not isinstance(value, str):
-        return None
+        return RepositoryRelativePathClassification(
+            path_class=PATH_CLASS_MISSING_OR_INVALID,
+            normalized=None,
+            detail="non_string_path",
+            raw=value,
+        )
     path = value.strip()
+    if not path:
+        return RepositoryRelativePathClassification(
+            path_class=PATH_CLASS_MISSING_OR_INVALID,
+            normalized=None,
+            detail="empty_path",
+            raw=value,
+        )
+    # Explicit repository-root markers only — not accidental empties.
+    if path in {".", "./"}:
+        return RepositoryRelativePathClassification(
+            path_class=PATH_CLASS_EXPLICIT_REPOSITORY_ROOT,
+            normalized=None,
+            detail="explicit_repository_root_marker",
+            raw=value,
+        )
     if (
-        not path
-        or "\x00" in path
+        "\x00" in path
         or "\\" in path
         or path.startswith("/")
         or any(char in path for char in "*?{}")
     ):
-        return None
+        detail = "absolute_path" if path.startswith("/") else "invalid_path_characters"
+        return RepositoryRelativePathClassification(
+            path_class=PATH_CLASS_MISSING_OR_INVALID,
+            normalized=None,
+            detail=detail,
+            raw=value,
+        )
     directory_root = path.endswith("/")
     parts = path.rstrip("/").split("/")
-    if any(not part or part in {".", ".."} for part in parts):
-        return None
+    if any(not part for part in parts):
+        return RepositoryRelativePathClassification(
+            path_class=PATH_CLASS_MISSING_OR_INVALID,
+            normalized=None,
+            detail="empty_path_segment",
+            raw=value,
+        )
+    if any(part == ".." for part in parts):
+        return RepositoryRelativePathClassification(
+            path_class=PATH_CLASS_MISSING_OR_INVALID,
+            normalized=None,
+            detail="traversal_segment",
+            raw=value,
+        )
+    if any(part == "." for part in parts):
+        # Embedded "." segments are invalid relative scope, not root scope.
+        return RepositoryRelativePathClassification(
+            path_class=PATH_CLASS_MISSING_OR_INVALID,
+            normalized=None,
+            detail="invalid_dot_segment",
+            raw=value,
+        )
     normalized = "/".join(parts)
-    return f"{normalized}/" if directory_root else normalized
+    if directory_root:
+        normalized = f"{normalized}/"
+    return RepositoryRelativePathClassification(
+        path_class=PATH_CLASS_FILE_OR_DIRECTORY_RELATIVE,
+        normalized=normalized,
+        detail="ok",
+        raw=value,
+    )
+
+
+def _normalize_repository_relative_scope_path(value: Any) -> str | None:
+    classified = classify_repository_relative_scope_path(value)
+    if classified.path_class != PATH_CLASS_FILE_OR_DIRECTORY_RELATIVE:
+        return None
+    return classified.normalized
 
 
 def _contains_hostile_approval_claim(value: Any) -> bool:
@@ -483,6 +577,11 @@ __all__ = [
     "WriteScopeProposalError",
     "build_proposal_record",
     "collect_candidate_bodies",
+    "PATH_CLASS_EXPLICIT_REPOSITORY_ROOT",
+    "PATH_CLASS_FILE_OR_DIRECTORY_RELATIVE",
+    "PATH_CLASS_MISSING_OR_INVALID",
+    "RepositoryRelativePathClassification",
+    "classify_repository_relative_scope_path",
     "compute_body_hash",
     "compute_proposal_id",
     "list_proposals",

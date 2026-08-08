@@ -21,11 +21,18 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from ..app_paths import runs_dir
+from ..write_scope_proposals import (
+    PATH_CLASS_EXPLICIT_REPOSITORY_ROOT,
+    PATH_CLASS_FILE_OR_DIRECTORY_RELATIVE,
+    PATH_CLASS_MISSING_OR_INVALID,
+    RepositoryRelativePathClassification,
+    _normalize_repository_relative_scope_path,
+    classify_repository_relative_scope_path,
+)
 from . import hermes_opensandbox as _shared
 from .hermes_opensandbox import (
     WRITE_SCOPE_PROPOSAL_REQUIRED,
     _manifest_repo_targets,
-    _normalize_repository_relative_scope_path,
 )
 
 BACKEND_TYPE = "amof_native"
@@ -293,23 +300,40 @@ def doctor_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _reject_non_relative_grant(classified: RepositoryRelativePathClassification) -> None:
+    if classified.path_class == PATH_CLASS_FILE_OR_DIRECTORY_RELATIVE:
+        return
+    if classified.path_class == PATH_CLASS_EXPLICIT_REPOSITORY_ROOT:
+        raise AmofNativeBackendError(
+            "writable root rejects EXPLICIT_REPOSITORY_ROOT_SCOPE; "
+            "repository-root write authority is not granted by default "
+            f"(input={classified.raw!r})"
+        )
+    raise AmofNativeBackendError(
+        f"writable root is {PATH_CLASS_MISSING_OR_INVALID} "
+        f"(detail={classified.detail}, input={classified.raw!r})"
+    )
+
+
 def _coerce_relative_grant(
     raw: str,
     *,
     workspace: Path | None,
     repo_roots: list[Path],
 ) -> str:
+    classified = classify_repository_relative_scope_path(raw)
+    if classified.path_class == PATH_CLASS_FILE_OR_DIRECTORY_RELATIVE:
+        assert classified.normalized is not None
+        return classified.normalized
+    if classified.path_class == PATH_CLASS_EXPLICIT_REPOSITORY_ROOT:
+        _reject_non_relative_grant(classified)
+
     text = str(raw or "").strip()
-    if not text:
-        raise AmofNativeBackendError("writable root cannot be empty")
-    normalized = _normalize_repository_relative_scope_path(text)
-    if normalized is not None:
-        return normalized
-    path = Path(text).expanduser()
-    if not path.is_absolute():
-        raise AmofNativeBackendError(
-            f"writable root must be repository-relative or an absolute path under the workspace: {text}"
-        )
+    path = Path(text).expanduser() if text else None
+    # Only absolute inputs may be target-bound translated into relative grants.
+    if path is None or not path.is_absolute():
+        _reject_non_relative_grant(classified)
+
     resolved = path.resolve(strict=False)
     candidates: list[Path] = []
     if workspace is not None:
@@ -317,11 +341,26 @@ def _coerce_relative_grant(
     candidates.extend(repo_roots)
     for root in candidates:
         try:
-            if resolved.is_relative_to(root):
-                rel = resolved.relative_to(root).as_posix()
-                normalized = _normalize_repository_relative_scope_path(rel)
-                if normalized is not None:
-                    return normalized
+            root_resolved = root.resolve(strict=False)
+            if not resolved.is_relative_to(root_resolved):
+                continue
+            if resolved == root_resolved:
+                # relative_to(repo_root) → "." / "" means repository-root scope.
+                _reject_non_relative_grant(
+                    RepositoryRelativePathClassification(
+                        path_class=PATH_CLASS_EXPLICIT_REPOSITORY_ROOT,
+                        normalized=None,
+                        detail="absolute_path_equals_repository_root",
+                        raw=raw,
+                    )
+                )
+            rel = resolved.relative_to(root_resolved).as_posix()
+            rel_classified = classify_repository_relative_scope_path(rel)
+            if rel_classified.path_class == PATH_CLASS_FILE_OR_DIRECTORY_RELATIVE:
+                assert rel_classified.normalized is not None
+                return rel_classified.normalized
+            if rel_classified.path_class == PATH_CLASS_EXPLICIT_REPOSITORY_ROOT:
+                _reject_non_relative_grant(rel_classified)
         except ValueError:
             continue
     raise AmofNativeBackendError(
@@ -481,11 +520,21 @@ class _GrantEnforcer:
                 continue
         raise AmofNativeBackendError(f"path {rel_path!r} is outside workspace repositories")
 
-    def _normalize_relative(self, rel_path: str) -> str:
-        normalized = _normalize_repository_relative_scope_path(str(rel_path or "").strip())
-        if normalized is None:
-            raise AmofNativeBackendError(f"invalid repository-relative path: {rel_path!r}")
-        return normalized.rstrip("/")
+    def _normalize_relative(self, rel_path: str, *, missing: bool = False) -> str:
+        classified = classify_repository_relative_scope_path(rel_path, missing=missing)
+        if classified.path_class == PATH_CLASS_FILE_OR_DIRECTORY_RELATIVE:
+            assert classified.normalized is not None
+            return classified.normalized.rstrip("/")
+        if classified.path_class == PATH_CLASS_EXPLICIT_REPOSITORY_ROOT:
+            raise AmofNativeBackendError(
+                "path rejects EXPLICIT_REPOSITORY_ROOT_SCOPE; "
+                "use an explicit repository-relative file or directory path "
+                f"(input={rel_path!r})"
+            )
+        raise AmofNativeBackendError(
+            f"path is {PATH_CLASS_MISSING_OR_INVALID} "
+            f"(detail={classified.detail}, input={rel_path!r})"
+        )
 
     def resolve_read_path(self, rel_path: str) -> Path:
         rel = self._normalize_relative(rel_path)
@@ -604,17 +653,42 @@ class NativeAgentTools:
         )
         return (completed.stdout or completed.stderr or "").strip()
 
+    def _require_tool_path(self, args: dict[str, Any], *, tool: str) -> str:
+        if "path" not in args:
+            raise AmofNativeBackendError(
+                f"{tool}: path is {PATH_CLASS_MISSING_OR_INVALID} (detail=missing_path)"
+            )
+        raw = args.get("path")
+        classified = classify_repository_relative_scope_path(raw)
+        if classified.path_class == PATH_CLASS_FILE_OR_DIRECTORY_RELATIVE:
+            assert classified.normalized is not None
+            return classified.normalized
+        if classified.path_class == PATH_CLASS_EXPLICIT_REPOSITORY_ROOT:
+            raise AmofNativeBackendError(
+                f"{tool}: path rejects EXPLICIT_REPOSITORY_ROOT_SCOPE; "
+                "refusing to coerce repository-root marker into a broad path "
+                f"(input={raw!r})"
+            )
+        raise AmofNativeBackendError(
+            f"{tool}: path is {PATH_CLASS_MISSING_OR_INVALID} "
+            f"(detail={classified.detail}, input={raw!r})"
+        )
+
     def dispatch_tool(self, name: str, arguments: dict[str, Any]) -> str:
         args = arguments if isinstance(arguments, dict) else {}
         if name == "read_file":
-            return self.read_file(str(args.get("path") or ""))
+            return self.read_file(self._require_tool_path(args, tool=name))
         if name == "list_dir":
-            return "\n".join(self.list_dir(str(args.get("path") or ".")))
+            # Listing repository root is an explicit read convenience, not a write grant.
+            if "path" not in args or args.get("path") in {None, "", ".", "./"}:
+                return "\n".join(self.list_dir("."))
+            return "\n".join(self.list_dir(self._require_tool_path(args, tool=name)))
         if name == "glob":
             return "\n".join(self.glob(str(args.get("pattern") or "*")))
         if name == "write_file":
-            self.write_file(str(args.get("path") or ""), str(args.get("content") or ""))
-            return f"wrote {args.get('path')}"
+            path = self._require_tool_path(args, tool=name)
+            self.write_file(path, str(args.get("content") or ""))
+            return f"wrote {path}"
         if name == "run_shell":
             return self.run_shell(str(args.get("command") or ""))
         if name == "git_status":
@@ -920,7 +994,32 @@ def _run_model_loop(
                     arguments = {}
                 if not isinstance(arguments, dict):
                     arguments = {}
-                output = tools.dispatch_tool(name, arguments)
+                try:
+                    output = tools.dispatch_tool(name, arguments)
+                except AmofNativeBackendError as exc:
+                    # Path/grant tool mistakes must not abort the whole run.
+                    # Return a structured error to the model and continue;
+                    # never coerce missing/empty paths into repository-root scope.
+                    output = f"ERROR: {exc}"
+                    findings.append(output)
+                    _shared._append_event(
+                        event_log_path,
+                        "tool_call",
+                        name=name,
+                        arguments=arguments,
+                        error=str(exc),
+                        output_preview=output[:500],
+                        model_turn_id=model_turn_id,
+                        attempt_id=attempt_id,
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(call.get("id") or ""),
+                            "content": output,
+                        }
+                    )
+                    continue
                 findings.append(output)
                 _shared._append_event(
                     event_log_path,
