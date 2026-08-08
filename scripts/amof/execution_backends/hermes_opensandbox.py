@@ -22,7 +22,11 @@ from urllib.request import Request, urlopen
 
 from ..app_paths import get_app_paths, runs_dir
 from ..commands.studio import attach_run_reference, require_active_studio_session
-from ..write_scope_proposals import persist_write_scope_proposals_from_result
+from ..write_scope_proposals import (
+    _normalize_repository_relative_scope_path,
+    classify_repository_relative_scope_path,
+    persist_write_scope_proposals_from_result,
+)
 
 BACKEND_TYPE = "hermes_opensandbox"
 BACKEND_CONTRACT_VERSION = "hermes-cli-remote-ial-v1"
@@ -894,28 +898,8 @@ def _goal_requests_write_scope_proposal(goal: str) -> bool:
     return "write_scope_proposal" in lowered or "write scope proposal" in lowered
 
 
-def _normalize_repository_relative_scope_path(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    path = value.strip()
-    # Literal "[" and "]" are legitimate path characters (Next.js dynamic
-    # routes such as app/[locale]/page.tsx); scope paths are always consumed
-    # literally (Path resolution / exact-prefix comparison), never globbed,
-    # so only true wildcards remain forbidden.
-    if (
-        not path
-        or "\x00" in path
-        or "\\" in path
-        or path.startswith("/")
-        or any(char in path for char in "*?{}")
-    ):
-        return None
-    directory_root = path.endswith("/")
-    parts = path.rstrip("/").split("/")
-    if any(not part or part in {".", ".."} for part in parts):
-        return None
-    normalized = "/".join(parts)
-    return f"{normalized}/" if directory_root else normalized
+# Path classification/normalization authority lives in write_scope_proposals
+# (classify_repository_relative_scope_path). Re-exported above for backends.
 
 
 def _explicit_required_proposal_paths(goal: str) -> list[str]:

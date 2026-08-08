@@ -88,6 +88,107 @@ class AmofNativeGrantNormalizationTests(unittest.TestCase):
             )
             self.assertEqual(selection.writable_roots_relative, ["docs"])
 
+    def test_root_level_file_grant_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            selection = amof_native.build_selection(
+                runner_id="amof-native-ticket-write",
+                requested_capabilities=["read", "bounded_write"],
+                approve_writable_roots=["README.md"],
+                timeout_seconds=30,
+                readable_root=str(workspace),
+            )
+            self.assertEqual(selection.writable_roots_relative, ["README.md"])
+
+    def test_nested_file_and_directory_grants_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            selection = amof_native.build_selection(
+                runner_id="amof-native-ticket-write",
+                requested_capabilities=["read", "bounded_write"],
+                approve_writable_roots=[
+                    "services/operator-console/src/lib/status-response-bounds.ts",
+                    "docs/",
+                ],
+                timeout_seconds=30,
+                readable_root=str(workspace),
+            )
+            self.assertEqual(
+                selection.writable_roots_relative,
+                [
+                    "services/operator-console/src/lib/status-response-bounds.ts",
+                    "docs/",
+                ],
+            )
+
+    def test_empty_string_grant_rejected_not_coerced_to_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            # Empty entries are filtered before coerce; explicit empty-only list
+            # must not mint a repository-root grant.
+            with self.assertRaises(amof_native.AmofNativeBackendError):
+                amof_native.build_selection(
+                    runner_id="amof-native-ticket-write",
+                    requested_capabilities=["read", "bounded_write"],
+                    approve_writable_roots=["", "  "],
+                    timeout_seconds=30,
+                    readable_root=str(workspace),
+                )
+            with self.assertRaises(amof_native.AmofNativeBackendError) as ctx:
+                amof_native._coerce_relative_grant(
+                    "",
+                    workspace=workspace,
+                    repo_roots=[workspace],
+                )
+            self.assertIn("MISSING_OR_INVALID_PATH", str(ctx.exception))
+            self.assertNotIn("FILE_OR_DIRECTORY", str(ctx.exception))
+
+    def test_dot_grant_rejected_as_explicit_repository_root_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            with self.assertRaises(amof_native.AmofNativeBackendError) as ctx:
+                amof_native.build_selection(
+                    runner_id="amof-native-ticket-write",
+                    requested_capabilities=["read", "bounded_write"],
+                    approve_writable_roots=["."],
+                    timeout_seconds=30,
+                    readable_root=str(workspace),
+                )
+            self.assertIn("EXPLICIT_REPOSITORY_ROOT_SCOPE", str(ctx.exception))
+
+    def test_absolute_repo_root_grant_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            with self.assertRaises(amof_native.AmofNativeBackendError) as ctx:
+                amof_native.build_selection(
+                    runner_id="amof-native-ticket-write",
+                    requested_capabilities=["read", "bounded_write"],
+                    approve_writable_roots=[str(workspace)],
+                    timeout_seconds=30,
+                    readable_root=str(workspace),
+                )
+            self.assertIn("EXPLICIT_REPOSITORY_ROOT_SCOPE", str(ctx.exception))
+
+    def test_absolute_path_outside_workspace_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            outside = Path(tmp) / "outside-file.txt"
+            outside.write_text("x\n", encoding="utf-8")
+            with self.assertRaises(amof_native.AmofNativeBackendError):
+                amof_native.build_selection(
+                    runner_id="amof-native-ticket-write",
+                    requested_capabilities=["read", "bounded_write"],
+                    approve_writable_roots=[str(outside)],
+                    timeout_seconds=30,
+                    readable_root=str(workspace),
+                )
+
     def test_traversal_grant_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
@@ -100,6 +201,137 @@ class AmofNativeGrantNormalizationTests(unittest.TestCase):
                     timeout_seconds=30,
                     readable_root=str(workspace),
                 )
+
+    def test_tool_empty_path_rejected_without_broadening(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            selection = amof_native.build_selection(
+                runner_id="amof-native-ticket-write",
+                requested_capabilities=["read", "bounded_write"],
+                approve_writable_roots=["README.md"],
+                timeout_seconds=30,
+                readable_root=str(workspace),
+            )
+            selection = amof_native._resolve_grants_at_runtime(selection, workspace)
+            enforcer = amof_native._GrantEnforcer(
+                workspace=workspace,
+                repo_roots=[workspace],
+                grant_roots_resolved=[Path(p) for p in selection.writable_roots_resolved],
+                writable=True,
+            )
+            tools = amof_native.NativeAgentTools(enforcer)
+            with self.assertRaises(amof_native.AmofNativeBackendError) as ctx:
+                tools.dispatch_tool("write_file", {"path": "", "content": "x"})
+            self.assertIn("MISSING_OR_INVALID_PATH", str(ctx.exception))
+            with self.assertRaises(amof_native.AmofNativeBackendError) as ctx2:
+                tools.dispatch_tool("write_file", {"content": "x"})
+            self.assertIn("missing_path", str(ctx2.exception))
+            with self.assertRaises(amof_native.AmofNativeBackendError) as ctx3:
+                tools.dispatch_tool("write_file", {"path": ".", "content": "x"})
+            self.assertIn("EXPLICIT_REPOSITORY_ROOT_SCOPE", str(ctx3.exception))
+
+    def test_model_loop_soft_fails_empty_path_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            selection = amof_native.build_selection(
+                runner_id="amof-native-ticket-write",
+                requested_capabilities=["read", "bounded_write"],
+                approve_writable_roots=["README.md"],
+                timeout_seconds=30,
+                readable_root=str(workspace),
+            )
+            selection = amof_native._resolve_grants_at_runtime(selection, workspace)
+            enforcer = amof_native._GrantEnforcer(
+                workspace=workspace,
+                repo_roots=[workspace],
+                grant_roots_resolved=[Path(p) for p in selection.writable_roots_resolved],
+                writable=True,
+            )
+            tools = amof_native.NativeAgentTools(enforcer)
+            event_log = Path(tmp) / "events.jsonl"
+            event_log.write_text("", encoding="utf-8")
+
+            responses = [
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": "call-empty",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "write_file",
+                                            "arguments": json.dumps(
+                                                {"path": "", "content": "bad"}
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": "call-ok",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "write_file",
+                                            "arguments": json.dumps(
+                                                {
+                                                    "path": "README.md",
+                                                    "content": "ok\n",
+                                                }
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "recovered after empty path",
+                            }
+                        }
+                    ]
+                },
+            ]
+
+            def _fake_chat(**_kwargs: object) -> dict:
+                return responses.pop(0)
+
+            with patch.object(amof_native, "_chat_completion", side_effect=_fake_chat):
+                status, stop_reason, findings = amof_native._run_model_loop(
+                    goal="write readme",
+                    tools=tools,
+                    model="test-model",
+                    writable=True,
+                    event_log_path=event_log,
+                    deadline=None,
+                    run_id="soft-fail-empty",
+                )
+            self.assertEqual(status, "completed")
+            self.assertEqual(stop_reason, "completed")
+            self.assertEqual(findings, "recovered after empty path")
+            self.assertEqual((workspace / "README.md").read_text(encoding="utf-8"), "ok\n")
+            events = event_log.read_text(encoding="utf-8")
+            self.assertIn("MISSING_OR_INVALID_PATH", events)
+            self.assertIn('"error":', events)
+            self.assertIn('"name": "write_file"', events)
 
 
 class AmofNativeScriptedRunTests(unittest.TestCase):
