@@ -560,6 +560,13 @@ def _attach_studio_run(
 
 
 def _resolve_roots(values: list[str], *, readable_root: str | None) -> list[Path]:
+    """Resolve approved writable roots against the readable workspace.
+
+    Repository-relative grants (the Autopilot / Job contract) must be joined to
+    ``readable_root`` before absolutizing. Execution Jobs often start with
+    CWD=/, so ``Path(rel).resolve()`` would otherwise escape the workspace and
+    false-fail Cursor/Claude/Hermes bounded-write dispatch.
+    """
     roots: list[Path] = []
     workspace = (
         Path(readable_root).expanduser().resolve(strict=True)
@@ -572,7 +579,15 @@ def _resolve_roots(values: list[str], *, readable_root: str | None) -> list[Path
         text = str(raw or "").strip()
         if not text:
             continue
-        path = Path(text).expanduser().resolve(strict=False)
+        candidate = Path(text).expanduser()
+        if candidate.is_absolute():
+            path = candidate.resolve(strict=False)
+        else:
+            if workspace is None:
+                raise HermesBackendError(
+                    f"relative writable root requires readable workspace: {text}"
+                )
+            path = (workspace / candidate).resolve(strict=False)
         if workspace is not None and not path.is_relative_to(workspace):
             raise HermesBackendError(
                 f"approved writable root is outside the readable workspace: {text}"
