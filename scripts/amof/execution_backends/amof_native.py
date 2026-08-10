@@ -34,6 +34,7 @@ from .hermes_opensandbox import (
     WRITE_SCOPE_PROPOSAL_REQUIRED,
     _manifest_repo_targets,
 )
+from . import runtime_usage as _runtime_usage
 
 BACKEND_TYPE = "amof_native"
 BACKEND_CONTRACT_VERSION = "amof-native-agent-runtime-v1"
@@ -822,6 +823,18 @@ def _openai_compatible_from_remote_ial(remote: dict[str, Any], *, model: str) ->
     message: dict[str, Any] = {"role": "assistant", "content": remote.get("text") or ""}
     if tool_calls:
         message["tool_calls"] = tool_calls
+    prompt_tokens, completion_tokens = _runtime_usage.remote_ial_tokens_from_body(remote)
+    usage: dict[str, Any] = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+    }
+    estimated_cost = _shared._finite_number(remote.get("estimated_cost"))
+    if estimated_cost is not None:
+        usage["estimated_cost"] = estimated_cost
+    if remote.get("cost_status") is not None:
+        usage["cost_status"] = remote.get("cost_status")
+    if remote.get("request_id") is not None:
+        usage["provider_receipt_ref"] = str(remote.get("request_id"))
     return {
         "id": str(remote.get("request_id") or "chatcmpl-amof-native"),
         "object": "chat.completion",
@@ -833,10 +846,7 @@ def _openai_compatible_from_remote_ial(remote: dict[str, Any], *, model: str) ->
                 "finish_reason": _shared._finish_reason(remote.get("stop_reason"), tool_calls),
             }
         ],
-        "usage": {
-            "prompt_tokens": int(((remote.get("tokens") or {}) if isinstance(remote.get("tokens"), dict) else {}).get("input") or 0),
-            "completion_tokens": int(((remote.get("tokens") or {}) if isinstance(remote.get("tokens"), dict) else {}).get("output") or 0),
-        },
+        "usage": usage,
     }
 
 
@@ -928,6 +938,7 @@ def _run_model_loop(
     event_log_path: Path,
     deadline: float | None,
     run_id: str | None = None,
+    usage_acc: dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
     messages: list[dict[str, Any]] = [
         {
@@ -940,6 +951,7 @@ def _run_model_loop(
     findings: list[str] = []
     abandoned_attempts: set[str] = set()
     run_key = _safe_id(run_id or "native-run")
+    acc = usage_acc if usage_acc is not None else _runtime_usage.empty_usage_accumulator()
     for turn_index in range(12):
         if deadline is not None and time.monotonic() >= deadline:
             return "failed", "timeout", "\n".join(findings)
@@ -974,6 +986,43 @@ def _run_model_loop(
                 error=str(exc),
             )
             raise
+        call_usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+        prompt_tokens = _runtime_usage.finite_int(call_usage.get("prompt_tokens"))
+        completion_tokens = _runtime_usage.finite_int(call_usage.get("completion_tokens"))
+        _runtime_usage.add_token_field(acc, "prompt_tokens", prompt_tokens)
+        _runtime_usage.add_token_field(acc, "completion_tokens", completion_tokens)
+        acc["model_calls"] = int(acc.get("model_calls") or 0) + 1
+        actual_model = str(response.get("model") or model)
+        cost = _shared._finite_number(call_usage.get("estimated_cost"))
+        if cost is not None:
+            prior = _shared._finite_number(acc.get("estimated_cost_usd"))
+            acc["estimated_cost_usd"] = (prior or 0.0) + float(cost)
+        if call_usage.get("cost_status") is not None:
+            acc["cost_status"] = call_usage.get("cost_status")
+        call_record = {
+            "model_call_id": model_turn_id,
+            "attempt_id": attempt_id,
+            "requested_model": model,
+            "actual_model": actual_model,
+            "provider": "remote_ial",
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+            "status": "ok",
+            "retry_of": None,
+            "provider_receipt_ref": call_usage.get("provider_receipt_ref"),
+        }
+        acc.setdefault("calls", []).append(call_record)
+        _shared._append_event(
+            event_log_path,
+            "model_call_usage",
+            model_turn_id=model_turn_id,
+            attempt_id=attempt_id,
+            requested_model=model,
+            actual_model=actual_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            provider_receipt_ref=call_usage.get("provider_receipt_ref"),
+        )
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
             raise AmofNativeBackendError("chat completion missing choices")
@@ -1002,6 +1051,7 @@ def _run_model_loop(
                     # never coerce missing/empty paths into repository-root scope.
                     output = f"ERROR: {exc}"
                     findings.append(output)
+                    acc["tool_calls"] = int(acc.get("tool_calls") or 0) + 1
                     _shared._append_event(
                         event_log_path,
                         "tool_call",
@@ -1021,6 +1071,7 @@ def _run_model_loop(
                     )
                     continue
                 findings.append(output)
+                acc["tool_calls"] = int(acc.get("tool_calls") or 0) + 1
                 _shared._append_event(
                     event_log_path,
                     "tool_call",
@@ -1270,6 +1321,7 @@ def run(
     task_findings = ""
     validation_status = "not_run"
     changed: list[str] = []
+    usage_acc = _runtime_usage.empty_usage_accumulator()
 
     while True:
         (run_dir / "request.json").write_text(
@@ -1312,6 +1364,7 @@ def run(
                     event_log_path=event_log_path,
                     deadline=deadline,
                     run_id=request_id,
+                    usage_acc=usage_acc,
                 )
                 exit_code = 0 if status == "completed" else (124 if stop_reason == "timeout" else 1)
         except AmofNativeTimeoutError as exc:
@@ -1453,6 +1506,7 @@ def run(
         transport=transport or "blocked",
         write_scope_proposals=write_scope_proposals,
         proposal_missing_reason=proposal_missing_reason,
+        usage_acc=usage_acc,
     )
     result = _shared._apply_write_scope_enforcement_if_bound(
         result,
@@ -1502,8 +1556,99 @@ def _result_payload(
     task_findings: str | None = None,
     write_scope_proposals: list[dict[str, Any]] | None = None,
     proposal_missing_reason: str | None = None,
+    usage_acc: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     write_scope_proposal = write_scope_proposals[0] if write_scope_proposals else None
+    acc = usage_acc if isinstance(usage_acc, dict) else _runtime_usage.empty_usage_accumulator()
+    prompt_tokens = _runtime_usage.finite_int(acc.get("prompt_tokens"))
+    completion_tokens = _runtime_usage.finite_int(acc.get("completion_tokens"))
+    model_calls = int(acc.get("model_calls") or 0)
+    tool_calls = int(acc.get("tool_calls") or 0)
+    saw_tokens = bool(acc.get("saw_authoritative_tokens"))
+    # Counts from the agent loop are authoritative even when provider tokens are absent.
+    model_calls_out: int | None = model_calls if model_calls > 0 else None
+    tool_calls_out: int | None = tool_calls if tool_calls > 0 else (0 if model_calls > 0 else None)
+    token_telemetry = _runtime_usage.token_telemetry_status(
+        saw_tokens=saw_tokens,
+        model_calls=model_calls_out,
+        partial_dimensions=False,
+    )
+    usage_source = (
+        _runtime_usage.USAGE_SOURCE_PROVIDER
+        if saw_tokens
+        else _runtime_usage.USAGE_SOURCE_UNAVAILABLE
+    )
+    remote_ial_usage = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "chat_calls": model_calls_out,
+        "tool_calls": tool_calls_out,
+        "estimated_cost_usd": acc.get("estimated_cost_usd"),
+        "cost_status": acc.get("cost_status"),
+        "calls": list(acc.get("calls") or []),
+    }
+    total_tokens = (
+        int(prompt_tokens) + int(completion_tokens)
+        if prompt_tokens is not None and completion_tokens is not None
+        else None
+    )
+    runtime_usage = _runtime_usage.build_runtime_usage_v1(
+        run_id=run_id,
+        backend=BACKEND_TYPE,
+        billing_model="metered",
+        telemetry_status=token_telemetry,
+        usage_source=usage_source,
+        aggregates={
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "cache_tokens": None,
+            "reasoning_tokens": None,
+            "total_tokens": total_tokens,
+            "model_calls": model_calls_out,
+            "agent_calls": 1 if model_calls_out else None,
+            "tool_calls": tool_calls_out,
+        },
+        by_model=[
+            {
+                "logical_model": None,
+                "actual_model": effective_model,
+                "provider_or_substrate": effective_provider,
+                "calls": model_calls_out,
+                "input_tokens": prompt_tokens,
+                "output_tokens": completion_tokens,
+                "cached_tokens": None,
+                "reasoning_tokens": None,
+                "total_tokens": total_tokens,
+            }
+        ]
+        if model_calls_out
+        else [],
+        spans=[
+            {
+                "span_id": call.get("model_call_id"),
+                "parent_span_id": None,
+                "agent_id": run_id,
+                "role": "executor",
+                "actual_model": call.get("actual_model"),
+                "duration_ms": None,
+                "usage": {
+                    "input_tokens": call.get("input_tokens"),
+                    "output_tokens": call.get("output_tokens"),
+                },
+                "calls": 1,
+                "status": call.get("status"),
+            }
+            for call in list(acc.get("calls") or [])
+            if isinstance(call, dict)
+        ],
+        receipt_refs=[
+            str(call.get("provider_receipt_ref"))
+            for call in list(acc.get("calls") or [])
+            if isinstance(call, dict) and call.get("provider_receipt_ref")
+        ],
+        raw_usage_refs=["evidence_refs.remote_ial_usage"],
+    )
+    spent = _shared._finite_number(acc.get("estimated_cost_usd")) or 0.0
     return {
         "result_kind": "agent_run_result",
         "contract_version": "agent-run-v1",
@@ -1558,6 +1703,8 @@ def _result_payload(
             "runtime_log_path": str(runtime_log_path),
             "process_identity": health.get("process_identity"),
             "writable_roots_relative": list(selection.writable_roots_relative),
+            "remote_ial_usage": remote_ial_usage,
+            "runtime_usage": runtime_usage,
             "inference": {
                 "requested_provider": effective_provider,
                 "effective_provider": effective_provider
@@ -1570,20 +1717,21 @@ def _result_payload(
                 "direct_provider_fallback": "disabled",
             },
         },
-        "budget_summary": {"limit": None, "spent": 0.0, "remaining": None},
+        "budget_summary": {"limit": None, "spent": spent, "remaining": None},
         "warnings": [],
-        "usage": {
-            "prompt_tokens": None,
-            "completion_tokens": None,
-            "cache_tokens": None,
-            "reasoning_tokens": None,
-            "model_calls": None,
-            "tool_calls": None,
-            "agent_calls": None,
-            "billing_model": "metered",
-            "token_telemetry": "available",
-            "subagent_telemetry": "partial",
-        },
+        "usage": _runtime_usage.build_agent_run_usage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cache_tokens=None,
+            reasoning_tokens=None,
+            total_tokens=total_tokens,
+            model_calls=model_calls_out,
+            tool_calls=tool_calls_out,
+            agent_calls=1 if model_calls_out else None,
+            billing_model="metered",
+            token_telemetry=token_telemetry,
+            subagent_telemetry="partial",
+        ),
     }
 
 
