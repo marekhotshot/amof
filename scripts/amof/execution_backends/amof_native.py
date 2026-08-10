@@ -34,6 +34,7 @@ from .hermes_opensandbox import (
     WRITE_SCOPE_PROPOSAL_REQUIRED,
     _manifest_repo_targets,
 )
+from . import native_loop_budget as _loop_budget
 from . import runtime_usage as _runtime_usage
 
 BACKEND_TYPE = "amof_native"
@@ -929,6 +930,48 @@ def _chat_completion(
     return body
 
 
+def _grant_tree_digest(tools: NativeAgentTools) -> str:
+    """Hash contents under approved grant roots (bounded, deterministic)."""
+    paths_to_content: dict[str, str] = {}
+    for grant in tools.enforcer.grant_roots:
+        try:
+            root = grant.resolve(strict=False)
+        except OSError:
+            continue
+        if root.is_file():
+            try:
+                rel = root.relative_to(tools.repo_root).as_posix()
+            except ValueError:
+                rel = root.name
+            try:
+                paths_to_content[rel] = root.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                paths_to_content[rel] = ""
+            continue
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            # Keep digest cheap: skip bulky/binary-ish paths.
+            if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".lock"}:
+                continue
+            try:
+                if path.stat().st_size > 256_000:
+                    continue
+            except OSError:
+                continue
+            try:
+                rel = path.relative_to(tools.repo_root).as_posix()
+            except ValueError:
+                continue
+            try:
+                paths_to_content[rel] = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                paths_to_content[rel] = ""
+    return _loop_budget.digest_grant_tree(paths_to_content)
+
+
 def _run_model_loop(
     *,
     goal: str,
@@ -939,7 +982,14 @@ def _run_model_loop(
     deadline: float | None,
     run_id: str | None = None,
     usage_acc: dict[str, Any] | None = None,
+    loop_budget_out: dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
+    """Run the Native agent loop under amof.native_loop_budget/v1.
+
+    Base turn limit remains 12. Near exhaustion, a small bounded extension may be
+    granted only on MATERIAL machine-observable progress. Absolute hard ceiling
+    is always enforced. Model self-report never grants extension.
+    """
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -952,10 +1002,28 @@ def _run_model_loop(
     abandoned_attempts: set[str] = set()
     run_key = _safe_id(run_id or "native-run")
     acc = usage_acc if usage_acc is not None else _runtime_usage.empty_usage_accumulator()
-    for turn_index in range(12):
+    budget_state = _loop_budget.LoopBudgetState(policy=_loop_budget.default_policy())
+    absolute = budget_state.policy.absolute_turn_limit
+
+    def _publish_budget(stop: str | None = None) -> None:
+        if stop is not None:
+            budget_state.last_stop_reason = stop
+        if loop_budget_out is not None:
+            loop_budget_out.clear()
+            loop_budget_out.update(budget_state.to_telemetry())
+
+    for turn_index in range(absolute):
+        turn_number = turn_index + 1
         if deadline is not None and time.monotonic() >= deadline:
+            _publish_budget("timeout")
             return "failed", "timeout", "\n".join(findings)
-        model_turn_id = f"{run_key}:turn:{turn_index + 1}"
+        if turn_number > budget_state.effective_turn_limit:
+            # Should be unreachable: extension gate runs before exceeding effective.
+            stop = _loop_budget.STOP_ABSOLUTE_TURN_LIMIT
+            _publish_budget(stop)
+            return "failed", stop, "\n".join(findings)
+
+        model_turn_id = f"{run_key}:turn:{turn_number}"
         # Native does not auto-retry timed-out model calls; attempt is always 1 per turn.
         attempt_id = f"{model_turn_id}:attempt:1"
         _shared._append_event(
@@ -965,6 +1033,12 @@ def _run_model_loop(
             attempt_id=attempt_id,
             timeout_seconds=native_ial_timeout_seconds(),
             max_tokens=native_ial_max_tokens(),
+            loop_budget={
+                "turn": turn_number,
+                "effective_turn_limit": budget_state.effective_turn_limit,
+                "absolute_turn_limit": absolute,
+                "extension_count": budget_state.extension_count,
+            },
         )
         try:
             response = _chat_completion(
@@ -985,6 +1059,7 @@ def _run_model_loop(
                 timeout_seconds=exc.timeout_seconds,
                 error=str(exc),
             )
+            _publish_budget(STOP_REASON_REMOTE_IAL_TOTAL_TIMEOUT)
             raise
         call_usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
         prompt_tokens = _runtime_usage.finite_int(call_usage.get("prompt_tokens"))
@@ -1043,12 +1118,14 @@ def _run_model_loop(
                     arguments = {}
                 if not isinstance(arguments, dict):
                     arguments = {}
+                tool_error: str | None = None
                 try:
                     output = tools.dispatch_tool(name, arguments)
                 except AmofNativeBackendError as exc:
                     # Path/grant tool mistakes must not abort the whole run.
                     # Return a structured error to the model and continue;
                     # never coerce missing/empty paths into repository-root scope.
+                    tool_error = str(exc)
                     output = f"ERROR: {exc}"
                     findings.append(output)
                     acc["tool_calls"] = int(acc.get("tool_calls") or 0) + 1
@@ -1069,6 +1146,14 @@ def _run_model_loop(
                             "content": output,
                         }
                     )
+                    _loop_budget.observe_tool_result(
+                        budget_state.fingerprint,
+                        name=name,
+                        arguments=arguments,
+                        output=output,
+                        error=tool_error,
+                        grant_paths_digest=_grant_tree_digest(tools),
+                    )
                     continue
                 findings.append(output)
                 acc["tool_calls"] = int(acc.get("tool_calls") or 0) + 1
@@ -1088,12 +1173,61 @@ def _run_model_loop(
                         "content": output,
                     }
                 )
+                _loop_budget.observe_tool_result(
+                    budget_state.fingerprint,
+                    name=name,
+                    arguments=arguments,
+                    output=output,
+                    error=None,
+                    grant_paths_digest=_grant_tree_digest(tools),
+                )
+            _loop_budget.note_turn_complete(budget_state, turn_number)
+            # Model still wants another turn. Gate on progress-aware budget.
+            next_turn = turn_number + 1
+            if next_turn > absolute:
+                stop = _loop_budget.STOP_ABSOLUTE_TURN_LIMIT
+                _shared._append_event(
+                    event_log_path,
+                    "loop_budget_absolute_stop",
+                    at_turn=turn_number,
+                    absolute_turn_limit=absolute,
+                )
+                _publish_budget(stop)
+                return "failed", stop, "\n".join(findings)
+            if next_turn > budget_state.effective_turn_limit:
+                decision = _loop_budget.decide_extension(budget_state, at_turn=turn_number)
+                _shared._append_event(
+                    event_log_path,
+                    "loop_budget_extension_decision",
+                    **{
+                        "granted": decision.granted,
+                        "at_turn": decision.at_turn,
+                        "progress_verdict": decision.progress_verdict,
+                        "evidence": list(decision.evidence),
+                        "granted_turns": decision.granted_turns,
+                        "extension_count_after": decision.extension_count_after,
+                        "absolute_limit": decision.absolute_limit,
+                        "reason": decision.reason,
+                        "effective_turn_limit": budget_state.effective_turn_limit,
+                    },
+                )
+                if not decision.granted:
+                    stop = _loop_budget.termination_after_denied_extension(budget_state)
+                    _publish_budget(stop)
+                    return "failed", stop, "\n".join(findings)
             continue
         content = str(message.get("content") or "").strip()
         if content:
             findings.append(content)
+        # Prose-only / final answer: observe that a turn produced no tool evidence.
+        # Self-report text is never treated as progress authority.
+        _loop_budget.note_turn_complete(budget_state, turn_number)
+        _publish_budget("completed")
         return "completed", "completed", content or "\n".join(findings)
-    return "failed", "amof_native_max_turns", "\n".join(findings)
+
+    stop = _loop_budget.STOP_ABSOLUTE_TURN_LIMIT
+    _publish_budget(stop)
+    return "failed", stop, "\n".join(findings)
 
 
 def _changed_paths_outside_grants(
@@ -1322,6 +1456,7 @@ def run(
     validation_status = "not_run"
     changed: list[str] = []
     usage_acc = _runtime_usage.empty_usage_accumulator()
+    loop_budget_telemetry: dict[str, Any] = {}
 
     while True:
         (run_dir / "request.json").write_text(
@@ -1365,6 +1500,7 @@ def run(
                     deadline=deadline,
                     run_id=request_id,
                     usage_acc=usage_acc,
+                    loop_budget_out=loop_budget_telemetry,
                 )
                 exit_code = 0 if status == "completed" else (124 if stop_reason == "timeout" else 1)
         except AmofNativeTimeoutError as exc:
@@ -1507,6 +1643,7 @@ def run(
         write_scope_proposals=write_scope_proposals,
         proposal_missing_reason=proposal_missing_reason,
         usage_acc=usage_acc,
+        loop_budget=loop_budget_telemetry or None,
     )
     result = _shared._apply_write_scope_enforcement_if_bound(
         result,
@@ -1557,9 +1694,11 @@ def _result_payload(
     write_scope_proposals: list[dict[str, Any]] | None = None,
     proposal_missing_reason: str | None = None,
     usage_acc: dict[str, Any] | None = None,
+    loop_budget: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     write_scope_proposal = write_scope_proposals[0] if write_scope_proposals else None
     acc = usage_acc if isinstance(usage_acc, dict) else _runtime_usage.empty_usage_accumulator()
+    loop_budget_payload = dict(loop_budget) if isinstance(loop_budget, dict) and loop_budget else None
     prompt_tokens = _runtime_usage.finite_int(acc.get("prompt_tokens"))
     completion_tokens = _runtime_usage.finite_int(acc.get("completion_tokens"))
     model_calls = int(acc.get("model_calls") or 0)
@@ -1705,6 +1844,11 @@ def _result_payload(
             "writable_roots_relative": list(selection.writable_roots_relative),
             "remote_ial_usage": remote_ial_usage,
             "runtime_usage": runtime_usage,
+            **(
+                {"native_loop_budget": loop_budget_payload}
+                if loop_budget_payload is not None
+                else {}
+            ),
             "inference": {
                 "requested_provider": effective_provider,
                 "effective_provider": effective_provider
@@ -1717,7 +1861,41 @@ def _result_payload(
                 "direct_provider_fallback": "disabled",
             },
         },
-        "budget_summary": {"limit": None, "spent": spent, "remaining": None},
+        "budget_summary": {
+            "limit": (
+                loop_budget_payload.get("absolute_turn_limit")
+                if loop_budget_payload
+                else None
+            ),
+            "spent": spent,
+            "remaining": None,
+            **(
+                {
+                    "native_loop_budget": {
+                        "schema": loop_budget_payload.get("schema"),
+                        "policy_version": loop_budget_payload.get("policy_version"),
+                        "base_turn_limit": loop_budget_payload.get("base_turn_limit"),
+                        "turns_used": loop_budget_payload.get("turns_used"),
+                        "effective_turn_limit": loop_budget_payload.get(
+                            "effective_turn_limit"
+                        ),
+                        "extension_count": loop_budget_payload.get("extension_count"),
+                        "absolute_turn_limit": loop_budget_payload.get(
+                            "absolute_turn_limit"
+                        ),
+                        "stop_reason": loop_budget_payload.get("stop_reason"),
+                        "extensions_granted": loop_budget_payload.get(
+                            "extensions_granted"
+                        ),
+                        "extensions_denied": loop_budget_payload.get(
+                            "extensions_denied"
+                        ),
+                    }
+                }
+                if loop_budget_payload
+                else {}
+            ),
+        },
         "warnings": [],
         "usage": _runtime_usage.build_agent_run_usage(
             prompt_tokens=prompt_tokens,
