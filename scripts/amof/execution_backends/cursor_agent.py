@@ -30,6 +30,7 @@ from .hermes_opensandbox import (
     HermesBackendSelection,
     WRITE_SCOPE_PROPOSAL_REQUIRED,
 )
+from . import runtime_usage as _runtime_usage
 
 BACKEND_TYPE = "cursor_agent"
 BACKEND_CONTRACT_VERSION = "cursor-agent-v1"
@@ -271,14 +272,28 @@ def invoke_cursor_local(
             usage: dict[str, Any] | None = None
             if usage_obj is not None:
                 if isinstance(usage_obj, dict):
-                    usage = dict(usage_obj)
+                    usage = {
+                        key: usage_obj[key]
+                        for key in (
+                            "input_tokens",
+                            "output_tokens",
+                            "cache_read_tokens",
+                            "cache_write_tokens",
+                            "total_tokens",
+                            "reasoning_tokens",
+                        )
+                        if key in usage_obj and usage_obj[key] is not None
+                    } or None
                 else:
                     usage = {
                         key: getattr(usage_obj, key, None)
                         for key in (
                             "input_tokens",
                             "output_tokens",
+                            "cache_read_tokens",
+                            "cache_write_tokens",
                             "total_tokens",
+                            "reasoning_tokens",
                         )
                         if getattr(usage_obj, key, None) is not None
                     } or None
@@ -768,10 +783,64 @@ def _result_payload(
     if write_scope_proposal is None and write_scope_proposals:
         write_scope_proposal = write_scope_proposals[0]
     spent = 0.0
-    if isinstance(sdk_envelope, dict) and isinstance(sdk_envelope.get("usage"), dict):
+    sdk_usage_raw = (
+        sdk_envelope.get("usage")
+        if isinstance(sdk_envelope, dict) and isinstance(sdk_envelope.get("usage"), dict)
+        else None
+    )
+    if isinstance(sdk_usage_raw, dict):
         # Cursor Agent usage is token-shaped; dollar spend is not always present.
         # Keep budget_summary.spent at 0 unless a numeric cost field appears later.
-        spent = float(sdk_envelope.get("usage", {}).get("total_cost_usd") or 0.0)
+        spent = float(sdk_usage_raw.get("total_cost_usd") or 0.0)
+    normalized = _runtime_usage.normalize_cursor_sdk_usage(sdk_usage_raw)
+    saw_tokens = bool(normalized.get("saw_authoritative_tokens"))
+    token_telemetry = "partial" if saw_tokens else "unavailable"
+    usage_source = (
+        _runtime_usage.USAGE_SOURCE_SUBSTRATE
+        if saw_tokens
+        else _runtime_usage.USAGE_SOURCE_UNAVAILABLE
+    )
+    # Top-level agent only; child-agent tree is unavailable on current substrate.
+    agent_calls = 1
+    runtime_usage = _runtime_usage.build_runtime_usage_v1(
+        run_id=run_id,
+        backend=BACKEND_TYPE,
+        billing_model="subscription",
+        telemetry_status=token_telemetry,
+        usage_source=usage_source,
+        aggregates={
+            "prompt_tokens": normalized.get("prompt_tokens"),
+            "completion_tokens": normalized.get("completion_tokens"),
+            "cache_tokens": normalized.get("cache_tokens"),
+            "reasoning_tokens": normalized.get("reasoning_tokens"),
+            "total_tokens": normalized.get("total_tokens"),
+            "model_calls": None,
+            "agent_calls": agent_calls,
+            "tool_calls": None,
+        },
+        by_model=[
+            {
+                "logical_model": None,
+                "actual_model": effective_model,
+                "provider_or_substrate": PROVIDER,
+                "calls": None,
+                "input_tokens": normalized.get("prompt_tokens"),
+                "output_tokens": normalized.get("completion_tokens"),
+                "cached_tokens": normalized.get("cache_tokens"),
+                "reasoning_tokens": normalized.get("reasoning_tokens"),
+                "total_tokens": normalized.get("total_tokens"),
+            }
+        ]
+        if saw_tokens
+        else [],
+        spans=[],
+        receipt_refs=[
+            ref
+            for ref in (substrate_agent_id, substrate_run_id)
+            if isinstance(ref, str) and ref
+        ],
+        raw_usage_refs=["evidence_refs.sdk_envelope_summary.usage"],
+    )
     return {
         "result_kind": "agent_run_result",
         "contract_version": "agent-run-v1",
@@ -840,6 +909,16 @@ def _result_payload(
                 if isinstance(sdk_envelope, dict)
                 else {}
             ),
+            "runtime_usage": runtime_usage,
+            "cursor_usage_normalization": {
+                "granularity": normalized.get("granularity"),
+                "semantic_notes": normalized.get("semantic_notes"),
+                "raw": normalized.get("raw"),
+                "top_level_agents": 1,
+                "child_agent_telemetry": "unavailable",
+                "model_call_telemetry": "unavailable",
+                "tool_call_telemetry": "unavailable",
+            },
             "inference": {
                 "requested_provider": PROVIDER,
                 "effective_provider": PROVIDER
@@ -859,18 +938,30 @@ def _result_payload(
         },
         "budget_summary": {"limit": None, "spent": spent, "remaining": None},
         "warnings": [],
-        "usage": {
-            "prompt_tokens": None,
-            "completion_tokens": None,
-            "cache_tokens": None,
-            "reasoning_tokens": None,
-            "model_calls": None,
-            "tool_calls": None,
-            "agent_calls": 1,
-            "billing_model": "subscription",
-            "token_telemetry": "unavailable",
-            "subagent_telemetry": "unavailable",
-        },
+        "usage": _runtime_usage.build_agent_run_usage(
+            prompt_tokens=normalized.get("prompt_tokens"),
+            completion_tokens=normalized.get("completion_tokens"),
+            cache_tokens=normalized.get("cache_tokens"),
+            reasoning_tokens=normalized.get("reasoning_tokens"),
+            total_tokens=normalized.get("total_tokens"),
+            model_calls=None,
+            tool_calls=None,
+            agent_calls=agent_calls,
+            billing_model="subscription",
+            token_telemetry=token_telemetry,
+            subagent_telemetry="unavailable",
+            extra={
+                "cache_read_tokens": normalized.get("cache_read_tokens"),
+                "cache_write_tokens": normalized.get("cache_write_tokens"),
+                "telemetry_dimensions": {
+                    "TOKEN_TELEMETRY": "PARTIAL" if saw_tokens else "UNAVAILABLE",
+                    "MODEL_CALL_TELEMETRY": "UNAVAILABLE",
+                    "AGENT_TREE_TELEMETRY": "UNAVAILABLE",
+                    "TOOL_CALL_TELEMETRY": "UNAVAILABLE",
+                    "MODEL_IDENTITY_TELEMETRY": "PARTIAL",
+                },
+            },
+        ),
     }
 
 
