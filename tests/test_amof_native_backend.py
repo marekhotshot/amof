@@ -532,6 +532,25 @@ class AmofNativeResultContractTests(unittest.TestCase):
                 effective_provider="amof_native_script",
                 transport="scripted",
             )
+            unverified = amof_native._result_payload(
+                run_id="amof-native-test-unverified",
+                status="completed",
+                exit_code=0,
+                stop_reason="completed",
+                final_text="done",
+                studio_session_id=None,
+                event_log_path=Path(tmp) / "events.jsonl",
+                runtime_log_path=Path(tmp) / "runtime.log",
+                changed_paths=[],
+                selection=selection,
+                health={"process_identity": {}},
+                validation_status="not_run",
+                validation_gates=["honesty_contract"],
+                requested_model="script-v1",
+                effective_model="script-v1",
+                effective_provider="amof_native_script",
+                transport="scripted",
+            )
         self.assertEqual(payload["result_kind"], "agent_run_result")
         self.assertEqual(payload["contract_version"], "agent-run-v1")
         self.assertEqual(payload["backend"], "amof_native")
@@ -540,6 +559,17 @@ class AmofNativeResultContractTests(unittest.TestCase):
         self.assertEqual(
             payload["evidence_refs"]["backend_contract_version"],
             "amof-native-agent-runtime-v1",
+        )
+        self.assertIn("acceptance_state", payload["validation_summary"])
+        self.assertIn("closure", payload["validation_summary"])
+        self.assertEqual(
+            unverified["validation_summary"]["acceptance_state"],
+            "UNVERIFIED",
+        )
+        self.assertEqual(unverified["validation_summary"]["status"], "not_run")
+        self.assertNotEqual(
+            unverified["validation_summary"]["acceptance_state"],
+            "PASS",
         )
 
     def test_blocked_without_transport(self) -> None:

@@ -27,6 +27,7 @@ from ..write_scope_proposals import (
     classify_repository_relative_scope_path,
     persist_write_scope_proposals_from_result,
 )
+from .validation_closure import build_validation_summary, derive_validation_closure
 
 BACKEND_TYPE = "hermes_opensandbox"
 BACKEND_CONTRACT_VERSION = "hermes-cli-remote-ial-v1"
@@ -1395,6 +1396,7 @@ def run(
     selection: HermesBackendSelection,
     provider: str | None = None,
     model: str | None = None,
+    validation_gates: list[str] | None = None,
 ) -> dict[str, Any]:
     health = runtime_health()
     run_id = f"hermes-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{_safe_id(request_id)}"
@@ -1757,6 +1759,7 @@ def run(
         health=health,
         dispatch_probe=dispatch_probe,
         validation_status=validation_status,
+        validation_gates=validation_gates,
         requested_model=remote_ial.model,
         effective_model=remote_ial.model,
         write_scope_proposals=write_scope_proposals,
@@ -1835,6 +1838,7 @@ def _result_payload(
     health: dict[str, Any],
     dispatch_probe: dict[str, Any],
     validation_status: str = "not_run",
+    validation_gates: list[str] | None = None,
     requested_model: str = "unconfigured",
     effective_model: str = "unverified",
     task_findings: str | None = None,
@@ -1842,6 +1846,7 @@ def _result_payload(
     write_scope_proposals: list[dict[str, Any]] | None = None,
     proposal_missing_reason: str | None = None,
     usage: dict[str, Any] | None = None,
+    tests_executed: list[str] | None = None,
 ) -> dict[str, Any]:
     if write_scope_proposal is None and write_scope_proposals:
         write_scope_proposal = write_scope_proposals[0]
@@ -1866,6 +1871,19 @@ def _result_payload(
         "chat_calls": chat_calls,
         "cost_status": cost_status,
     }
+    closure = derive_validation_closure(
+        execution_status=status,
+        validation_gates=validation_gates,
+        heuristic_status=validation_status,
+        tests_executed=tests_executed,
+    )
+    validation_summary = build_validation_summary(
+        closure,
+        reason=(
+            "Hermes backend returns process status; focused validation must be "
+            "requested in mission text."
+        ),
+    )
     return {
         "result_kind": "agent_run_result",
         "contract_version": "agent-run-v1",
@@ -1907,10 +1925,7 @@ def _result_payload(
         "journal_path": None,
         "changed_paths": changed_paths,
         **({"num_turns": chat_calls} if usage else {}),
-        "validation_summary": {
-            "status": validation_status,
-            "reason": "Hermes backend returns process status; focused validation must be requested in mission text.",
-        },
+        "validation_summary": validation_summary,
         "approved_capabilities": list(selection.capabilities),
         "effective_capabilities": list(selection.capabilities),
         "evidence_refs": {

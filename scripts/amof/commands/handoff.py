@@ -1895,6 +1895,24 @@ def _explicit_builtin_runner_selected(runner_id: str | None) -> bool:
     return runner_id in {"code", "built-in", "builtin", "amof-built-in-code"}
 
 
+def _validation_gates_from_prepared_packet(
+    packet: PreparedHandoffPacket,
+) -> list[str] | None:
+    """Extract packet validation_gates when a canonical mission packet is present."""
+    if packet.payload_kind != "canonical_mission_packet":
+        return None
+    try:
+        canonical_packet, _canonical_text = _parse_canonical_mission_packet_text(
+            packet.payload.text,
+            field_name="handoff packet canonical mission payload",
+            require_canonical_text=False,
+            studio_session_id=packet.studio_session_id,
+        )
+    except ValueError:
+        return None
+    return list(canonical_packet.validation_gates)
+
+
 def _builtin_read_only_structured_proposal_discovery(
     packet: PreparedHandoffPacket,
     args: Any,
@@ -2108,15 +2126,23 @@ def _dispatch_backend_handoff(
         )
     except TypeError:
         selection = backend_module.build_selection(**selection_kwargs)
-    return backend_module.run(
-        manifest=manifest,
-        goal=str(request_payload.get("goal") or packet.payload.text),
-        request_id=str(request_payload.get("request_id") or packet.handoff_id),
-        studio_session_id=packet.studio_session_id,
-        selection=selection,
-        provider=_optional_text(request_payload.get("provider")),
-        model=_optional_text(request_payload.get("model")),
-    )
+    run_kwargs: dict[str, Any] = {
+        "manifest": manifest,
+        "goal": str(request_payload.get("goal") or packet.payload.text),
+        "request_id": str(request_payload.get("request_id") or packet.handoff_id),
+        "studio_session_id": packet.studio_session_id,
+        "selection": selection,
+        "provider": _optional_text(request_payload.get("provider")),
+        "model": _optional_text(request_payload.get("model")),
+    }
+    validation_gates = _validation_gates_from_prepared_packet(packet)
+    if validation_gates is not None:
+        run_kwargs["validation_gates"] = validation_gates
+    try:
+        return backend_module.run(**run_kwargs)
+    except TypeError:
+        run_kwargs.pop("validation_gates", None)
+        return backend_module.run(**run_kwargs)
 
 
 # Backwards-compatible alias (Hermes was the only dispatch backend before

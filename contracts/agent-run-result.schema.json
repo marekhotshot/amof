@@ -262,7 +262,24 @@
     },
     "validation_summary": {
       "type": "object",
-      "additionalProperties": true
+      "description": "Validation + acceptance projection. Preferred keys: status (legacy passed|failed|not_run), reason, acceptance_state (PASS|FAIL|UNVERIFIED|BLOCKED|PARTIAL), closure (amof.validation_closure/v1). Keep additionalProperties true for backward compat. Never map UNVERIFIED to passed.",
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "Legacy compat: passed|failed|not_run. Map FAIL→failed, PASS→passed, else→not_run."
+        },
+        "reason": { "type": "string" },
+        "acceptance_state": {
+          "type": "string",
+          "description": "Mission acceptance: PASS|FAIL|UNVERIFIED|BLOCKED|PARTIAL. completed+not_run → UNVERIFIED, never PASS."
+        },
+        "closure": {
+          "type": "object",
+          "description": "amof.validation_closure/v1 typed closure object",
+          "additionalProperties": true
+        }
+      }
     },
     "write_scope_proposal": {
       "type": ["object", "null"],
