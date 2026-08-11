@@ -36,6 +36,7 @@ from .hermes_opensandbox import (
 )
 from . import native_loop_budget as _loop_budget
 from . import runtime_usage as _runtime_usage
+from .validation_closure import build_validation_summary, derive_validation_closure
 
 BACKEND_TYPE = "amof_native"
 BACKEND_CONTRACT_VERSION = "amof-native-agent-runtime-v1"
@@ -1307,6 +1308,7 @@ def run(
     selection: AmofNativeBackendSelection,
     provider: str | None = None,
     model: str | None = None,
+    validation_gates: list[str] | None = None,
 ) -> dict[str, Any]:
     health = runtime_health()
     run_id = (
@@ -1636,6 +1638,7 @@ def run(
         selection=selection,
         health=health,
         validation_status=validation_status,
+        validation_gates=validation_gates,
         requested_model=requested_model,
         effective_model=requested_model if status != "blocked" else "unverified",
         effective_provider=effective_provider,
@@ -1686,6 +1689,7 @@ def _result_payload(
     selection: AmofNativeBackendSelection,
     health: dict[str, Any],
     validation_status: str = "not_run",
+    validation_gates: list[str] | None = None,
     requested_model: str = "unconfigured",
     effective_model: str = "unverified",
     effective_provider: str = "unverified",
@@ -1695,6 +1699,7 @@ def _result_payload(
     proposal_missing_reason: str | None = None,
     usage_acc: dict[str, Any] | None = None,
     loop_budget: dict[str, Any] | None = None,
+    tests_executed: list[str] | None = None,
 ) -> dict[str, Any]:
     write_scope_proposal = write_scope_proposals[0] if write_scope_proposals else None
     acc = usage_acc if isinstance(usage_acc, dict) else _runtime_usage.empty_usage_accumulator()
@@ -1716,6 +1721,16 @@ def _result_payload(
         _runtime_usage.USAGE_SOURCE_PROVIDER
         if saw_tokens
         else _runtime_usage.USAGE_SOURCE_UNAVAILABLE
+    )
+    closure = derive_validation_closure(
+        execution_status=status,
+        validation_gates=validation_gates,
+        heuristic_status=validation_status,
+        tests_executed=tests_executed,
+    )
+    validation_summary = build_validation_summary(
+        closure,
+        reason="AMOF Native backend enforces grants and records git delta.",
     )
     remote_ial_usage = {
         "prompt_tokens": prompt_tokens,
@@ -1828,10 +1843,7 @@ def _result_payload(
         "runtime_log_path": str(runtime_log_path),
         "journal_path": None,
         "changed_paths": changed_paths,
-        "validation_summary": {
-            "status": validation_status,
-            "reason": "AMOF Native backend enforces grants and records git delta.",
-        },
+        "validation_summary": validation_summary,
         "approved_capabilities": list(selection.capabilities),
         "effective_capabilities": list(selection.capabilities),
         "evidence_refs": {

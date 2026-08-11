@@ -5,6 +5,7 @@ Status: canonical
 ## Canonical
 
 - [README.md](README.md)
+- [validation-closure.v1.md](validation-closure.v1.md)
 - [director-intake-client-contract.md](director-intake-client-contract.md)
 - [director-intake-execution-contract.schema.json](director-intake-execution-contract.schema.json)
 - [director-plan-result.schema.json](director-plan-result.schema.json)
