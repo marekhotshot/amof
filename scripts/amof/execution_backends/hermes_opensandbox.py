@@ -1079,7 +1079,7 @@ def _build_prompt(
     proposal_requested = (
         _goal_requests_write_scope_proposal(goal) and not selection.writable_roots
     )
-    manifest_targets = _manifest_repo_targets(manifest or {})
+    prompt_targets = _manifest_targets_for_prompt(manifest or {}, workspace)
     lines = [
         f"You are executing as {agent_label} under AMOF authority.",
         f"AMOF runner_id: {selection.runner_id}",
@@ -1087,19 +1087,27 @@ def _build_prompt(
         f"Workspace root: {workspace}",
         f"Approved capabilities: {', '.join(selection.capabilities)}",
         "Denied: Kubernetes mutation, deployment, secrets, unrestricted network, push, promotion, tags, releases.",
+        "Tool paths must be repository-relative (example: 00-amof/README.md or README.md).",
+        "Do not pass absolute sandbox or host paths to tools; they are rejected.",
     ]
-    if len(manifest_targets) > 1:
+    if len(prompt_targets) > 1:
         lines.extend(
             [
                 "",
-                f"Target repositories ({len(manifest_targets)}): the workspace root contains one materialized checkout per target. Inspect EVERY target repository relevant to the mission, not only the first.",
+                f"Target repositories ({len(prompt_targets)}): the workspace root contains one materialized checkout per target. Inspect EVERY target repository relevant to the mission, not only the first.",
+                "Use the tool_root value below as the repository-relative prefix for list_dir/read_file/glob.",
             ]
         )
-        for index, target in enumerate(manifest_targets, start=1):
+        for index, target in enumerate(prompt_targets, start=1):
             lines.append(
-                f"- target {index}: {target.get('name') or target.get('target_id') or 'unknown'} at {target.get('workspace_path') or 'unknown'}"
+                f"- target {index}: {target.get('name') or target.get('target_id') or 'unknown'}"
+                f" tool_root={target.get('tool_root') or 'unknown'}"
                 f" (target_id: {target.get('target_id') or 'unknown'}, base_sha: {target.get('base_sha') or 'unknown'})"
             )
+    elif prompt_targets:
+        lines.append(
+            f"Tool root: {prompt_targets[0].get('tool_root') or '.'} (repository-relative; do not pass the workspace absolute path to tools)."
+        )
     lines.extend(
         [
             "",
@@ -1129,8 +1137,8 @@ def _build_prompt(
                 "Read-only mutation was detected once; this constrained replan must remain read-only within the same workspace boundary."
             )
     if proposal_requested:
-        target = _primary_manifest_target(manifest or {})
-        multi_target = len(manifest_targets) > 1
+        target = prompt_targets[0] if prompt_targets else _primary_manifest_target(manifest or {})
+        multi_target = len(prompt_targets) > 1
         expected_allowed_roots = _explicit_required_proposal_paths(goal)
         docs_only = bool(expected_allowed_roots) and all(
             root == "docs" or root.startswith("docs/")
@@ -1191,10 +1199,10 @@ def _build_prompt(
             )
         if multi_target:
             lines.append("Canonical proposal target context (one entry per target):")
-            for entry in manifest_targets:
+            for entry in prompt_targets:
                 lines.append(
                     f"- target_id: {entry.get('target_id') or 'unknown'} | base_sha: {entry.get('base_sha') or 'unknown'}"
-                    f" | repository_url: {entry.get('repository_url') or 'unknown'} | workspace_path: {entry.get('workspace_path') or 'unknown'}"
+                    f" | repository_url: {entry.get('repository_url') or 'unknown'} | tool_root: {entry.get('tool_root') or 'unknown'}"
                 )
         elif target:
             lines.extend(
@@ -1203,7 +1211,7 @@ def _build_prompt(
                     f"- target_id: {target.get('target_id') or 'unknown'}",
                     f"- base_sha: {target.get('base_sha') or 'unknown'}",
                     f"- repository_url: {target.get('repository_url') or 'unknown'}",
-                    f"- workspace_path: {target.get('workspace_path') or workspace}",
+                    f"- tool_root: {target.get('tool_root') or '.'}",
                 ]
             )
     lines.extend(["", "Mission:", goal])
@@ -1239,6 +1247,86 @@ def _build_prompt(
             ]
         )
     return "\n".join(lines)
+
+
+def _safe_tool_root_segment(value: str) -> str | None:
+    """One path segment safe to give tools. Never absolute, never traversal."""
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return None
+    name = Path(text).name
+    if not name or name in {".", ".."}:
+        return None
+    if name.startswith("/") or "/" in name or "\\" in name:
+        return None
+    return name
+
+
+def _relative_under_workspace(workspace: Path, candidate: Path) -> str | None:
+    try:
+        ws = workspace.expanduser().resolve(strict=False)
+        resolved = candidate.expanduser().resolve(strict=False)
+    except OSError:
+        return None
+    if resolved == ws:
+        return "."
+    try:
+        rel = resolved.relative_to(ws).as_posix()
+    except ValueError:
+        return None
+    if not rel or rel.startswith("..") or Path(rel).is_absolute():
+        return None
+    return rel
+
+
+def _tool_visible_relative_root(
+    *,
+    workspace: Path,
+    repo_path: str,
+    index: int,
+    repo_roots: list[Path],
+) -> str:
+    """Map a Target Set repo to a repository-relative tool root.
+
+    Manifest ``repos[].path`` may be an execution-Job sandbox absolute
+    (``/run-work/files``). Native tools reject absolute paths. Prefer live
+    workspace git children in manifest order; never return an absolute path.
+    """
+    if index < len(repo_roots):
+        rel = _relative_under_workspace(workspace, repo_roots[index])
+        if rel:
+            return rel
+        name = _safe_tool_root_segment(repo_roots[index].name)
+        if name:
+            return name
+    raw = str(repo_path or "").strip()
+    if raw:
+        rel = _relative_under_workspace(workspace, Path(raw))
+        if rel:
+            return rel
+        name = _safe_tool_root_segment(raw)
+        if name:
+            return name
+    return f"target-{index + 1}"
+
+
+def _manifest_targets_for_prompt(
+    manifest: dict[str, Any],
+    workspace: Path,
+) -> list[dict[str, str]]:
+    targets = _manifest_repo_targets(manifest)
+    repo_roots = _workspace_repo_roots(workspace)
+    annotated: list[dict[str, str]] = []
+    for index, target in enumerate(targets):
+        item = dict(target)
+        item["tool_root"] = _tool_visible_relative_root(
+            workspace=workspace,
+            repo_path=str(target.get("workspace_path") or ""),
+            index=index,
+            repo_roots=repo_roots,
+        )
+        annotated.append(item)
+    return annotated
 
 
 def _workspace_repo_roots(workspace: Path) -> list[Path]:

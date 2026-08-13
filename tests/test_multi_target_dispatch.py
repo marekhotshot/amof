@@ -182,12 +182,50 @@ class MultiTargetPromptTests(unittest.TestCase):
             self._manifest(),
         )
         self.assertIn("Target repositories (2)", prompt)
-        self.assertIn("/ws/00-repo-a", prompt)
-        self.assertIn("/ws/01-repo-b", prompt)
+        self.assertIn("tool_root=00-repo-a", prompt)
+        self.assertIn("tool_root=01-repo-b", prompt)
+        self.assertNotIn("at /ws/00-repo-a", prompt)
+        self.assertNotIn("at /ws/01-repo-b", prompt)
         self.assertIn("github_app:o/repo-a:" + SHA_A, prompt)
         self.assertIn("github_app:o/repo-b:" + SHA_B, prompt)
         self.assertIn("for EACH target repository", prompt)
         self.assertIn("one entry per target", prompt)
+        self.assertIn("repository-relative", prompt)
+
+    def test_job_sandbox_absolute_paths_become_relative_tool_roots(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-tool-roots-") as td:
+            workspace = Path(td)
+            _init_repo(workspace / "00-amof", "README.md")
+            _init_repo(workspace / "01-amof-private", "README.md")
+            manifest = {
+                "repos": [
+                    {
+                        "name": "amof",
+                        "url": "https://github.com/marekhotshot/amof.git",
+                        "path": "/run-work/files",
+                        "target_id": "github_app:marekhotshot/amof:" + SHA_A,
+                        "sha": SHA_A,
+                    },
+                    {
+                        "name": "amof-private",
+                        "url": "https://github.com/marekhotshot/amof-private.git",
+                        "path": "/run-work/targets/github_app-marekhotshot-amof-private-e6fcb2e0fd5",
+                        "target_id": "github_app:marekhotshot/amof-private:" + SHA_B,
+                        "sha": SHA_B,
+                    },
+                ]
+            }
+            prompt = hermes_opensandbox._build_prompt(
+                "Inspect both targets and return the smoke result.",
+                self._selection(),
+                workspace,
+                manifest,
+            )
+            self.assertIn("tool_root=00-amof", prompt)
+            self.assertIn("tool_root=01-amof-private", prompt)
+            self.assertNotIn("/run-work/files", prompt)
+            self.assertNotIn("/run-work/targets/", prompt)
+            self.assertIn("Do not pass absolute sandbox or host paths to tools", prompt)
 
     def test_single_target_prompt_keeps_exactly_one_block_contract(self) -> None:
         manifest = {"repos": [self._manifest()["repos"][0]]}
