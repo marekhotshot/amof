@@ -987,9 +987,11 @@ def _run_model_loop(
 ) -> tuple[str, str, str]:
     """Run the Native agent loop under amof.native_loop_budget/v1.
 
-    Base turn limit remains 12. Near exhaustion, a small bounded extension may be
-    granted only on MATERIAL machine-observable progress. Absolute hard ceiling
-    is always enforced. Model self-report never grants extension.
+    Base turn limit remains 12. Write-capable missions may receive a small
+    bounded extension only on MATERIAL machine-observable progress. Read-only
+    missions with useful evidence transition to one SYNTHESIS_REQUIRED turn
+    instead of an exploration extension. Absolute hard ceiling is always
+    enforced. Model self-report never grants extension.
     """
     messages: list[dict[str, Any]] = [
         {
@@ -1039,13 +1041,32 @@ def _run_model_loop(
                 "effective_turn_limit": budget_state.effective_turn_limit,
                 "absolute_turn_limit": absolute,
                 "extension_count": budget_state.extension_count,
+                "synthesis_required": budget_state.synthesis_required,
             },
         )
+        active_tools = tool_specs
+        if budget_state.synthesis_required:
+            active_tools = []
+            if not budget_state.synthesis_consumed:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _loop_budget.SYNTHESIS_INSTRUCTION,
+                    }
+                )
+                budget_state.synthesis_consumed = True
+                _shared._append_event(
+                    event_log_path,
+                    "loop_budget_synthesis_required",
+                    at_turn=turn_number,
+                    successful_evidence_count=budget_state.fingerprint.successful_evidence_count,
+                    evidence_coverage_digest=budget_state.fingerprint.evidence_coverage_digest,
+                )
         try:
             response = _chat_completion(
                 messages=messages,
                 model=model,
-                tools=tool_specs,
+                tools=active_tools,
                 model_turn_id=model_turn_id,
                 attempt_id=attempt_id,
                 abandoned_attempts=abandoned_attempts,
@@ -1106,6 +1127,16 @@ def _run_model_loop(
         if not isinstance(message, dict):
             raise AmofNativeBackendError("chat completion missing message")
         tool_calls = message.get("tool_calls")
+        if budget_state.synthesis_required and isinstance(tool_calls, list) and tool_calls:
+            stop = _loop_budget.STOP_SYNTHESIS_NOT_COMPLETED
+            _shared._append_event(
+                event_log_path,
+                "loop_budget_synthesis_not_completed",
+                at_turn=turn_number,
+                reason="tool_calls_during_synthesis",
+            )
+            _publish_budget(stop)
+            return "failed", stop, "\n".join(findings)
         if isinstance(tool_calls, list) and tool_calls:
             messages.append(message)
             for call in tool_calls:
@@ -1154,6 +1185,7 @@ def _run_model_loop(
                         output=output,
                         error=tool_error,
                         grant_paths_digest=_grant_tree_digest(tools),
+                        evidence_keys=budget_state.observed_evidence_keys,
                     )
                     continue
                 findings.append(output)
@@ -1181,6 +1213,7 @@ def _run_model_loop(
                     output=output,
                     error=None,
                     grant_paths_digest=_grant_tree_digest(tools),
+                    evidence_keys=budget_state.observed_evidence_keys,
                 )
             _loop_budget.note_turn_complete(budget_state, turn_number)
             # Model still wants another turn. Gate on progress-aware budget.
@@ -1196,6 +1229,33 @@ def _run_model_loop(
                 _publish_budget(stop)
                 return "failed", stop, "\n".join(findings)
             if next_turn > budget_state.effective_turn_limit:
+                if budget_state.synthesis_required:
+                    stop = _loop_budget.STOP_SYNTHESIS_NOT_COMPLETED
+                    _shared._append_event(
+                        event_log_path,
+                        "loop_budget_synthesis_not_completed",
+                        at_turn=turn_number,
+                        reason="synthesis_turn_continued_exploration",
+                    )
+                    _publish_budget(stop)
+                    return "failed", stop, "\n".join(findings)
+                if not writable:
+                    outcome = _loop_budget.decide_readonly_synthesis(
+                        budget_state, at_turn=turn_number
+                    )
+                    _shared._append_event(
+                        event_log_path,
+                        "loop_budget_readonly_synthesis_decision",
+                        at_turn=turn_number,
+                        outcome=outcome,
+                        successful_evidence_count=budget_state.fingerprint.successful_evidence_count,
+                        synthesis_required=budget_state.synthesis_required,
+                        effective_turn_limit=budget_state.effective_turn_limit,
+                    )
+                    if outcome == _loop_budget.SYNTHESIS_REQUIRED:
+                        continue
+                    _publish_budget(outcome)
+                    return "failed", outcome, "\n".join(findings)
                 decision = _loop_budget.decide_extension(budget_state, at_turn=turn_number)
                 _shared._append_event(
                     event_log_path,
@@ -1218,6 +1278,16 @@ def _run_model_loop(
                     return "failed", stop, "\n".join(findings)
             continue
         content = str(message.get("content") or "").strip()
+        if budget_state.synthesis_required and not content:
+            stop = _loop_budget.STOP_SYNTHESIS_NOT_COMPLETED
+            _shared._append_event(
+                event_log_path,
+                "loop_budget_synthesis_not_completed",
+                at_turn=turn_number,
+                reason="empty_synthesis_result",
+            )
+            _publish_budget(stop)
+            return "failed", stop, "\n".join(findings)
         if content:
             findings.append(content)
         # Prose-only / final answer: observe that a turn produced no tool evidence.

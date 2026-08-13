@@ -19,9 +19,11 @@ from amof.execution_backends.native_loop_budget import (
     LoopBudgetState,
     ProgressFingerprint,
     decide_extension,
+    decide_readonly_synthesis,
     evaluate_progress,
     note_turn_complete,
     observe_tool_result,
+    snapshot_fingerprint,
     termination_after_denied_extension,
 )
 
@@ -38,6 +40,7 @@ class NativeLoopBudgetPolicyTests(unittest.TestCase):
         self.assertEqual(policy.max_extension_count, 2)
         self.assertEqual(policy.absolute_turn_limit, 18)
         self.assertGreater(policy.absolute_turn_limit, policy.base_turn_limit)
+        self.assertEqual(policy.policy_version, "native-loop-budget-v1.1")
         policy.validate()
 
     def test_unbounded_absolute_rejected(self) -> None:
@@ -99,6 +102,124 @@ class ProgressEvaluationTests(unittest.TestCase):
         cur = _fp(failure_signature="f2", failed_shell_count=2)
         ev = evaluate_progress(cur, base)
         self.assertEqual(ev.verdict, "NO_PROGRESS")
+
+
+class EvidenceProgressTests(unittest.TestCase):
+    def test_new_reads_across_targets_are_evidence_progress(self) -> None:
+        keys: set[str] = set()
+        base = ProgressFingerprint()
+        cur = ProgressFingerprint()
+        observe_tool_result(
+            cur,
+            name="read_file",
+            arguments={"path": "00-amof/README.md"},
+            output="# public",
+            evidence_keys=keys,
+        )
+        observe_tool_result(
+            cur,
+            name="list_dir",
+            arguments={"path": "01-amof-private"},
+            output="README.md\n",
+            evidence_keys=keys,
+        )
+        ev = evaluate_progress(cur, base)
+        self.assertEqual(ev.verdict, "EVIDENCE_PROGRESS")
+        self.assertEqual(cur.successful_evidence_count, 2)
+        self.assertIn("new_successful_observation_coverage", ev.evidence)
+
+    def test_repeated_same_reads_are_no_progress(self) -> None:
+        keys: set[str] = set()
+        fp = ProgressFingerprint()
+        observe_tool_result(
+            fp,
+            name="read_file",
+            arguments={"path": "00-amof/README.md"},
+            output="# public",
+            evidence_keys=keys,
+        )
+        observe_tool_result(
+            fp,
+            name="list_dir",
+            arguments={"path": "00-amof"},
+            output="README.md\n",
+            evidence_keys=keys,
+        )
+        after_first = snapshot_fingerprint(fp)
+        observe_tool_result(
+            fp,
+            name="read_file",
+            arguments={"path": "00-amof/README.md"},
+            output="# public",
+            evidence_keys=keys,
+        )
+        observe_tool_result(
+            fp,
+            name="list_dir",
+            arguments={"path": "00-amof"},
+            output="README.md\n",
+            evidence_keys=keys,
+        )
+        ev = evaluate_progress(fp, after_first)
+        self.assertEqual(ev.verdict, "NO_PROGRESS")
+        self.assertEqual(fp.successful_evidence_count, 2)
+        self.assertEqual(fp.evidence_coverage_digest, after_first.evidence_coverage_digest)
+
+    def test_tool_errors_are_not_evidence_progress(self) -> None:
+        keys: set[str] = set()
+        base = ProgressFingerprint()
+        cur = ProgressFingerprint()
+        observe_tool_result(
+            cur,
+            name="read_file",
+            arguments={"path": "missing.md"},
+            output="ERROR: read_file: not a file: missing.md",
+            error="read_file: not a file: missing.md",
+            evidence_keys=keys,
+        )
+        observe_tool_result(
+            cur,
+            name="list_dir",
+            arguments={"path": "/run-work/files"},
+            output="ERROR: absolute_path",
+            error="list_dir: absolute_path",
+            evidence_keys=keys,
+        )
+        ev = evaluate_progress(cur, base)
+        self.assertEqual(ev.verdict, "NO_PROGRESS")
+        self.assertEqual(cur.successful_evidence_count, 0)
+        self.assertEqual(len(keys), 0)
+
+    def test_readonly_base_with_evidence_requires_synthesis(self) -> None:
+        state = LoopBudgetState(policy=lb.default_policy())
+        keys = state.observed_evidence_keys
+        observe_tool_result(
+            state.fingerprint,
+            name="read_file",
+            arguments={"path": "00-amof/README.md"},
+            output="# public",
+            evidence_keys=keys,
+        )
+        outcome = decide_readonly_synthesis(state, at_turn=12)
+        self.assertEqual(outcome, lb.SYNTHESIS_REQUIRED)
+        self.assertTrue(state.synthesis_required)
+        self.assertEqual(state.effective_turn_limit, 13)
+        self.assertEqual(state.extension_count, 0)
+
+    def test_readonly_base_without_evidence_fails_no_progress(self) -> None:
+        state = LoopBudgetState(policy=lb.default_policy())
+        observe_tool_result(
+            state.fingerprint,
+            name="read_file",
+            arguments={"path": "package.json"},
+            output="ERROR: read_file: not a file: package.json",
+            error="read_file: not a file: package.json",
+            evidence_keys=state.observed_evidence_keys,
+        )
+        outcome = decide_readonly_synthesis(state, at_turn=12)
+        self.assertEqual(outcome, lb.STOP_BASE_NO_PROGRESS)
+        self.assertFalse(state.synthesis_required)
+        self.assertEqual(state.effective_turn_limit, 12)
 
 
 class ExtensionDecisionTests(unittest.TestCase):
@@ -525,6 +646,145 @@ class IntegrationMockLoopTests(unittest.TestCase):
         self.assertEqual(out.get("extension_count"), 1)
         self.assertEqual(out.get("turns_used"), 13)
         self.assertEqual(out.get("effective_turn_limit"), 15)
+
+    def test_readonly_evidence_reaches_synthesis_then_completes(self) -> None:
+        from amof.execution_backends import amof_native
+
+        responses = []
+        for i in range(1, 13):
+            responses.append(
+                {
+                    "choices": [
+                        {
+                            "message": self._tool_message(
+                                "read_file",
+                                {"path": f"00-amof/file-{i}.md"},
+                                call_id=f"r{i}",
+                            )
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    "model": "x-ai/grok-4.5",
+                }
+            )
+        responses.append(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "bounded report from collected evidence",
+                            "tool_calls": None,
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                "model": "x-ai/grok-4.5",
+            }
+        )
+
+        class Tools:
+            enforcer = type("E", (), {"grant_roots": []})()
+            repo_root = Path(".")
+
+            def dispatch_tool(self, name, arguments):  # noqa: ANN001
+                return f"contents of {arguments.get('path')}"
+
+        seen_tools: list[object] = []
+
+        def _capture_chat(**kwargs):  # noqa: ANN003
+            seen_tools.append(kwargs.get("tools"))
+            return responses.pop(0)
+
+        event_path = Path("/tmp/amof-loop-budget-synth.jsonl")
+        event_path.write_text("", encoding="utf-8")
+        with patch.object(amof_native, "_chat_completion", side_effect=_capture_chat):
+            with patch.object(amof_native, "_grant_tree_digest", return_value="g0"):
+                out: dict = {}
+                status, stop, text = amof_native._run_model_loop(
+                    goal="inspect both targets",
+                    tools=Tools(),  # type: ignore[arg-type]
+                    model="x-ai/grok-4.5",
+                    writable=False,
+                    event_log_path=event_path,
+                    deadline=None,
+                    run_id="t-synth",
+                    loop_budget_out=out,
+                )
+        self.assertEqual(status, "completed")
+        self.assertEqual(stop, "completed")
+        self.assertIn("bounded report", text)
+        self.assertTrue(out.get("synthesis_required"))
+        self.assertTrue(out.get("synthesis_consumed"))
+        self.assertEqual(out.get("extension_count"), 0)
+        self.assertEqual(out.get("turns_used"), 13)
+        self.assertEqual(out.get("effective_turn_limit"), 13)
+        self.assertEqual(out.get("successful_evidence_count"), 12)
+        self.assertEqual(seen_tools[-1], [])
+
+    def test_readonly_synthesis_without_final_answer_fails_closed(self) -> None:
+        from amof.execution_backends import amof_native
+
+        responses = []
+        for i in range(1, 13):
+            responses.append(
+                {
+                    "choices": [
+                        {
+                            "message": self._tool_message(
+                                "read_file",
+                                {"path": f"00-amof/file-{i}.md"},
+                                call_id=f"r{i}",
+                            )
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    "model": "x-ai/grok-4.5",
+                }
+            )
+        responses.append(
+            {
+                "choices": [
+                    {
+                        "message": self._tool_message(
+                            "read_file",
+                            {"path": "00-amof/extra.md"},
+                            call_id="r13",
+                        )
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                "model": "x-ai/grok-4.5",
+            }
+        )
+
+        class Tools:
+            enforcer = type("E", (), {"grant_roots": []})()
+            repo_root = Path(".")
+
+            def dispatch_tool(self, name, arguments):  # noqa: ANN001
+                return f"contents of {arguments.get('path')}"
+
+        event_path = Path("/tmp/amof-loop-budget-synth-fail.jsonl")
+        event_path.write_text("", encoding="utf-8")
+        with patch.object(amof_native, "_chat_completion", side_effect=responses):
+            with patch.object(amof_native, "_grant_tree_digest", return_value="g0"):
+                out: dict = {}
+                status, stop, _text = amof_native._run_model_loop(
+                    goal="inspect then refuse to stop",
+                    tools=Tools(),  # type: ignore[arg-type]
+                    model="x-ai/grok-4.5",
+                    writable=False,
+                    event_log_path=event_path,
+                    deadline=None,
+                    run_id="t-synth-fail",
+                    loop_budget_out=out,
+                )
+        self.assertEqual(status, "failed")
+        self.assertEqual(stop, lb.STOP_SYNTHESIS_NOT_COMPLETED)
+        self.assertNotEqual(stop, lb.STOP_BASE_NO_PROGRESS)
+        self.assertTrue(out.get("synthesis_required"))
+        self.assertEqual(out.get("extension_count"), 0)
 
 
 if __name__ == "__main__":

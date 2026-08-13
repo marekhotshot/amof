@@ -9,11 +9,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Literal
 
 SCHEMA = "amof.native_loop_budget/v1"
-POLICY_VERSION = "native-loop-budget-v1"
+POLICY_VERSION = "native-loop-budget-v1.1"
 
 # Boundedness: base 12 preserves historical Native default; absolute 18 =
 # base + (extension_increment * max_extension_count). Ceiling stays finite and
@@ -26,6 +26,7 @@ DEFAULT_ABSOLUTE_TURN_LIMIT = 18
 ProgressVerdict = Literal[
     "MATERIAL_PROGRESS",
     "PARTIAL_PROGRESS",
+    "EVIDENCE_PROGRESS",
     "NO_PROGRESS",
     "UNKNOWN",
 ]
@@ -33,8 +34,16 @@ ProgressVerdict = Literal[
 STOP_BASE_NO_PROGRESS = "amof_native_base_budget_no_progress"
 STOP_EXTENSION_NO_PROGRESS = "amof_native_extension_budget_no_progress"
 STOP_ABSOLUTE_TURN_LIMIT = "amof_native_absolute_turn_limit"
+STOP_SYNTHESIS_NOT_COMPLETED = "amof_native_synthesis_not_completed"
 # Compatibility alias used only when absolute ceiling is hit with no newer reason.
 STOP_MAX_TURNS_COMPAT = "amof_native_max_turns"
+SYNTHESIS_REQUIRED = "SYNTHESIS_REQUIRED"
+SYNTHESIS_INSTRUCTION = (
+    "SYNTHESIS_REQUIRED: Stop tool exploration. Produce the final bounded result "
+    "from the evidence already collected. Do not call tools. Do not invent "
+    "unobserved facts."
+)
+_EVIDENCE_TOOLS = frozenset({"read_file", "list_dir", "glob"})
 
 _PATH_NOISE_RE = re.compile(
     r"(?:ENOENT|no such file|not a file|not a directory|path .* outside|"
@@ -89,6 +98,8 @@ class ProgressFingerprint:
     failed_shell_count: int = 0
     path_noise_count: int = 0
     phase: str = "init"
+    evidence_coverage_digest: str = ""
+    successful_evidence_count: int = 0
 
     def digest(self) -> str:
         payload = {
@@ -102,6 +113,8 @@ class ProgressFingerprint:
             "failed_shell_count": self.failed_shell_count,
             "path_noise_count": self.path_noise_count,
             "phase": self.phase,
+            "evidence_coverage_digest": self.evidence_coverage_digest,
+            "successful_evidence_count": self.successful_evidence_count,
         }
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -140,6 +153,9 @@ class LoopBudgetState:
     checkpoint_fingerprint: ProgressFingerprint | None = None
     recent_state_digests: list[str] = field(default_factory=list)
     last_stop_reason: str | None = None
+    observed_evidence_keys: set[str] = field(default_factory=set)
+    synthesis_required: bool = False
+    synthesis_consumed: bool = False
 
     def __post_init__(self) -> None:
         self.policy.validate()
@@ -161,6 +177,9 @@ class LoopBudgetState:
             "progress_checks": list(self.progress_checks),
             "progress_fingerprint": asdict(self.fingerprint),
             "stop_reason": self.last_stop_reason,
+            "synthesis_required": self.synthesis_required,
+            "synthesis_consumed": self.synthesis_consumed,
+            "successful_evidence_count": self.fingerprint.successful_evidence_count,
         }
 
 
@@ -183,6 +202,25 @@ def _shell_exit_code(output: str) -> int | None:
         return int(match.group(1))
     except ValueError:
         return None
+
+
+def _observation_key(name: str, arguments: dict[str, Any]) -> str | None:
+    """Stable key for a successful read-only observation. Not model prose."""
+    if name == "read_file":
+        path = str((arguments or {}).get("path") or "").strip()
+    elif name == "list_dir":
+        path = str((arguments or {}).get("path") or ".").strip() or "."
+    elif name == "glob":
+        path = str(
+            (arguments or {}).get("pattern") or (arguments or {}).get("path") or ""
+        ).strip()
+    else:
+        return None
+    if not path or "\x00" in path or "\\" in path:
+        return None
+    if path.startswith("/") or any(part == ".." for part in path.split("/")):
+        return None
+    return f"{name}:{path}"
 
 
 def _classify_tool_failure(name: str, output: str, error: str | None = None) -> str:
@@ -209,6 +247,7 @@ def observe_tool_result(
     output: str,
     error: str | None = None,
     grant_paths_digest: str | None = None,
+    evidence_keys: set[str] | None = None,
 ) -> ProgressFingerprint:
     """Update fingerprint from one tool observation (mutates and returns)."""
     args_key = _normalize_args(arguments if isinstance(arguments, dict) else {})
@@ -216,6 +255,22 @@ def observe_tool_result(
     outcome_bits = f"{name}|{args_key}|{failure_class}|{(output or '')[:240]}"
     prior = fingerprint.tool_outcome_signature
     fingerprint.tool_outcome_signature = _stable_hash(f"{prior}:{outcome_bits}")
+
+    if (
+        failure_class == "ok"
+        and not error
+        and name in _EVIDENCE_TOOLS
+        and evidence_keys is not None
+    ):
+        key = _observation_key(name, arguments if isinstance(arguments, dict) else {})
+        if key and key not in evidence_keys:
+            evidence_keys.add(key)
+            fingerprint.successful_evidence_count = len(evidence_keys)
+            fingerprint.evidence_coverage_digest = _stable_hash(
+                "|".join(sorted(evidence_keys))
+            )
+            if fingerprint.phase == "init":
+                fingerprint.phase = "evidence"
 
     if failure_class == "path_noise":
         fingerprint.path_noise_count += 1
@@ -306,11 +361,16 @@ def evaluate_progress(
     failure_evolved = current.failure_signature != baseline.failure_signature
     writes_increased = current.successful_write_count > baseline.successful_write_count
     shells_ok_increased = current.successful_shell_count > baseline.successful_shell_count
+    evidence_advanced = (
+        current.successful_evidence_count > baseline.successful_evidence_count
+        and current.evidence_coverage_digest != baseline.evidence_coverage_digest
+    )
     path_noise_only = (
         current.path_noise_count > baseline.path_noise_count
         and not write_advanced
         and not grant_advanced
         and not shells_ok_increased
+        and not evidence_advanced
         and current.failed_shell_count >= baseline.failed_shell_count
     )
 
@@ -322,8 +382,14 @@ def evaluate_progress(
             baseline_digest=baseline_digest,
         )
 
-    # Pure failure churn without writes/validation improvement is not progress.
-    if failure_evolved and not write_advanced and not grant_advanced and not shells_ok_increased:
+    # Pure failure churn without writes/validation/evidence improvement is not progress.
+    if (
+        failure_evolved
+        and not write_advanced
+        and not grant_advanced
+        and not shells_ok_increased
+        and not evidence_advanced
+    ):
         if current.failed_shell_count > baseline.failed_shell_count or (
             current.path_noise_count > baseline.path_noise_count
         ):
@@ -371,6 +437,14 @@ def evaluate_progress(
         return ProgressEvaluation(
             verdict="PARTIAL_PROGRESS",
             evidence=evidence,
+            current_digest=current_digest,
+            baseline_digest=baseline_digest,
+        )
+
+    if evidence_advanced:
+        return ProgressEvaluation(
+            verdict="EVIDENCE_PROGRESS",
+            evidence=["new_successful_observation_coverage"],
             current_digest=current_digest,
             baseline_digest=baseline_digest,
         )
@@ -463,18 +537,7 @@ def decide_extension(
     state.effective_turn_limit = next_limit
     state.extension_count += 1
     # Fresh progress required for any subsequent extension.
-    state.checkpoint_fingerprint = ProgressFingerprint(
-        grant_tree_digest=state.fingerprint.grant_tree_digest,
-        write_digest=state.fingerprint.write_digest,
-        shell_exit_fingerprint=state.fingerprint.shell_exit_fingerprint,
-        failure_signature=state.fingerprint.failure_signature,
-        tool_outcome_signature=state.fingerprint.tool_outcome_signature,
-        successful_write_count=state.fingerprint.successful_write_count,
-        successful_shell_count=state.fingerprint.successful_shell_count,
-        failed_shell_count=state.fingerprint.failed_shell_count,
-        path_noise_count=state.fingerprint.path_noise_count,
-        phase=state.fingerprint.phase,
-    )
+    state.checkpoint_fingerprint = snapshot_fingerprint(state.fingerprint)
     reason = f"extension_granted:{evaluation.verdict}"
     decision = ExtensionDecision(
         granted=True,
@@ -509,18 +572,55 @@ def note_turn_complete(state: LoopBudgetState, turn_number: int) -> None:
     if state.checkpoint_fingerprint is None and turn_number >= max(
         1, state.policy.base_turn_limit - 1
     ):
-        state.checkpoint_fingerprint = ProgressFingerprint(
-            grant_tree_digest=state.fingerprint.grant_tree_digest,
-            write_digest=state.fingerprint.write_digest,
-            shell_exit_fingerprint=state.fingerprint.shell_exit_fingerprint,
-            failure_signature=state.fingerprint.failure_signature,
-            tool_outcome_signature=state.fingerprint.tool_outcome_signature,
-            successful_write_count=state.fingerprint.successful_write_count,
-            successful_shell_count=state.fingerprint.successful_shell_count,
-            failed_shell_count=state.fingerprint.failed_shell_count,
-            path_noise_count=state.fingerprint.path_noise_count,
-            phase=state.fingerprint.phase,
-        )
+        state.checkpoint_fingerprint = snapshot_fingerprint(state.fingerprint)
+
+
+def snapshot_fingerprint(fp: ProgressFingerprint) -> ProgressFingerprint:
+    return replace(fp)
+
+
+def lifetime_evidence_evaluation(state: LoopBudgetState) -> ProgressEvaluation:
+    """Compare acquired evidence against an empty baseline, not the late checkpoint.
+
+    A productive read-only run that finished discovering before the last base
+    turn would look like NO_PROGRESS versus the turn-11 checkpoint.
+    """
+    return evaluate_progress(state.fingerprint, ProgressFingerprint())
+
+
+def decide_readonly_synthesis(state: LoopBudgetState, *, at_turn: int) -> str:
+    """At read-only base exhaustion: one synthesis turn or fail closed.
+
+    Does not grant an exploration extension. Lifetime evidence (not the late
+    checkpoint) is the authority for whether synthesis is warranted.
+    """
+    evaluation = lifetime_evidence_evaluation(state)
+    state.progress_checks.append(
+        {
+            "at_turn": at_turn,
+            "kind": "readonly_base_exhaustion",
+            "verdict": evaluation.verdict,
+            "evidence": list(evaluation.evidence),
+            "current_digest": evaluation.current_digest,
+            "baseline_digest": evaluation.baseline_digest,
+            "successful_evidence_count": state.fingerprint.successful_evidence_count,
+        }
+    )
+    useful = state.fingerprint.successful_evidence_count > 0 and evaluation.verdict in {
+        "EVIDENCE_PROGRESS",
+        "PARTIAL_PROGRESS",
+        "MATERIAL_PROGRESS",
+    }
+    if not useful:
+        state.last_stop_reason = STOP_BASE_NO_PROGRESS
+        return STOP_BASE_NO_PROGRESS
+    next_limit = min(at_turn + 1, state.policy.absolute_turn_limit)
+    if next_limit <= state.effective_turn_limit:
+        state.last_stop_reason = STOP_BASE_NO_PROGRESS
+        return STOP_BASE_NO_PROGRESS
+    state.synthesis_required = True
+    state.effective_turn_limit = next_limit
+    return SYNTHESIS_REQUIRED
 
 
 def default_policy() -> LoopBudgetPolicy:
