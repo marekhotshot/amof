@@ -34,6 +34,7 @@ from .hermes_opensandbox import (
     WRITE_SCOPE_PROPOSAL_REQUIRED,
     _manifest_repo_targets,
 )
+from . import context_assembly_receipt as _context_receipt
 from . import native_loop_budget as _loop_budget
 from . import runtime_usage as _runtime_usage
 from .validation_closure import build_validation_summary, derive_validation_closure
@@ -984,6 +985,7 @@ def _run_model_loop(
     run_id: str | None = None,
     usage_acc: dict[str, Any] | None = None,
     loop_budget_out: dict[str, Any] | None = None,
+    receipt_path: Path | None = None,
 ) -> tuple[str, str, str]:
     """Run the Native agent loop under amof.native_loop_budget/v1.
 
@@ -996,7 +998,7 @@ def _run_model_loop(
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
-            "content": "You are AMOF Native Agent. Use tools for repository work; stay within approved grants.",
+            "content": _context_receipt.NATIVE_SYSTEM_CONTENT,
         },
         {"role": "user", "content": goal},
     ]
@@ -1120,6 +1122,8 @@ def _run_model_loop(
             completion_tokens=completion_tokens,
             provider_receipt_ref=call_usage.get("provider_receipt_ref"),
         )
+        if receipt_path is not None and turn_number == 1:
+            _context_receipt.record_prompt_tokens(receipt_path, prompt_tokens)
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
             raise AmofNativeBackendError("chat completion missing choices")
@@ -1369,6 +1373,33 @@ def _blocked_result(
     )
 
 
+def _write_context_assembly_receipt(
+    *,
+    run_dir: Path,
+    run_id: str,
+    model: str,
+    user_prompt: str,
+    goal: str,
+    writable: bool,
+    request_id: str,
+) -> Path:
+    tool_specs = (
+        _TOOL_SPECS
+        if writable
+        else [spec for spec in _TOOL_SPECS if spec["function"]["name"] != "write_file"]
+    )
+    receipt = _context_receipt.build_receipt(
+        run_id=run_id,
+        model=model,
+        system_text=_context_receipt.NATIVE_SYSTEM_CONTENT,
+        user_prompt=user_prompt,
+        goal=goal,
+        tool_specs=tool_specs,
+        request_id=request_id,
+    )
+    return _context_receipt.write_receipt(run_dir / _context_receipt.RECEIPT_FILENAME, receipt)
+
+
 def run(
     *,
     manifest: dict[str, Any],
@@ -1520,6 +1551,15 @@ def run(
         agent_label=AGENT_LABEL,
         backend_name=BACKEND_TYPE,
     )
+    receipt_path = _write_context_assembly_receipt(
+        run_dir=run_dir,
+        run_id=run_id,
+        model=requested_model,
+        user_prompt=prompt,
+        goal=goal,
+        writable=bool(selection.writable_roots_relative),
+        request_id=request_id,
+    )
 
     status = "failed"
     stop_reason = "amof_native_runtime_exception"
@@ -1573,6 +1613,7 @@ def run(
                     run_id=request_id,
                     usage_acc=usage_acc,
                     loop_budget_out=loop_budget_telemetry,
+                    receipt_path=receipt_path,
                 )
                 exit_code = 0 if status == "completed" else (124 if stop_reason == "timeout" else 1)
         except AmofNativeTimeoutError as exc:
@@ -1653,6 +1694,15 @@ def run(
                 agent_label=AGENT_LABEL,
                 backend_name=BACKEND_TYPE,
             )
+            receipt_path = _write_context_assembly_receipt(
+                run_dir=run_dir,
+                run_id=run_id,
+                model=requested_model,
+                user_prompt=prompt,
+                goal=goal,
+                writable=bool(selection.writable_roots_relative),
+                request_id=request_id,
+            )
             continue
 
         validation_status = _shared._infer_validation_status(task_findings)
@@ -1678,6 +1728,15 @@ def run(
                     proposal_replan=True,
                     agent_label=AGENT_LABEL,
                     backend_name=BACKEND_TYPE,
+                )
+                receipt_path = _write_context_assembly_receipt(
+                    run_dir=run_dir,
+                    run_id=run_id,
+                    model=requested_model,
+                    user_prompt=prompt,
+                    goal=goal,
+                    writable=bool(selection.writable_roots_relative),
+                    request_id=request_id,
                 )
                 continue
             status = "blocked"
@@ -1922,6 +1981,15 @@ def _result_payload(
             "isolation_model": ISOLATION_MODEL,
             "event_log_path": str(event_log_path),
             "runtime_log_path": str(runtime_log_path),
+            **(
+                {
+                    "context_assembly_receipt": str(
+                        event_log_path.parent / _context_receipt.RECEIPT_FILENAME
+                    )
+                }
+                if (event_log_path.parent / _context_receipt.RECEIPT_FILENAME).is_file()
+                else {}
+            ),
             "process_identity": health.get("process_identity"),
             "writable_roots_relative": list(selection.writable_roots_relative),
             "remote_ial_usage": remote_ial_usage,

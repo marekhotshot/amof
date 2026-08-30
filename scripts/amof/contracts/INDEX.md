@@ -10,6 +10,7 @@ Status: canonical
 - [director-intake-execution-contract.schema.json](director-intake-execution-contract.schema.json)
 - [director-plan-result.schema.json](director-plan-result.schema.json)
 - [workspace-receipt.schema.json](workspace-receipt.schema.json)
+- [context-assembly-receipt.v1.schema.json](context-assembly-receipt.v1.schema.json)
 - [execution-handoff-result.schema.json](execution-handoff-result.schema.json)
 - [write-scope-proposal.schema.json](write-scope-proposal.schema.json)
 - [write-scope-approval.schema.json](write-scope-approval.schema.json)
