@@ -2,25 +2,27 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "amof.context-assembly.receipt.v1",
   "title": "AMOF context-assembly receipt",
-  "description": "First-turn Native assembly receipt. Records hashes and sizes of what AMOF assembled before JIT. Does not persist prompt bodies or invent a context planner.",
+  "description": "Per-call Native assembly receipt. Hashes AMOF-owned messages+tools at the _chat_completion argument boundary (canonical JSON UTF-8 SHA-256). Does not persist prompt bodies. Does not claim byte-perfect Remote IAL wire equality after transport remapping.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema",
     "run_id",
     "call_index",
+    "backend",
+    "provider",
     "model",
     "sections",
     "tools",
     "assembled",
-    "omissions"
+    "known_omissions"
   ],
   "properties": {
-    "schema": {
-      "const": "amof.context-assembly.receipt.v1"
-    },
+    "schema": { "const": "amof.context-assembly.receipt.v1" },
     "run_id": { "type": "string", "minLength": 1 },
     "call_index": { "type": "integer", "minimum": 1 },
+    "backend": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "minLength": 1 },
     "model": { "type": "string", "minLength": 1 },
     "sections": {
       "type": "array",
@@ -30,31 +32,35 @@
         "additionalProperties": false,
         "required": [
           "name",
+          "source_kind",
+          "source_ref",
           "authority_class",
-          "source",
           "sha256",
           "bytes",
           "tokens"
         ],
         "properties": {
-          "name": {
+          "name": { "type": "string", "minLength": 1 },
+          "source_kind": {
             "type": "string",
-            "enum": [
-              "system",
-              "runtime-envelope",
-              "mission",
-              "phase-override"
-            ]
+            "enum": ["runtime", "handoff", "model", "tool"]
           },
+          "source_ref": { "type": "string", "minLength": 1 },
           "authority_class": {
             "type": "string",
-            "enum": ["runtime-contract", "sealed-mission"]
+            "enum": [
+              "runtime-contract",
+              "sealed-mission",
+              "runtime-state",
+              "tool-result",
+              "model-generated",
+              "tool-contract"
+            ]
           },
-          "source": { "type": "string", "minLength": 1 },
           "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
           "bytes": { "type": "integer", "minimum": 0 },
           "tokens": {
-            "description": "Provider-attributed section tokens. Null when not measured. Do not estimate.",
+            "description": "Null unless a provider attributes tokens to this section. Do not estimate.",
             "type": ["integer", "null"],
             "minimum": 0
           }
@@ -64,26 +70,28 @@
     "tools": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["count", "schema_hash"],
+      "required": ["count", "schema_sha256", "bytes"],
       "properties": {
         "count": { "type": "integer", "minimum": 0 },
-        "schema_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        "schema_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "bytes": { "type": "integer", "minimum": 0 }
       }
     },
     "assembled": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sha256", "prompt_tokens"],
+      "required": ["sha256", "bytes", "prompt_tokens_reported"],
       "properties": {
         "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-        "prompt_tokens": {
-          "description": "Provider prompt_tokens for this call. Null on scripted / no-model paths.",
+        "bytes": { "type": "integer", "minimum": 0 },
+        "prompt_tokens_reported": {
+          "description": "Provider prompt_tokens for this call. Null when unavailable.",
           "type": ["integer", "null"],
           "minimum": 0
         }
       }
     },
-    "omissions": {
+    "known_omissions": {
       "type": "array",
       "items": {
         "type": "object",

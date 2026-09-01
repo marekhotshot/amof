@@ -1,62 +1,64 @@
-"""First-turn Native context-assembly receipt.
+"""Per-call Native context-assembly receipts.
 
-Records what AMOF assembled before JIT. Does not select, plan, or rewrite
-context. Does not persist prompt bodies.
+Side-channel evidence only. Does not select, plan, rewrite, or persist
+model-visible prompt bodies. Does not change the model request.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 RECEIPT_SCHEMA = "amof.context-assembly.receipt.v1"
-RECEIPT_FILENAME = "context-assembly.json"
+RECEIPT_DIRNAME = "context-assembly"
 MISSION_HEADER = "\nMission:\n"
+
+# Hash input is the AMOF-owned OpenAI-style messages + tools list passed into
+# `_chat_completion`, serialized as UTF-8 canonical JSON (sort_keys, compact
+# separators). Transport remapping (Remote IAL system split / tool_call shape)
+# is not included; receipts do not claim byte-perfect provider-wire equality.
+HASH_INPUT = "amof_native.messages+tools.canonical_json_utf8"
 
 NATIVE_SYSTEM_CONTENT = (
     "You are AMOF Native Agent. Use tools for repository work; stay within approved grants."
 )
 
-NATIVE_OMISSIONS: tuple[dict[str, str], ...] = (
-    {"class": "repository-files", "reason": "jit-only"},
-    {"class": "conversation-history", "reason": "single-run"},
-    {"class": "context-builder-master-md", "reason": "not-on-native-path"},
-    {"class": "factory-markdown", "reason": "not-on-native-path"},
-    {"class": "intake-packet-json", "reason": "not-on-native-path"},
+SYNTHESIS_INSTRUCTION = (
+    "SYNTHESIS_REQUIRED: Stop tool exploration. Produce the final bounded result "
+    "from the evidence already collected. Do not call tools. Do not invent "
+    "unobserved facts."
 )
+
+
+class ReceiptExistsError(FileExistsError):
+    """A completed receipt already occupies the deterministic path."""
 
 
 def sha256_utf8(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
 def sha256_canonical_json(value: Any) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return sha256_utf8(encoded)
+    return sha256_utf8(canonical_json(value))
 
 
-def _section(
-    *,
-    name: str,
-    authority_class: str,
-    source: str,
-    text: str,
-    tokens: int | None = None,
-) -> dict[str, Any]:
-    raw = text.encode("utf-8")
-    return {
-        "name": name,
-        "authority_class": authority_class,
-        "source": source,
-        "sha256": hashlib.sha256(raw).hexdigest(),
-        "bytes": len(raw),
-        "tokens": tokens,
-    }
+def visible_request(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Model-visible request at the `_chat_completion` argument boundary."""
+    return {"messages": list(messages), "tools": list(tools or [])}
 
 
-def mission_source(request_id: str | None) -> str:
+def call_receipt_path(receipt_dir: Path, call_index: int) -> Path:
+    return receipt_dir / f"call-{int(call_index):04d}.json"
+
+
+def mission_source_ref(request_id: str | None) -> str:
     rid = str(request_id or "").strip()
     if rid.startswith("handoff-"):
         return f"handoff:{rid[len('handoff-'):]}"
@@ -85,96 +87,239 @@ def split_user_prompt(user_prompt: str, goal: str) -> tuple[str, str, str]:
     return envelope, rest, ""
 
 
-def build_receipt(
+def _section(
+    *,
+    name: str,
+    source_kind: str,
+    source_ref: str,
+    authority_class: str,
+    text: str,
+) -> dict[str, Any]:
+    raw = text.encode("utf-8")
+    return {
+        "name": name,
+        "source_kind": source_kind,
+        "source_ref": source_ref,
+        "authority_class": authority_class,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "bytes": len(raw),
+        "tokens": None,
+    }
+
+
+def _known_omissions(*, tool_result_count: int) -> list[dict[str, str]]:
+    omissions = [
+        {"class": "repository-files", "reason": "jit-only"},
+        {"class": "context-builder-master-md", "reason": "not-on-native-path"},
+        {"class": "factory-markdown", "reason": "not-on-native-path"},
+        {"class": "intake-packet-json", "reason": "not-on-native-path"},
+    ]
+    if tool_result_count == 0:
+        omissions.insert(1, {"class": "prior-tool-results", "reason": "none-yet"})
+    return omissions
+
+
+def sections_from_messages(
+    messages: list[dict[str, Any]],
+    *,
+    goal: str,
+    request_id: str | None,
+) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
+    first_user = True
+    extra_user = 0
+    assistant_n = 0
+    tool_n = 0
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip()
+        if role == "system":
+            sections.append(
+                _section(
+                    name="system",
+                    source_kind="runtime",
+                    source_ref="amof_native:_run_model_loop",
+                    authority_class="runtime-contract",
+                    text=str(item.get("content") or ""),
+                )
+            )
+            continue
+        if role == "user":
+            content = str(item.get("content") or "")
+            if first_user:
+                first_user = False
+                envelope, mission, override = split_user_prompt(content, goal)
+                if envelope:
+                    sections.append(
+                        _section(
+                            name="runtime-envelope",
+                            source_kind="runtime",
+                            source_ref="hermes_opensandbox:_build_prompt",
+                            authority_class="runtime-contract",
+                            text=envelope,
+                        )
+                    )
+                if mission:
+                    sections.append(
+                        _section(
+                            name="mission",
+                            source_kind="handoff",
+                            source_ref=mission_source_ref(request_id),
+                            authority_class="sealed-mission",
+                            text=mission,
+                        )
+                    )
+                if override.strip():
+                    sections.append(
+                        _section(
+                            name="phase-override",
+                            source_kind="runtime",
+                            source_ref="hermes_opensandbox:_build_prompt",
+                            authority_class="runtime-contract",
+                            text=override.lstrip("\n"),
+                        )
+                    )
+                if not envelope and not mission:
+                    sections.append(
+                        _section(
+                            name="user",
+                            source_kind="runtime",
+                            source_ref="amof_native:_run_model_loop",
+                            authority_class="runtime-state",
+                            text=content,
+                        )
+                    )
+                continue
+            extra_user += 1
+            source_ref = (
+                "native_loop_budget:SYNTHESIS_INSTRUCTION"
+                if content == SYNTHESIS_INSTRUCTION
+                else "amof_native:_run_model_loop"
+            )
+            sections.append(
+                _section(
+                    name=f"user-{extra_user}",
+                    source_kind="runtime",
+                    source_ref=source_ref,
+                    authority_class="runtime-contract",
+                    text=content,
+                )
+            )
+            continue
+        if role == "assistant":
+            assistant_n += 1
+            sections.append(
+                _section(
+                    name=f"assistant-{assistant_n}",
+                    source_kind="model",
+                    source_ref="prior-model-message",
+                    authority_class="model-generated",
+                    text=canonical_json(
+                        {
+                            "content": item.get("content"),
+                            "tool_calls": item.get("tool_calls") or [],
+                        }
+                    ),
+                )
+            )
+            continue
+        if role == "tool":
+            tool_n += 1
+            sections.append(
+                _section(
+                    name=f"tool-result-{tool_n}",
+                    source_kind="tool",
+                    source_ref=f"tool_call_id:{item.get('tool_call_id') or tool_n}",
+                    authority_class="tool-result",
+                    text=str(item.get("content") or ""),
+                )
+            )
+    return sections
+
+
+def build_call_receipt(
     *,
     run_id: str,
+    call_index: int,
     model: str,
-    system_text: str,
-    user_prompt: str,
+    provider: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     goal: str,
-    tool_specs: list[dict[str, Any]],
-    request_id: str | None = None,
-    prompt_tokens: int | None = None,
-    call_index: int = 1,
+    request_id: str | None,
+    prompt_tokens_reported: int | None,
+    backend: str = "amof_native",
 ) -> dict[str, Any]:
-    envelope, mission, phase_override = split_user_prompt(user_prompt, goal)
-    sections: list[dict[str, Any]] = [
-        _section(
-            name="system",
-            authority_class="runtime-contract",
-            source="amof_native:_chat_completion",
-            text=system_text,
-        ),
-        _section(
-            name="runtime-envelope",
-            authority_class="runtime-contract",
-            source="hermes_opensandbox:_build_prompt",
-            text=envelope,
-        ),
-    ]
-    if mission:
-        sections.append(
-            _section(
-                name="mission",
-                authority_class="sealed-mission",
-                source=mission_source(request_id),
-                text=mission,
-            )
-        )
-    if phase_override.strip():
-        sections.append(
-            _section(
-                name="phase-override",
-                authority_class="runtime-contract",
-                source="hermes_opensandbox:_build_prompt",
-                text=phase_override.lstrip("\n"),
-            )
-        )
-    tools_hash = sha256_canonical_json(tool_specs)
-    assembled_hash = sha256_canonical_json(
-        {
-            "system": system_text,
-            "user": user_prompt,
-            "tools_schema_hash": tools_hash,
-        }
-    )
+    visible = visible_request(messages, tools)
+    visible_text = canonical_json(visible)
+    tool_specs = list(tools or [])
+    tools_text = canonical_json(tool_specs)
+    sections = sections_from_messages(messages, goal=goal, request_id=request_id)
+    tool_result_count = sum(1 for item in sections if str(item.get("name") or "").startswith("tool-result-"))
     return {
         "schema": RECEIPT_SCHEMA,
         "run_id": run_id,
-        "call_index": call_index,
+        "call_index": int(call_index),
+        "backend": backend,
+        "provider": provider,
         "model": model,
         "sections": sections,
         "tools": {
             "count": len(tool_specs),
-            "schema_hash": tools_hash,
+            "schema_sha256": sha256_utf8(tools_text),
+            "bytes": len(tools_text.encode("utf-8")),
         },
         "assembled": {
-            "sha256": assembled_hash,
-            "prompt_tokens": prompt_tokens,
+            "sha256": sha256_utf8(visible_text),
+            "bytes": len(visible_text.encode("utf-8")),
+            "prompt_tokens_reported": prompt_tokens_reported,
         },
-        "omissions": [dict(item) for item in NATIVE_OMISSIONS],
+        "known_omissions": _known_omissions(tool_result_count=tool_result_count),
     }
 
 
-def write_receipt(path: Path, receipt: dict[str, Any]) -> Path:
+def atomic_write_json(path: Path, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(receipt, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if path.exists():
+        raise ReceiptExistsError(str(path))
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    try:
+        tmp_path.write_text(text, encoding="utf-8")
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
     return path
 
 
-def record_prompt_tokens(path: Path, prompt_tokens: int | None) -> None:
-    """Join provider prompt_tokens onto an existing first-turn receipt."""
-    if not path.is_file():
-        return
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return
-    if not isinstance(payload, dict):
-        return
-    assembled = payload.get("assembled")
-    if not isinstance(assembled, dict):
-        assembled = {}
-        payload["assembled"] = assembled
-    assembled["prompt_tokens"] = prompt_tokens
-    write_receipt(path, payload)
+def persist_call_receipt(
+    *,
+    run_dir: Path,
+    run_id: str,
+    call_index: int,
+    model: str,
+    provider: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    goal: str,
+    request_id: str | None,
+    prompt_tokens_reported: int | None,
+    backend: str = "amof_native",
+) -> Path:
+    receipt_dir = run_dir / RECEIPT_DIRNAME
+    path = call_receipt_path(receipt_dir, call_index)
+    payload = build_call_receipt(
+        run_id=run_id,
+        call_index=call_index,
+        model=model,
+        provider=provider,
+        messages=messages,
+        tools=tools,
+        goal=goal,
+        request_id=request_id,
+        prompt_tokens_reported=prompt_tokens_reported,
+        backend=backend,
+    )
+    return atomic_write_json(path, payload)

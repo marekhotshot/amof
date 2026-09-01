@@ -860,6 +860,52 @@ def _is_timeout_exc(exc: BaseException) -> bool:
     return "timed out" in text or "timeout" in text
 
 
+def _emit_context_assembly_receipt(
+    *,
+    assembly_ctx: dict[str, Any] | None,
+    call_index: int | None,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    prompt_tokens_reported: int | None,
+) -> None:
+    """Best-effort per-call receipt. Never raises into the model path."""
+    if assembly_ctx is None or call_index is None:
+        return
+    event_log_path = assembly_ctx.get("event_log_path")
+    try:
+        path = _context_receipt.persist_call_receipt(
+            run_dir=Path(assembly_ctx["run_dir"]),
+            run_id=str(assembly_ctx["run_id"]),
+            call_index=int(call_index),
+            model=model,
+            provider=str(assembly_ctx.get("provider") or "unverified"),
+            messages=messages,
+            tools=tools,
+            goal=str(assembly_ctx.get("goal") or ""),
+            request_id=assembly_ctx.get("request_id"),
+            prompt_tokens_reported=prompt_tokens_reported,
+        )
+        if event_log_path is not None:
+            _shared._append_event(
+                Path(event_log_path),
+                "context_assembly_receipt_written",
+                call_index=int(call_index),
+                receipt_path=str(path),
+            )
+    except Exception as exc:
+        if event_log_path is not None:
+            try:
+                _shared._append_event(
+                    Path(event_log_path),
+                    "context_assembly_receipt_failed",
+                    call_index=int(call_index),
+                    error=str(exc),
+                )
+            except Exception:
+                pass
+
+
 def _chat_completion(
     *,
     messages: list[dict[str, Any]],
@@ -868,6 +914,8 @@ def _chat_completion(
     model_turn_id: str | None = None,
     attempt_id: str | None = None,
     abandoned_attempts: set[str] | None = None,
+    assembly_ctx: dict[str, Any] | None = None,
+    call_index: int | None = None,
 ) -> dict[str, Any]:
     url, headers, transport = _chat_endpoint_and_headers()
     timeout_seconds = native_ial_timeout_seconds()
@@ -892,44 +940,57 @@ def _chat_completion(
         if tools:
             payload["tools"] = tools
     request = Request(url, headers=headers, data=json.dumps(payload).encode("utf-8"), method="POST")
+    prompt_tokens_reported: int | None = None
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            body = json.loads(response.read().decode("utf-8") or "{}")
-    except HTTPError as exc:
-        detail = ""
         try:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            detail = str(exc)
-        raise AmofNativeBackendError(
-            f"model transport HTTP {exc.code} for {url}: {detail or exc.reason}"
-        ) from exc
-    except (OSError, URLError, TimeoutError) as exc:
-        if _is_timeout_exc(exc):
-            if attempt_id and abandoned_attempts is not None:
-                abandoned_attempts.add(attempt_id)
+            with urlopen(request, timeout=timeout_seconds) as response:
+                body = json.loads(response.read().decode("utf-8") or "{}")
+        except HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                detail = str(exc)
+            raise AmofNativeBackendError(
+                f"model transport HTTP {exc.code} for {url}: {detail or exc.reason}"
+            ) from exc
+        except (OSError, URLError, TimeoutError) as exc:
+            if _is_timeout_exc(exc):
+                if attempt_id and abandoned_attempts is not None:
+                    abandoned_attempts.add(attempt_id)
+                raise AmofNativeTimeoutError(
+                    f"model transport timed out after {timeout_seconds:g}s for {url}: {exc}",
+                    timeout_kind="REMOTE_IAL_TOTAL_TIMEOUT",
+                    timeout_seconds=timeout_seconds,
+                    model_turn_id=model_turn_id,
+                    attempt_id=attempt_id,
+                ) from exc
+            raise AmofNativeBackendError(f"model transport request failed for {url}: {exc}") from exc
+        if attempt_id and abandoned_attempts is not None and attempt_id in abandoned_attempts:
+            # Late body for an already-abandoned attempt must not become authoritative.
             raise AmofNativeTimeoutError(
-                f"model transport timed out after {timeout_seconds:g}s for {url}: {exc}",
+                f"late model response discarded for abandoned attempt {attempt_id}",
                 timeout_kind="REMOTE_IAL_TOTAL_TIMEOUT",
                 timeout_seconds=timeout_seconds,
                 model_turn_id=model_turn_id,
                 attempt_id=attempt_id,
-            ) from exc
-        raise AmofNativeBackendError(f"model transport request failed for {url}: {exc}") from exc
-    if attempt_id and abandoned_attempts is not None and attempt_id in abandoned_attempts:
-        # Late body for an already-abandoned attempt must not become authoritative.
-        raise AmofNativeTimeoutError(
-            f"late model response discarded for abandoned attempt {attempt_id}",
-            timeout_kind="REMOTE_IAL_TOTAL_TIMEOUT",
-            timeout_seconds=timeout_seconds,
-            model_turn_id=model_turn_id,
-            attempt_id=attempt_id,
+            )
+        if not isinstance(body, dict):
+            raise AmofNativeBackendError("chat completion returned non-object response")
+        if transport == TRANSPORT_REMOTE_IAL:
+            body = _openai_compatible_from_remote_ial(body, model=model)
+        usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+        prompt_tokens_reported = _runtime_usage.finite_int(usage.get("prompt_tokens"))
+        return body
+    finally:
+        _emit_context_assembly_receipt(
+            assembly_ctx=assembly_ctx,
+            call_index=call_index,
+            model=model,
+            messages=messages,
+            tools=tools,
+            prompt_tokens_reported=prompt_tokens_reported,
         )
-    if not isinstance(body, dict):
-        raise AmofNativeBackendError("chat completion returned non-object response")
-    if transport == TRANSPORT_REMOTE_IAL:
-        return _openai_compatible_from_remote_ial(body, model=model)
-    return body
 
 
 def _grant_tree_digest(tools: NativeAgentTools) -> str:
@@ -985,7 +1046,7 @@ def _run_model_loop(
     run_id: str | None = None,
     usage_acc: dict[str, Any] | None = None,
     loop_budget_out: dict[str, Any] | None = None,
-    receipt_path: Path | None = None,
+    assembly_ctx: dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
     """Run the Native agent loop under amof.native_loop_budget/v1.
 
@@ -1046,6 +1107,10 @@ def _run_model_loop(
                 "synthesis_required": budget_state.synthesis_required,
             },
         )
+        call_index = turn_number
+        if assembly_ctx is not None:
+            call_index = int(assembly_ctx.get("next_call_index") or 1)
+            assembly_ctx["next_call_index"] = call_index + 1
         active_tools = tool_specs
         if budget_state.synthesis_required:
             active_tools = []
@@ -1072,6 +1137,8 @@ def _run_model_loop(
                 model_turn_id=model_turn_id,
                 attempt_id=attempt_id,
                 abandoned_attempts=abandoned_attempts,
+                assembly_ctx=assembly_ctx,
+                call_index=call_index,
             )
         except AmofNativeTimeoutError as exc:
             _shared._append_event(
@@ -1122,8 +1189,6 @@ def _run_model_loop(
             completion_tokens=completion_tokens,
             provider_receipt_ref=call_usage.get("provider_receipt_ref"),
         )
-        if receipt_path is not None and turn_number == 1:
-            _context_receipt.record_prompt_tokens(receipt_path, prompt_tokens)
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
             raise AmofNativeBackendError("chat completion missing choices")
@@ -1373,33 +1438,6 @@ def _blocked_result(
     )
 
 
-def _write_context_assembly_receipt(
-    *,
-    run_dir: Path,
-    run_id: str,
-    model: str,
-    user_prompt: str,
-    goal: str,
-    writable: bool,
-    request_id: str,
-) -> Path:
-    tool_specs = (
-        _TOOL_SPECS
-        if writable
-        else [spec for spec in _TOOL_SPECS if spec["function"]["name"] != "write_file"]
-    )
-    receipt = _context_receipt.build_receipt(
-        run_id=run_id,
-        model=model,
-        system_text=_context_receipt.NATIVE_SYSTEM_CONTENT,
-        user_prompt=user_prompt,
-        goal=goal,
-        tool_specs=tool_specs,
-        request_id=request_id,
-    )
-    return _context_receipt.write_receipt(run_dir / _context_receipt.RECEIPT_FILENAME, receipt)
-
-
 def run(
     *,
     manifest: dict[str, Any],
@@ -1551,15 +1589,15 @@ def run(
         agent_label=AGENT_LABEL,
         backend_name=BACKEND_TYPE,
     )
-    receipt_path = _write_context_assembly_receipt(
-        run_dir=run_dir,
-        run_id=run_id,
-        model=requested_model,
-        user_prompt=prompt,
-        goal=goal,
-        writable=bool(selection.writable_roots_relative),
-        request_id=request_id,
-    )
+    assembly_ctx = {
+        "run_dir": run_dir,
+        "run_id": run_id,
+        "request_id": request_id,
+        "goal": goal,
+        "event_log_path": event_log_path,
+        "provider": effective_provider,
+        "next_call_index": 1,
+    }
 
     status = "failed"
     stop_reason = "amof_native_runtime_exception"
@@ -1613,7 +1651,7 @@ def run(
                     run_id=request_id,
                     usage_acc=usage_acc,
                     loop_budget_out=loop_budget_telemetry,
-                    receipt_path=receipt_path,
+                    assembly_ctx=assembly_ctx,
                 )
                 exit_code = 0 if status == "completed" else (124 if stop_reason == "timeout" else 1)
         except AmofNativeTimeoutError as exc:
@@ -1694,15 +1732,6 @@ def run(
                 agent_label=AGENT_LABEL,
                 backend_name=BACKEND_TYPE,
             )
-            receipt_path = _write_context_assembly_receipt(
-                run_dir=run_dir,
-                run_id=run_id,
-                model=requested_model,
-                user_prompt=prompt,
-                goal=goal,
-                writable=bool(selection.writable_roots_relative),
-                request_id=request_id,
-            )
             continue
 
         validation_status = _shared._infer_validation_status(task_findings)
@@ -1728,15 +1757,6 @@ def run(
                     proposal_replan=True,
                     agent_label=AGENT_LABEL,
                     backend_name=BACKEND_TYPE,
-                )
-                receipt_path = _write_context_assembly_receipt(
-                    run_dir=run_dir,
-                    run_id=run_id,
-                    model=requested_model,
-                    user_prompt=prompt,
-                    goal=goal,
-                    writable=bool(selection.writable_roots_relative),
-                    request_id=request_id,
                 )
                 continue
             status = "blocked"
@@ -1983,11 +2003,11 @@ def _result_payload(
             "runtime_log_path": str(runtime_log_path),
             **(
                 {
-                    "context_assembly_receipt": str(
-                        event_log_path.parent / _context_receipt.RECEIPT_FILENAME
+                    "context_assembly_dir": str(
+                        event_log_path.parent / _context_receipt.RECEIPT_DIRNAME
                     )
                 }
-                if (event_log_path.parent / _context_receipt.RECEIPT_FILENAME).is_file()
+                if (event_log_path.parent / _context_receipt.RECEIPT_DIRNAME).is_dir()
                 else {}
             ),
             "process_identity": health.get("process_identity"),
