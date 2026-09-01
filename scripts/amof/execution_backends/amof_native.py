@@ -678,7 +678,32 @@ class NativeAgentTools:
                     matches.append(rel)
         return sorted(set(matches))[:500]
 
-    def write_file(self, path: str, content: str) -> str:
+    def write_file(self, path: str, content: str = "", source_path: str | None = None) -> str:
+        if source_path:
+            if str(content or ""):
+                raise AmofNativeBackendError(
+                    "write_file: source_path cannot be combined with text content"
+                )
+            src = self.enforcer.resolve_read_path(source_path)
+            if not src.is_file():
+                raise AmofNativeBackendError(
+                    f"write_file: source_path is not a file: {source_path}"
+                )
+            data = src.read_bytes()
+            classified = classify_native_artifact(source_path, data)
+            if not classified["is_binary"]:
+                raise AmofNativeBackendError(
+                    "write_file: source_path is not a binary artifact; "
+                    "use content for UTF-8 text"
+                )
+            target = self.enforcer.resolve_write_path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            return render_binary_artifact_ref(
+                path=path,
+                data=data,
+                media_type=str(classified["media_type"]),
+            )
         target = self.enforcer.resolve_write_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
@@ -759,6 +784,17 @@ class NativeAgentTools:
             return "\n".join(self.glob(str(args.get("pattern") or "*")))
         if name == "write_file":
             path = self._require_tool_path(args, tool=name)
+            raw_source = args.get("source_path")
+            if raw_source:
+                source_path = self._require_tool_path(
+                    {"path": raw_source}, tool="write_file.source_path"
+                )
+                placed = self.write_file(
+                    path,
+                    str(args.get("content") or ""),
+                    source_path=source_path,
+                )
+                return placed
             self.write_file(path, str(args.get("content") or ""))
             return f"wrote {path}"
         if name == "run_shell":
@@ -824,14 +860,26 @@ _TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write content to a repository-relative path inside approved grants",
+            "description": (
+                "Write UTF-8 text via content, or place a binary artifact by "
+                "copying source_path bytes into an approved grant. "
+                "source_path is binary-only and cannot be combined with content. "
+                "Not generic shell copy."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
                     "content": {"type": "string"},
+                    "source_path": {
+                        "type": "string",
+                        "description": (
+                            "Readable repository-relative binary artifact to place "
+                            "at path. PNG/JPEG/GIF/WEBP/PDF or binary suffix only."
+                        ),
+                    },
                 },
-                "required": ["path", "content"],
+                "required": ["path"],
             },
         },
     },

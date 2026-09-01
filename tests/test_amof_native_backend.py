@@ -1152,6 +1152,90 @@ class AmofNativeBinaryArtifactReadTests(unittest.TestCase):
             self.assertIn("image/png", events)
             self.assertIn(hashlib.sha256(PNG_FIXTURE).hexdigest(), events)
 
+    def test_write_file_source_path_places_png_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            src_dir = workspace / "share" / "artifacts" / "m092"
+            src_dir.mkdir(parents=True)
+            src = src_dir / "predator-mission-control.png"
+            src.write_bytes(PNG_FIXTURE)
+            dest_rel = "public-surfaces/amof.dev/media/predator-mission-control.png"
+            script = Path(tmp) / "script.json"
+            _write_script(
+                script,
+                [
+                    {
+                        "type": "tool",
+                        "name": "write_file",
+                        "arguments": {
+                            "path": dest_rel,
+                            "source_path": "share/artifacts/m092/predator-mission-control.png",
+                        },
+                    },
+                    {"type": "final", "text": "placed binary"},
+                ],
+            )
+            result = _run_with_script(
+                workspace=workspace,
+                script_path=script,
+                writable_roots=["public-surfaces/amof.dev"],
+            )
+            self.assertEqual(result["status"], "completed")
+            dest = workspace / dest_rel
+            self.assertTrue(dest.is_file())
+            self.assertEqual(dest.read_bytes(), PNG_FIXTURE)
+            events = (script.parent / "run" / "events.jsonl").read_text(encoding="utf-8")
+            self.assertIn("binary_artifact", events)
+            self.assertIn(hashlib.sha256(PNG_FIXTURE).hexdigest(), events)
+            self.assertIn(dest_rel, result.get("changed_paths") or [dest_rel])
+
+    def test_write_file_source_path_rejects_text_and_mixed_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            (workspace / "docs").mkdir()
+            (workspace / "docs" / "note.md").write_text("hello\n", encoding="utf-8")
+            (workspace / "public-surfaces" / "amof.dev").mkdir(parents=True)
+            selection = amof_native.build_selection(
+                runner_id="amof-native-ticket-write",
+                requested_capabilities=["read", "bounded_write"],
+                approve_writable_roots=["public-surfaces/amof.dev"],
+                timeout_seconds=30,
+                readable_root=str(workspace),
+            )
+            selection = amof_native._resolve_grants_at_runtime(selection, workspace)
+            tools = amof_native.NativeAgentTools(
+                amof_native._GrantEnforcer(
+                    workspace=workspace,
+                    repo_roots=[workspace],
+                    grant_roots_resolved=[Path(p) for p in selection.writable_roots_resolved],
+                    writable=True,
+                )
+            )
+            with self.assertRaises(amof_native.AmofNativeBackendError) as text_ctx:
+                tools.dispatch_tool(
+                    "write_file",
+                    {
+                        "path": "public-surfaces/amof.dev/note.md",
+                        "source_path": "docs/note.md",
+                    },
+                )
+            self.assertIn("not a binary artifact", str(text_ctx.exception))
+            png = workspace / "share" / "shot.png"
+            png.parent.mkdir(parents=True)
+            png.write_bytes(PNG_FIXTURE)
+            with self.assertRaises(amof_native.AmofNativeBackendError) as mix_ctx:
+                tools.dispatch_tool(
+                    "write_file",
+                    {
+                        "path": "public-surfaces/amof.dev/media/shot.png",
+                        "source_path": "share/shot.png",
+                        "content": "nope",
+                    },
+                )
+            self.assertIn("cannot be combined with text content", str(mix_ctx.exception))
+
     def test_invalid_text_fails_explicitly(self) -> None:
         corrupt = b"\x80\x81not-utf8"
         classified = amof_native.classify_native_artifact("docs/broken.md", corrupt)
