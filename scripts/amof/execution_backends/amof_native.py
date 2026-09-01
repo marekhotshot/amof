@@ -7,6 +7,7 @@ Hermes helpers only for result envelope writing and changed_paths accounting.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -489,6 +490,60 @@ def _run_dir(run_id: str) -> Path:
     return path
 
 
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+JPEG_MAGIC = b"\xff\xd8\xff"
+GIF_MAGIC = b"GIF8"
+WEBP_MAGIC = b"WEBP"
+RIFF_MAGIC = b"RIFF"
+PDF_MAGIC = b"%PDF"
+BINARY_SUFFIX_MEDIA = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".pdf": "application/pdf",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+}
+
+
+def classify_native_artifact(path: str, data: bytes) -> dict[str, Any]:
+    """Classify artifact bytes. Binary stays a ref; only UTF-8 text is decoded."""
+    suffix = Path(path).suffix.lower()
+    if data.startswith(PNG_MAGIC):
+        return {"is_binary": True, "media_type": "image/png", "reason": "png_magic"}
+    if data.startswith(JPEG_MAGIC):
+        return {"is_binary": True, "media_type": "image/jpeg", "reason": "jpeg_magic"}
+    if data.startswith(GIF_MAGIC):
+        return {"is_binary": True, "media_type": "image/gif", "reason": "gif_magic"}
+    if data.startswith(RIFF_MAGIC) and WEBP_MAGIC in data[:16]:
+        return {"is_binary": True, "media_type": "image/webp", "reason": "webp_magic"}
+    if data.startswith(PDF_MAGIC):
+        return {"is_binary": True, "media_type": "application/pdf", "reason": "pdf_magic"}
+    if suffix in BINARY_SUFFIX_MEDIA:
+        return {
+            "is_binary": True,
+            "media_type": BINARY_SUFFIX_MEDIA[suffix],
+            "reason": "binary_suffix",
+        }
+    return {"is_binary": False, "media_type": "text/plain", "reason": "utf8_candidate"}
+
+
+def render_binary_artifact_ref(*, path: str, data: bytes, media_type: str) -> str:
+    return json.dumps(
+        {
+            "kind": "binary_artifact",
+            "path": path,
+            "media_type": media_type,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+        },
+        indent=2,
+    ) + "\n"
+
+
 def _load_script(selection: AmofNativeBackendSelection | None = None) -> dict[str, Any] | None:
     path = _script_path()
     if path is None:
@@ -587,7 +642,20 @@ class NativeAgentTools:
         target = self.enforcer.resolve_read_path(path)
         if not target.is_file():
             raise AmofNativeBackendError(f"read_file: not a file: {path}")
-        return target.read_text(encoding="utf-8")
+        data = target.read_bytes()
+        classified = classify_native_artifact(path, data)
+        if classified["is_binary"]:
+            return render_binary_artifact_ref(
+                path=path,
+                data=data,
+                media_type=str(classified["media_type"]),
+            )
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AmofNativeBackendError(
+                f"read_file: {path} is not valid UTF-8 text: {exc}"
+            ) from exc
 
     def list_dir(self, path: str = ".") -> list[str]:
         rel = path if path not in {".", ""} else "."
