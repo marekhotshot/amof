@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -1062,3 +1063,115 @@ class AmofNativeExecutionBudgetTests(unittest.TestCase):
                 )
             self.assertIn("m1:attempt:1", abandoned)
             self.assertEqual(ctx.exception.timeout_seconds, 12.0)
+
+
+PNG_FIXTURE = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + (b"\x00" * 16)
+
+
+class AmofNativeBinaryArtifactReadTests(unittest.TestCase):
+    def test_utf8_text_artifact_still_decodes(self) -> None:
+        classified = amof_native.classify_native_artifact("docs/note.md", b"hello\n")
+        self.assertFalse(classified["is_binary"])
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            (workspace / "docs").mkdir()
+            (workspace / "docs" / "note.md").write_text("hello text\n", encoding="utf-8")
+            subprocess.run(["git", "add", "docs/note.md"], cwd=workspace, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "add note"], cwd=workspace, check=True, capture_output=True)
+            script = Path(tmp) / "script.json"
+            _write_script(
+                script,
+                [
+                    {"type": "tool", "name": "read_file", "arguments": {"path": "docs/note.md"}},
+                    {"type": "final", "text": "text ok"},
+                ],
+            )
+            result = _run_with_script(workspace=workspace, script_path=script)
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["stop_reason"], "completed")
+            self.assertEqual(result["task_findings"], "text ok")
+
+    def test_png_magic_is_not_utf8_decoded(self) -> None:
+        classified = amof_native.classify_native_artifact(
+            "public-surfaces/amof.dev/media/predator-mission-result.png",
+            PNG_FIXTURE,
+        )
+        self.assertTrue(classified["is_binary"])
+        self.assertEqual(classified["media_type"], "image/png")
+        self.assertEqual(classified["reason"], "png_magic")
+        with self.assertRaises(UnicodeDecodeError):
+            PNG_FIXTURE.decode("utf-8")
+        ref = amof_native.render_binary_artifact_ref(
+            path="media/shot.png",
+            data=PNG_FIXTURE,
+            media_type="image/png",
+        )
+        payload = json.loads(ref)
+        self.assertEqual(payload["kind"], "binary_artifact")
+        self.assertEqual(payload["path"], "media/shot.png")
+        self.assertEqual(payload["media_type"], "image/png")
+        self.assertEqual(payload["size"], len(PNG_FIXTURE))
+        self.assertEqual(payload["sha256"], hashlib.sha256(PNG_FIXTURE).hexdigest())
+        self.assertNotIn("\x89", ref)
+
+    def test_png_read_file_returns_ref_and_dispatch_completes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            media = workspace / "public-surfaces" / "amof.dev" / "media"
+            media.mkdir(parents=True)
+            png_path = media / "predator-mission-result.png"
+            png_path.write_bytes(PNG_FIXTURE)
+            subprocess.run(["git", "add", "public-surfaces"], cwd=workspace, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "add png"], cwd=workspace, check=True, capture_output=True)
+            script = Path(tmp) / "script.json"
+            _write_script(
+                script,
+                [
+                    {
+                        "type": "tool",
+                        "name": "read_file",
+                        "arguments": {
+                            "path": "public-surfaces/amof.dev/media/predator-mission-result.png",
+                        },
+                    },
+                    {"type": "final", "text": "binary ref ok"},
+                ],
+            )
+            result = _run_with_script(
+                workspace=workspace,
+                script_path=script,
+                writable_roots=["public-surfaces/amof.dev"],
+            )
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["stop_reason"], "completed")
+            self.assertNotEqual(result["stop_reason"], "selected_runner_dispatch_failed")
+            events = (script.parent / "run" / "events.jsonl").read_text(encoding="utf-8")
+            self.assertIn("binary_artifact", events)
+            self.assertIn("image/png", events)
+            self.assertIn(hashlib.sha256(PNG_FIXTURE).hexdigest(), events)
+
+    def test_invalid_text_fails_explicitly(self) -> None:
+        corrupt = b"\x80\x81not-utf8"
+        classified = amof_native.classify_native_artifact("docs/broken.md", corrupt)
+        self.assertFalse(classified["is_binary"])
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            _init_git_repo(workspace)
+            (workspace / "docs").mkdir()
+            (workspace / "docs" / "broken.md").write_bytes(corrupt)
+            subprocess.run(["git", "add", "docs/broken.md"], cwd=workspace, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "add broken"], cwd=workspace, check=True, capture_output=True)
+            script = Path(tmp) / "script.json"
+            _write_script(
+                script,
+                [
+                    {"type": "tool", "name": "read_file", "arguments": {"path": "docs/broken.md"}},
+                    {"type": "final", "text": "should not reach"},
+                ],
+            )
+            result = _run_with_script(workspace=workspace, script_path=script)
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["stop_reason"], "grant_enforcement_failed")
+            self.assertIn("not valid UTF-8 text", str(result.get("task_findings") or result.get("final_text") or ""))

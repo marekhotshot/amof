@@ -7,6 +7,7 @@ Hermes helpers only for result envelope writing and changed_paths accounting.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -34,6 +35,7 @@ from .hermes_opensandbox import (
     WRITE_SCOPE_PROPOSAL_REQUIRED,
     _manifest_repo_targets,
 )
+from . import context_assembly_receipt as _context_receipt
 from . import native_loop_budget as _loop_budget
 from . import runtime_usage as _runtime_usage
 from .validation_closure import build_validation_summary, derive_validation_closure
@@ -488,6 +490,60 @@ def _run_dir(run_id: str) -> Path:
     return path
 
 
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+JPEG_MAGIC = b"\xff\xd8\xff"
+GIF_MAGIC = b"GIF8"
+WEBP_MAGIC = b"WEBP"
+RIFF_MAGIC = b"RIFF"
+PDF_MAGIC = b"%PDF"
+BINARY_SUFFIX_MEDIA = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".pdf": "application/pdf",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+}
+
+
+def classify_native_artifact(path: str, data: bytes) -> dict[str, Any]:
+    """Classify artifact bytes. Binary stays a ref; only UTF-8 text is decoded."""
+    suffix = Path(path).suffix.lower()
+    if data.startswith(PNG_MAGIC):
+        return {"is_binary": True, "media_type": "image/png", "reason": "png_magic"}
+    if data.startswith(JPEG_MAGIC):
+        return {"is_binary": True, "media_type": "image/jpeg", "reason": "jpeg_magic"}
+    if data.startswith(GIF_MAGIC):
+        return {"is_binary": True, "media_type": "image/gif", "reason": "gif_magic"}
+    if data.startswith(RIFF_MAGIC) and WEBP_MAGIC in data[:16]:
+        return {"is_binary": True, "media_type": "image/webp", "reason": "webp_magic"}
+    if data.startswith(PDF_MAGIC):
+        return {"is_binary": True, "media_type": "application/pdf", "reason": "pdf_magic"}
+    if suffix in BINARY_SUFFIX_MEDIA:
+        return {
+            "is_binary": True,
+            "media_type": BINARY_SUFFIX_MEDIA[suffix],
+            "reason": "binary_suffix",
+        }
+    return {"is_binary": False, "media_type": "text/plain", "reason": "utf8_candidate"}
+
+
+def render_binary_artifact_ref(*, path: str, data: bytes, media_type: str) -> str:
+    return json.dumps(
+        {
+            "kind": "binary_artifact",
+            "path": path,
+            "media_type": media_type,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+        },
+        indent=2,
+    ) + "\n"
+
+
 def _load_script(selection: AmofNativeBackendSelection | None = None) -> dict[str, Any] | None:
     path = _script_path()
     if path is None:
@@ -586,7 +642,20 @@ class NativeAgentTools:
         target = self.enforcer.resolve_read_path(path)
         if not target.is_file():
             raise AmofNativeBackendError(f"read_file: not a file: {path}")
-        return target.read_text(encoding="utf-8")
+        data = target.read_bytes()
+        classified = classify_native_artifact(path, data)
+        if classified["is_binary"]:
+            return render_binary_artifact_ref(
+                path=path,
+                data=data,
+                media_type=str(classified["media_type"]),
+            )
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AmofNativeBackendError(
+                f"read_file: {path} is not valid UTF-8 text: {exc}"
+            ) from exc
 
     def list_dir(self, path: str = ".") -> list[str]:
         rel = path if path not in {".", ""} else "."
@@ -859,6 +928,52 @@ def _is_timeout_exc(exc: BaseException) -> bool:
     return "timed out" in text or "timeout" in text
 
 
+def _emit_context_assembly_receipt(
+    *,
+    assembly_ctx: dict[str, Any] | None,
+    call_index: int | None,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    prompt_tokens_reported: int | None,
+) -> None:
+    """Best-effort per-call receipt. Never raises into the model path."""
+    if assembly_ctx is None or call_index is None:
+        return
+    event_log_path = assembly_ctx.get("event_log_path")
+    try:
+        path = _context_receipt.persist_call_receipt(
+            run_dir=Path(assembly_ctx["run_dir"]),
+            run_id=str(assembly_ctx["run_id"]),
+            call_index=int(call_index),
+            model=model,
+            provider=str(assembly_ctx.get("provider") or "unverified"),
+            messages=messages,
+            tools=tools,
+            goal=str(assembly_ctx.get("goal") or ""),
+            request_id=assembly_ctx.get("request_id"),
+            prompt_tokens_reported=prompt_tokens_reported,
+        )
+        if event_log_path is not None:
+            _shared._append_event(
+                Path(event_log_path),
+                "context_assembly_receipt_written",
+                call_index=int(call_index),
+                receipt_path=str(path),
+            )
+    except Exception as exc:
+        if event_log_path is not None:
+            try:
+                _shared._append_event(
+                    Path(event_log_path),
+                    "context_assembly_receipt_failed",
+                    call_index=int(call_index),
+                    error=str(exc),
+                )
+            except Exception:
+                pass
+
+
 def _chat_completion(
     *,
     messages: list[dict[str, Any]],
@@ -867,6 +982,8 @@ def _chat_completion(
     model_turn_id: str | None = None,
     attempt_id: str | None = None,
     abandoned_attempts: set[str] | None = None,
+    assembly_ctx: dict[str, Any] | None = None,
+    call_index: int | None = None,
 ) -> dict[str, Any]:
     url, headers, transport = _chat_endpoint_and_headers()
     timeout_seconds = native_ial_timeout_seconds()
@@ -891,44 +1008,57 @@ def _chat_completion(
         if tools:
             payload["tools"] = tools
     request = Request(url, headers=headers, data=json.dumps(payload).encode("utf-8"), method="POST")
+    prompt_tokens_reported: int | None = None
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            body = json.loads(response.read().decode("utf-8") or "{}")
-    except HTTPError as exc:
-        detail = ""
         try:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            detail = str(exc)
-        raise AmofNativeBackendError(
-            f"model transport HTTP {exc.code} for {url}: {detail or exc.reason}"
-        ) from exc
-    except (OSError, URLError, TimeoutError) as exc:
-        if _is_timeout_exc(exc):
-            if attempt_id and abandoned_attempts is not None:
-                abandoned_attempts.add(attempt_id)
+            with urlopen(request, timeout=timeout_seconds) as response:
+                body = json.loads(response.read().decode("utf-8") or "{}")
+        except HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                detail = str(exc)
+            raise AmofNativeBackendError(
+                f"model transport HTTP {exc.code} for {url}: {detail or exc.reason}"
+            ) from exc
+        except (OSError, URLError, TimeoutError) as exc:
+            if _is_timeout_exc(exc):
+                if attempt_id and abandoned_attempts is not None:
+                    abandoned_attempts.add(attempt_id)
+                raise AmofNativeTimeoutError(
+                    f"model transport timed out after {timeout_seconds:g}s for {url}: {exc}",
+                    timeout_kind="REMOTE_IAL_TOTAL_TIMEOUT",
+                    timeout_seconds=timeout_seconds,
+                    model_turn_id=model_turn_id,
+                    attempt_id=attempt_id,
+                ) from exc
+            raise AmofNativeBackendError(f"model transport request failed for {url}: {exc}") from exc
+        if attempt_id and abandoned_attempts is not None and attempt_id in abandoned_attempts:
+            # Late body for an already-abandoned attempt must not become authoritative.
             raise AmofNativeTimeoutError(
-                f"model transport timed out after {timeout_seconds:g}s for {url}: {exc}",
+                f"late model response discarded for abandoned attempt {attempt_id}",
                 timeout_kind="REMOTE_IAL_TOTAL_TIMEOUT",
                 timeout_seconds=timeout_seconds,
                 model_turn_id=model_turn_id,
                 attempt_id=attempt_id,
-            ) from exc
-        raise AmofNativeBackendError(f"model transport request failed for {url}: {exc}") from exc
-    if attempt_id and abandoned_attempts is not None and attempt_id in abandoned_attempts:
-        # Late body for an already-abandoned attempt must not become authoritative.
-        raise AmofNativeTimeoutError(
-            f"late model response discarded for abandoned attempt {attempt_id}",
-            timeout_kind="REMOTE_IAL_TOTAL_TIMEOUT",
-            timeout_seconds=timeout_seconds,
-            model_turn_id=model_turn_id,
-            attempt_id=attempt_id,
+            )
+        if not isinstance(body, dict):
+            raise AmofNativeBackendError("chat completion returned non-object response")
+        if transport == TRANSPORT_REMOTE_IAL:
+            body = _openai_compatible_from_remote_ial(body, model=model)
+        usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+        prompt_tokens_reported = _runtime_usage.finite_int(usage.get("prompt_tokens"))
+        return body
+    finally:
+        _emit_context_assembly_receipt(
+            assembly_ctx=assembly_ctx,
+            call_index=call_index,
+            model=model,
+            messages=messages,
+            tools=tools,
+            prompt_tokens_reported=prompt_tokens_reported,
         )
-    if not isinstance(body, dict):
-        raise AmofNativeBackendError("chat completion returned non-object response")
-    if transport == TRANSPORT_REMOTE_IAL:
-        return _openai_compatible_from_remote_ial(body, model=model)
-    return body
 
 
 def _grant_tree_digest(tools: NativeAgentTools) -> str:
@@ -984,6 +1114,7 @@ def _run_model_loop(
     run_id: str | None = None,
     usage_acc: dict[str, Any] | None = None,
     loop_budget_out: dict[str, Any] | None = None,
+    assembly_ctx: dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
     """Run the Native agent loop under amof.native_loop_budget/v1.
 
@@ -996,7 +1127,7 @@ def _run_model_loop(
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
-            "content": "You are AMOF Native Agent. Use tools for repository work; stay within approved grants.",
+            "content": _context_receipt.NATIVE_SYSTEM_CONTENT,
         },
         {"role": "user", "content": goal},
     ]
@@ -1044,6 +1175,10 @@ def _run_model_loop(
                 "synthesis_required": budget_state.synthesis_required,
             },
         )
+        call_index = turn_number
+        if assembly_ctx is not None:
+            call_index = int(assembly_ctx.get("next_call_index") or 1)
+            assembly_ctx["next_call_index"] = call_index + 1
         active_tools = tool_specs
         if budget_state.synthesis_required:
             active_tools = []
@@ -1070,6 +1205,8 @@ def _run_model_loop(
                 model_turn_id=model_turn_id,
                 attempt_id=attempt_id,
                 abandoned_attempts=abandoned_attempts,
+                assembly_ctx=assembly_ctx,
+                call_index=call_index,
             )
         except AmofNativeTimeoutError as exc:
             _shared._append_event(
@@ -1520,6 +1657,15 @@ def run(
         agent_label=AGENT_LABEL,
         backend_name=BACKEND_TYPE,
     )
+    assembly_ctx = {
+        "run_dir": run_dir,
+        "run_id": run_id,
+        "request_id": request_id,
+        "goal": goal,
+        "event_log_path": event_log_path,
+        "provider": effective_provider,
+        "next_call_index": 1,
+    }
 
     status = "failed"
     stop_reason = "amof_native_runtime_exception"
@@ -1573,6 +1719,7 @@ def run(
                     run_id=request_id,
                     usage_acc=usage_acc,
                     loop_budget_out=loop_budget_telemetry,
+                    assembly_ctx=assembly_ctx,
                 )
                 exit_code = 0 if status == "completed" else (124 if stop_reason == "timeout" else 1)
         except AmofNativeTimeoutError as exc:
@@ -1922,6 +2069,15 @@ def _result_payload(
             "isolation_model": ISOLATION_MODEL,
             "event_log_path": str(event_log_path),
             "runtime_log_path": str(runtime_log_path),
+            **(
+                {
+                    "context_assembly_dir": str(
+                        event_log_path.parent / _context_receipt.RECEIPT_DIRNAME
+                    )
+                }
+                if (event_log_path.parent / _context_receipt.RECEIPT_DIRNAME).is_dir()
+                else {}
+            ),
             "process_identity": health.get("process_identity"),
             "writable_roots_relative": list(selection.writable_roots_relative),
             "remote_ial_usage": remote_ial_usage,
