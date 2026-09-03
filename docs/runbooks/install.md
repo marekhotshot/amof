@@ -76,19 +76,19 @@ end-user installs do not pull in pytest.
 Use this path if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.1.1"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.4.0"
 amof --version
 ```
 
-Expected version:
+Expected version (after the `v3.4.0` tag exists):
 
 ```text
-AMOF v3.1.1
+AMOF v3.4.0
 ```
 
-`v3.1.1` packages the post-`v3.0.2` local-planning runner template/readiness
-path and the standalone smoke version-text cleanup without introducing
-execution dispatch or mutation behavior.
+`v3.4.0` packages Native and Cursor backends, local trust verify/export,
+acceptance honesty, and `amof scope import-result`. Until the tag exists,
+verify a source checkout with `amof --version` instead of the pipx pin.
 
 ## First Commands After Install
 

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
+from .. import __version__
+from ..orchestrator.plan_execute_control import capability_help_lines
+
 
 _HELP: Dict[str, str] = {
     "init": """
@@ -60,7 +63,7 @@ _HELP: Dict[str, str] = {
 """,
 
     "agent": """
-  amof agent — Run AMOF planning or bounded execution
+  amof agent — Run AMOF planning or builtin execution
 
   Public planning path:
     amof agent --plan "Inspect this repo" --no-follow-up
@@ -68,11 +71,96 @@ _HELP: Dict[str, str] = {
   No-key validation should reach provider configuration, for example:
     [agent] OPENROUTER_API_KEY not set.
 
-  Bounded execution is manual/advanced:
-    amof agent --provider openrouter --plan-execute "Make a bounded change. Do not commit." --no-follow-up
+  Governed mutation runs through `amof handoff execute-agent … --write-scope-approval … --approve-capabilities bounded_write` (execution backends) or `amof agent --plan-execute … --write-scope-approval … --approve-capabilities bounded_write` (builtin executor, roots restricted to the Binding). Without an approval the builtin path is an ungoverned local demo.
 
-  Execution output must be reviewed as a Git diff. AMOF must not auto-commit,
-  auto-push, tag, or promote worker changes.
+  Governed builtin mutate (roots from the Binding):
+    amof agent --plan-execute "Make a bounded change. Do not commit." \\
+      --write-scope-approval <wsa-id> --approve-capabilities bounded_write --no-follow-up
+
+  Ungoverned local demo (disposable repos only):
+    amof agent --provider local --plan-execute "Make a bounded change. Do not commit." --no-follow-up
+
+  `--approve-writable-root` cannot be combined with `--write-scope-approval`
+  (mixed authority is refused). Execution output must be reviewed as a Git
+  diff. AMOF must not auto-commit, auto-push, tag, or promote worker changes.
+  `--plan-execute` needs a configured provider (`amof setup provider …` or
+  `ANTHROPIC_API_KEY`). A missing provider stops before planning; no
+  Binding is created.
+""",
+
+    "execute": """
+  Governed execute — handoff execute-agent under Write-Scope Authority
+
+  One-time signing key (required before a governed execute can finalize):
+    amof trust keygen --preferred
+
+  Then bind an operator Approval and the bounded_write capability:
+    amof handoff execute-agent --handoff-id <id> \\
+      --write-scope-approval <approval-id> \\
+      --approve-capabilities bounded_write --confirm
+
+  Builtin alternative (same flags; roots restricted to the Binding):
+    amof agent --plan-execute "…" --write-scope-approval <approval-id> \\
+      --approve-capabilities bounded_write --no-follow-up
+
+  `--approve-writable-root` cannot be combined with `--write-scope-approval`.
+  `zed` and other prepare targets are transport-only handoffs. Only
+  `--target amof-agent` can be executed by `execute-agent`.
+  Builtin `--plan-execute` needs a configured provider (`amof setup provider …`
+  or `ANTHROPIC_API_KEY`). A missing provider stops before planning; no
+  Binding is created.
+""",
+
+    "handoff": """
+  amof handoff — Prepare and dispatch governed mission packets
+
+  Public use:
+    amof handoff prepare --payload-kind selected-text --source chatgpt --target amof-agent --preview
+    amof handoff prepare --payload-kind selected-text --source chatgpt --target amof-agent --confirm
+    amof trust keygen --preferred
+    amof handoff execute-agent --handoff-id <id> --write-scope-approval <wsa-...> --approve-capabilities bounded_write --confirm
+
+  `--confirm` on prepare prints the packet JSON (there is no `--json` flag).
+  Only `--target amof-agent` is executable. `zed`/other targets are
+  transport-only and `execute-agent` / `accept-agent` will refuse them.
+
+  Governed mutation also runs through `amof agent --plan-execute … --write-scope-approval … --approve-capabilities bounded_write` (builtin executor, roots restricted to the Binding). Without an approval the builtin path is an ungoverned local demo.
+""",
+
+    "scope": """
+  amof scope — Write-Scope Authority inspect / approve / audit
+
+  Public lifecycle:
+    amof scope import-result --example src-only --run-id <id>
+    amof scope list
+    amof scope show <wsp-...>
+    amof scope approve <wsp-...> --ttl 2h --approved-by <operator>
+    amof handoff execute-agent --handoff-id <id> --write-scope-approval <wsa-...> --approve-capabilities bounded_write
+    amof agent --plan-execute "…" --write-scope-approval <wsa-...> --approve-capabilities bounded_write --no-follow-up
+    amof scope audit <wsa-...>
+
+  `--example src-only` imports a packaged worker-shaped fixture for learning
+  (not evidence). import/list/approve/audit run without any model. The
+  `amof agent --plan-execute` step needs a configured provider
+  (`amof setup provider …` or `ANTHROPIC_API_KEY`). A missing provider
+  stops before planning; no Binding is created. Workers emit proposal
+  evidence. Operators import a result file or run a governed backend;
+  they never author roots. Unknown or corrupt records fail closed.
+
+  Governed mutation runs through `amof handoff execute-agent … --write-scope-approval … --approve-capabilities bounded_write` (execution backends) or `amof agent --plan-execute … --write-scope-approval … --approve-capabilities bounded_write` (builtin executor, roots restricted to the Binding). Without an approval the builtin path is an ungoverned local demo.
+""",
+
+    "capabilities": """
+  amof help capabilities — Recognised --approve-capabilities names
+""",
+
+    "trust": """
+  amof trust keygen — Create the local preferred signing key
+
+  Required one-time step before a governed `handoff execute-agent` can
+  finalize. AMOF does not auto-generate keys.
+
+    amof trust keygen --preferred
 """,
 
     "doctor": """
@@ -81,6 +169,10 @@ _HELP: Dict[str, str] = {
   Public use:
     amof doctor
     amof doctor --json
+
+  Exit 0 means the workstation is usable (PASS or WARN). Exit 1 means
+  blocked (FAIL). A detached CLI checkout is a Note in installed_cli
+  layout, not a Warning, and does not change a PASS verdict.
 
   Fresh installs may warn when no provider profile is configured. That warning
   is acceptable for install/adoption smoke and does not imply private runtime
@@ -119,13 +211,13 @@ _HELP: Dict[str, str] = {
   require kubeconfigs, clusters, private deployment topology, or provider keys.
 """,
 
-    "update": """
+    "update": f"""
   amof update — Update a pipx-managed AMOF install
 
   Public use:
     amof update --check
     amof update
-    amof update --version v2.3.0
+    amof update --version v{__version__}
 
   The update path targets public release tags from the public AMOF repository.
 """,
@@ -300,8 +392,11 @@ _PUBLIC_TOPICS = [
     "bootstrap",
     "update",
     "uninstall",
-    "troubleshoot",
     "studio",
+    "scope",
+    "handoff",
+    "execute",
+    "capabilities",
 ]
 _ADVANCED_TOPICS = ["status", "context", "manifest", "generated-build", "director", "workspace", "mcp", "server"]
 _WORKSPACE_TOPICS = ["install", "sync", "ticket"]
@@ -317,8 +412,27 @@ def _topic_list(names: list[str]) -> str:
     )
 
 
+def _capabilities_help() -> str:
+    """Build capabilities help from the same allow-list the parser uses."""
+    lines = [
+        "  Recognised --approve-capabilities names",
+        "",
+        "  These names come from the same allow-list the capability parser uses.",
+        "  bounded_write grants the same builtin tool capability as write and is",
+        "  the name required to bind a Write-Scope Approval. Roots come from the",
+        "  Binding, not from this name.",
+        "",
+    ]
+    lines.extend(capability_help_lines())
+    lines.append("")
+    return "\n".join(lines)
+
+
 def cmd_help(topic: Optional[str] = None) -> int:
     """Show extended help for a command or general overview."""
+    if topic == "capabilities":
+        print(_capabilities_help())
+        return 0
     if topic and topic in _HELP:
         print(_HELP[topic])
         return 0
@@ -339,7 +453,7 @@ def cmd_help(topic: Optional[str] = None) -> int:
   AMOF — Agentic Operations Fabric
 
   Public quickstart:
-    pipx install "git+https://github.com/marekhotshot/amof.git@v2.3.0"
+    pipx install "git+https://github.com/marekhotshot/amof.git@v{__version__}"
     amof check
     amof doctor
     amof init --adopt .

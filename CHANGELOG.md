@@ -6,8 +6,171 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 ## [Unreleased]
 
-- Docs-only: public README / CHANGELOG surface reconciliation for `v3.3.0`
-  Write-Scope Authority framing (post-tag on main; no product version bump).
+## [3.4.0] - 2026-09-02
+
+Native runtime, Trust Layer, acceptance honesty, and a usable public Write-Scope lifecycle.
+
+- Date: 2026-09-02.
+- Minor release after `v3.3.0`.
+- Packages the governed public `main` delta since the `v3.3.0` tag, plus the
+  public DX slice that makes the Write-Scope lifecycle usable without a
+  private execution backend.
+
+### Added
+
+- You can dispatch a first-party Native agent loop and a Cursor SDK backend
+  under the same write-scope and result envelope as Hermes.
+- `amof preview check-url --browser-backend local-playwright` captures a
+  bounded screenshot and attaches it as preview evidence. The flag is
+  additive; when unset, the check stays HTTP-only.
+- You can generate a local Ed25519 trust key and fail-closed verify a
+  finalized run evidence bundle (`amof trust keygen|verify`,
+  `amof bootstrap verify`).
+- You can export a portable trust package and verify it offline, including a
+  local append-only transparency log (`amof trust export|verify-export|tlog-init`).
+- Run results may carry inspectable `warnings[]` and `usage` fields. A UI may
+  say “with warnings” only when warnings exist, and must not invent cost.
+- Native and Cursor runs report provider or SDK token usage when the
+  substrate provides it, and distinguish missing from zero.
+- Native stops or extends its loop from machine-observable progress instead
+  of a blind turn cap.
+- Execution, validation, and acceptance are separate: a completed run whose
+  required checks were not run is `UNVERIFIED` and cannot be closed as
+  passed.
+- Every Native model call writes a hashed context-assembly receipt you can
+  audit, without storing prompt bodies.
+- Native Remote-IAL calls honor an explicit per-call time and output-token
+  budget (default wait 180s, default max tokens 4096).
+- You can import a worker result file to create write-scope proposals
+  (`amof scope import-result <agent-run-result.json> --run-id <id>`) without
+  running an execution backend. An empty `amof scope list` points at this
+  path. `amof scope import-result --example src-only` imports a packaged
+  worker-shaped fixture for learning (not evidence).
+- `amof help capabilities` lists the same capability names the parser accepts.
+
+### Changed
+
+- Intake draft classification ignores project-memory charter wording, so a
+  verification mission is no longer silently marked blocked or deferred.
+- Native waits longer for a still-running provider call (default 90s → 180s)
+  and does not treat a late body from an abandoned attempt as authority.
+- A persisted Native success stays a success when the Job wrapper later
+  fails trust finalize.
+- A read-only Native investigation that keeps producing new observations is
+  no longer stopped as “no progress.”
+- Native write-grant handling after the initial backend landing continues to
+  require repo-relative paths.
+- Generated `amof context` files land under AMOF app-data
+  (`$AMOF_HOME/share/context/<name>/`), not in the adopted repo.
+- `amof help` / `amof help update` pipx examples use the installed package
+  version instead of a stale hardcoded tag.
+- `amof update --check` prints `git describe` when the source checkout is
+  ahead of the tagged release, so version drift is visible.
+- Docs and help state that governed mutation runs through
+  `amof handoff execute-agent --write-scope-approval --approve-capabilities bounded_write`
+  or `amof agent --plan-execute --write-scope-approval --approve-capabilities bounded_write`.
+  Without an approval the builtin path prints an ungoverned-local-mode banner
+  and is restricted only by guardrails and the adopted repo root.
+- `amof agent --provider local` is accepted when a local profile type is
+  configured (for example `setup provider local-qwen`).
+- First-run prepare examples use `--target amof-agent`. Governed execute
+  docs name `--approve-capabilities bounded_write` and
+  `amof trust keygen --preferred` as the one-time signing step.
+
+### Fixed
+
+- Hermes relative tool roots resolve inside the workspace, so Cursor-secondary
+  dogfood writes no longer miss the repo.
+- `amof scope list` fail-closes when a proposal record is corrupt instead of
+  treating it as listable authority.
+- `amof doctor` treats a detached CLI checkout as a Note (not a Warning) in
+  `installed_cli` layout, so the verdict is PASS when nothing else is wrong.
+  Doctoring the AMOF source checkout itself still fails on detached/stale
+  canonical state. Exit 0 means usable; exit 1 means blocked.
+- `--approve-capabilities bounded_write` is accepted by the builtin
+  capability parser (same tool grant as `write`) so a governed bind can
+  start. A Binding created before a later bind or capability parse failure
+  is marked failed so `amof scope audit` does not show a dangling `active`
+  binding.
+- A fresh install can plan with the default Anthropic provider even when
+  the SDK depends on `httpx2` instead of `httpx`. A custom CA bundle is
+  applied when an HTTP client is available; otherwise the default client
+  is used and the bundle is ignored with one warning.
+- Planning with a current Anthropic SDK (1.3+) no longer fails with
+  `Messages.create() got an unexpected keyword argument 'temperature'`.
+  Sampling knobs the installed SDK does not accept are omitted with one
+  warning; provider defaults apply.
+- Wrong `--approve-capabilities`, mixed `--approve-writable-root`, a
+  missing/expired/revoked `--write-scope-approval`, or an unknown
+  capability name now fail before any planner or provider call. No
+  Binding is created. The later bind gate still runs as defense in depth.
+- `amof promote-main` prints a prefixed error and exits 1 when the repo
+  cannot be resolved, instead of a traceback.
+
+### Security
+
+- An empty tool or grant path is not repository-root write authority. The
+  Native loop reports the path error and continues instead of aborting or
+  silently widening scope.
+- When a WriteScopeBinding exists, the builtin executor writable roots are
+  replaced by the Binding allowed roots (deny-wins). An out-of-scope write
+  is blocked as `scope_exceeded`, recorded in run events, and shown by
+  `amof runs show`. `--approve-writable-root` cannot widen a bound run.
+- Forged or swapped signing keys, overclaimed proof strings, and post-scan
+  symlink swaps fail closed on trust verify and export verify.
+
+### Deprecated
+
+- None new. `--approve-writable-root` remains the previous-release
+  compatibility shim and still does not mint historical Approvals or
+  Bindings.
+
+### Docs
+
+- Public README and CHANGELOG were reconciled to the Write-Scope Authority
+  tag after that tag shipped (no version bump at the time).
+- Public docs no longer advertise a private Operator Console / cloud-dev
+  Predator call to action.
+- The existing execution chain (intent → packet → backend → result) is named
+  so maintainers do not invent a parallel layer. Public backends in this
+  line are Native, Cursor, Hermes, and Claude.
+- Adversarial claim-validation process is published: implementation-correct
+  is not enough to state a security guarantee.
+- Trust Model v1 markdown landed on public `main` as a draft claim surface;
+  it is not a published guarantee in this release.
+- README, write-scope-authority, happy-path, and `amof help {scope,handoff,execute,capabilities}`
+  name both governed execute paths and the ungoverned builtin demo.
+- The learning walkthrough is titled as a fixture, not a no-LLM execute
+  path. import/list/approve/audit need no model; `--plan-execute` needs a
+  configured provider. A missing provider stops before planning and
+  creates no Binding.
+
+### Disclosures (fail-closed tightenings; not MAJOR)
+
+- Empty-path grant is no longer treated as repo-root write.
+- Bound builtin writes are restricted to Binding roots (replace, not append).
+- `completed` + validation `not_run` is `UNVERIFIED`, never `PASS`.
+- Native IAL wait default changed from 90s to 180s (env-overridable).
+- `--browser-backend` was added; unset still means HTTP.
+
+### Explicit non-claims
+
+- No Predator, Workforce, or operator console in OSS.
+- Not multi-tenant.
+- Not a production-readiness claim.
+- No Kubernetes in OSS.
+- Builtin `amof agent --plan-execute` without `--write-scope-approval` is
+  not governed by Write-Scope Authority.
+- Not a PyPI publication.
+- Not a public AMOF container image.
+- Not Sigstore / TSA / PQC trust.
+- Not transactional filesystem rollback.
+- Trust Model v1 is not canonically published by cutting this version.
+
+### Internal
+
+- Tests-only write-scope audit assertion tweak after the previous public
+  tag; no user-visible change.
 
 ## v3.3.0 - Write-Scope Authority
 

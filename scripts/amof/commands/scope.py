@@ -10,8 +10,10 @@ Wave 5: audit|recover + migration honesty.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from ..write_scope_approvals import (
@@ -41,6 +43,7 @@ from ..write_scope_proposals import (
     WriteScopeProposalError,
     list_proposals,
     load_proposal,
+    persist_write_scope_proposals_from_result,
 )
 from ..write_scope_recovery import WriteScopeRecoveryError, recover_binding
 
@@ -63,9 +66,15 @@ class ScopeCliError(RuntimeError):
     """Raised when a scope command cannot be completed truthfully."""
 
 
+_EMPTY_LIST_HINT = (
+    "0 proposals. Proposals are emitted by governed worker runs; import one with: "
+    "amof scope import-result <result.json> --run-id <id>"
+)
+
+
 def _print_list_table(records: list[dict[str, Any]]) -> None:
     if not records:
-        print("No write-scope records found.")
+        print(_EMPTY_LIST_HINT)
         return
     headers = (
         "kind",
@@ -275,6 +284,110 @@ def _load_show_record(ref: str) -> dict[str, Any]:
         raise ScopeCliError(f"scope record not found: {text}") from exc
 
 
+def _agent_run_result_schema_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "contracts" / "agent-run-result.schema.json"
+
+
+_EXAMPLE_RESULT_FILES = {
+    "src-only": "agent-run-result.src-only.json",
+}
+
+
+def write_scope_example_path(name: str) -> Path:
+    """Resolve a packaged or repo-root write-scope example result file."""
+    filename = _EXAMPLE_RESULT_FILES.get(name)
+    if not filename:
+        raise ScopeCliError(f"unknown import-result example: {name}")
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[1] / "examples" / "write-scope" / filename,
+        here.parents[3] / "examples" / "write-scope" / filename,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise ScopeCliError(
+        f"example {name!r} is not installed; expected {filename} under examples/write-scope/"
+    )
+
+
+def _validate_agent_run_result(payload: Any) -> None:
+    """Fail closed on an invalid agent-run-result envelope."""
+    if not isinstance(payload, dict):
+        raise ScopeCliError("result file is not a JSON object")
+    if payload.get("result_kind") != "agent_run_result":
+        raise ScopeCliError("result_kind must be 'agent_run_result'")
+    schema_path = _agent_run_result_schema_path()
+    if importlib.util.find_spec("jsonschema") is None or not schema_path.is_file():
+        return
+    import jsonschema
+
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    try:
+        jsonschema.validate(instance=payload, schema=schema)
+    except jsonschema.ValidationError as exc:
+        raise ScopeCliError(f"agent-run-result schema validation failed: {exc.message}") from exc
+
+
+def _cmd_scope_import_result(args: argparse.Namespace) -> int:
+    example = str(getattr(args, "example", "") or "").strip()
+    raw_result = str(getattr(args, "result_file", "") or "").strip()
+    run_id = str(getattr(args, "run_id", "") or "").strip()
+    if example and raw_result:
+        raise ScopeCliError("pass a result file or --example, not both")
+    if example:
+        result_path = write_scope_example_path(example)
+        sys.stderr.write(
+            "[scope] importing learning fixture "
+            f"{example} ({result_path.name}); not evidence\n"
+        )
+    else:
+        result_path = Path(raw_result)
+        if not raw_result or not result_path.is_file():
+            raise ScopeCliError(
+                "result file not found; pass a worker agent-run-result.json "
+                "or --example src-only"
+            )
+    if not run_id:
+        raise ScopeCliError("--run-id is required")
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ScopeCliError(f"result file is not valid JSON: {exc}") from exc
+    _validate_agent_run_result(payload)
+    outcome = persist_write_scope_proposals_from_result(payload, run_id=run_id)
+    if outcome.rejected and not outcome.persisted:
+        reasons = ", ".join(
+            str(item.get("reason") or item.get("detail") or item) for item in outcome.rejected
+        )
+        raise ScopeCliError(f"no proposals persisted ({reasons or 'rejected'})")
+    if not outcome.persisted:
+        raise ScopeCliError(
+            "no write_scope_proposals in result; worker must emit proposal evidence"
+        )
+    ids = [str(item["proposal_id"]) for item in outcome.persisted]
+    if bool(getattr(args, "json", False)):
+        print(
+            json.dumps(
+                {
+                    "proposal_ids": ids,
+                    "persisted": outcome.persisted,
+                    "rejected": outcome.rejected,
+                },
+                indent=2,
+            )
+        )
+    else:
+        for proposal_id in ids:
+            print(proposal_id)
+        if outcome.rejected:
+            sys.stderr.write(
+                f"[scope] {len(outcome.rejected)} candidate(s) rejected; "
+                f"{len(ids)} persisted\n"
+            )
+    return 0
+
+
 def cmd_scope(args: argparse.Namespace) -> int:
     action = str(getattr(args, "scope_cmd", "") or "").strip()
     try:
@@ -336,11 +449,20 @@ def cmd_scope(args: argparse.Namespace) -> int:
                     or "",
                 )
             )
+            corrupt = [item for item in records if item.get("status") == "corrupt"]
+            for item in corrupt:
+                sys.stderr.write(
+                    f"[scope] corrupt proposal {item.get('proposal_id')}: "
+                    f"{item.get('integrity_error')}\n"
+                )
             if bool(getattr(args, "json", False)):
                 print(json.dumps(records, indent=2))
             else:
                 _print_list_table(records)
-            return 0
+            return 1 if corrupt else 0
+
+        if action == "import-result":
+            return _cmd_scope_import_result(args)
 
         if action == "show":
             ref = str(
@@ -464,7 +586,7 @@ def cmd_scope(args: argparse.Namespace) -> int:
             return 0
 
         sys.stderr.write(
-            "Usage: amof scope {list,show,approve,revoke,audit,recover} ...\n"
+            "Usage: amof scope {list,show,approve,revoke,audit,recover,import-result} ...\n"
         )
         return 1
     except ScopeCliError as exc:

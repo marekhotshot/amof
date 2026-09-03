@@ -21,6 +21,7 @@ VALID_CAPABILITIES: frozenset[str] = frozenset(
     {
         "read",
         "write",
+        "bounded_write",
         "network",
         "secret",
         "shell_limited",
@@ -35,12 +36,25 @@ CORE_TRUST_CAPABILITIES: frozenset[str] = frozenset(
 TOOL_PACK_SCOPED_CAPABILITIES: frozenset[str] = frozenset(
     {"shell_limited", "jenkins", "k8s", "k8s_mutation"}
 )
+# Builtin executor tool grant: bounded_write is the bind-gate token and maps
+# to the same tool capability as write. Roots come from the Binding, not this name.
+_EXECUTOR_CAPABILITY_ALIASES: Dict[str, str] = {
+    "bounded_write": "write",
+}
 
 _CAPABILITY_RATIONALE: Dict[str, str] = {
     "read": "Inspect repository files, configs, and plan context.",
     "write": "Write reports or modify files required by the approved plan.",
+    "bounded_write": (
+        "Same builtin tool grant as write; required to bind a Write-Scope "
+        "Approval. Roots come from the Binding, not this name."
+    ),
     "network": "Reach Jenkins, kubectl, helm, or HTTP endpoints referenced by the plan.",
     "secret": "Use credential env vars, tokens, or kubeconfig required by the plan (values are never logged).",
+    "shell_limited": "Run allow-listed shell commands from an approved tool pack.",
+    "jenkins": "Use Jenkins helper tools from an approved tool pack.",
+    "k8s": "Read Kubernetes cluster state through an approved tool pack.",
+    "k8s_mutation": "Mutate Kubernetes resources through an approved tool pack.",
 }
 
 # Fatal failures always stop the plan (continue_on_failure cannot override).
@@ -861,8 +875,21 @@ def derive_required_capabilities(text: str) -> Set[Capability]:
     return caps  # type: ignore[return-value]
 
 
+def capability_help_lines() -> List[str]:
+    """One help line per recognised capability, from the parser allow-list."""
+    lines: List[str] = []
+    for name in sorted(VALID_CAPABILITIES):
+        rationale = _CAPABILITY_RATIONALE.get(name, "Recognised capability.")
+        lines.append(f"    {name:<16} {rationale}")
+    return lines
+
+
 def parse_capability_names(names: List[str]) -> Set[Capability]:
-    """Parse and validate capability names from CLI flags."""
+    """Parse and validate capability names from CLI flags.
+
+    ``bounded_write`` is a recognised name (bind-gate token). For the builtin
+    executor it grants the same tool capability as ``write``.
+    """
     parsed: Set[Capability] = set()
     for raw in names:
         for part in str(raw).split(","):
@@ -874,8 +901,104 @@ def parse_capability_names(names: List[str]) -> Set[Capability]:
                     f"Unknown capability {cap!r}. "
                     f"Allowed: {', '.join(sorted(VALID_CAPABILITIES))}"
                 )
-            parsed.add(cap)  # type: ignore[arg-type]
+            executor_cap = _EXECUTOR_CAPABILITY_ALIASES.get(cap, cap)
+            parsed.add(executor_cap)  # type: ignore[arg-type]
     return parsed
+
+
+_GOVERNED_PLAN_EXECUTE_SHAPE = (
+    'amof agent --plan-execute "…" --write-scope-approval <wsa-id> '
+    "--approve-capabilities bounded_write --no-follow-up"
+)
+
+
+def _raw_capability_tokens(names: Optional[List[str]]) -> List[str]:
+    tokens: List[str] = []
+    for raw in names or []:
+        for part in str(raw).split(","):
+            cap = part.strip().lower()
+            if cap:
+                tokens.append(cap)
+    return tokens
+
+
+def preflight_write_scope_flags(
+    *,
+    write_scope_approval: Optional[str] = None,
+    approve_capabilities: Optional[List[str]] = None,
+    approve_writable_roots: Optional[List[str]] = None,
+) -> List[str]:
+    """Fail-closed write-scope flag checks. No Binding, no LLM, no writes.
+
+    Returns actionable error lines (empty if the flag set is usable).
+    Callers must run this before planner or provider construction.
+    """
+    from ..write_scope_approvals import (
+        STATUS_APPROVED,
+        STATUS_EXPIRED,
+        STATUS_REVOKED,
+        WriteScopeApprovalError,
+        load_approval,
+    )
+
+    errors: List[str] = []
+    approval_ref = str(write_scope_approval or "").strip() or None
+    naked_roots = [
+        str(item).strip()
+        for item in (approve_writable_roots or [])
+        if str(item).strip()
+    ]
+    tokens = _raw_capability_tokens(approve_capabilities)
+
+    if approve_capabilities:
+        try:
+            parse_capability_names(list(approve_capabilities))
+        except ValueError as exc:
+            errors.append(f"{exc}. Use: {_GOVERNED_PLAN_EXECUTE_SHAPE}")
+
+    if approval_ref and "bounded_write" not in tokens:
+        errors.append(
+            "--write-scope-approval requires the literal token bounded_write "
+            f"(not write). Use: {_GOVERNED_PLAN_EXECUTE_SHAPE}"
+        )
+
+    if approval_ref and naked_roots:
+        errors.append(
+            "refuse mixed authority: pass --write-scope-approval OR "
+            "--approve-writable-root, not both. "
+            f"Use: {_GOVERNED_PLAN_EXECUTE_SHAPE}"
+        )
+
+    if approval_ref:
+        try:
+            record = load_approval(
+                approval_ref,
+                evaluate_ttl=True,
+                persist_expiry=False,
+            )
+        except WriteScopeApprovalError as exc:
+            errors.append(
+                f"{exc}. Create one with: amof scope approve <wsp-...> "
+                "--ttl 2h --approved-by <operator>"
+            )
+        else:
+            status = str(record.get("status") or "")
+            if status == STATUS_EXPIRED:
+                errors.append(
+                    f"approval expired: {approval_ref}. "
+                    "Approve a new grant; the previous TTL has elapsed."
+                )
+            elif status == STATUS_REVOKED:
+                errors.append(
+                    f"approval revoked: {approval_ref}. "
+                    "Issue a new approval; revoked grants cannot bind."
+                )
+            elif status != STATUS_APPROVED:
+                errors.append(
+                    f"approval is not active: {approval_ref} status={status}. "
+                    "Use an approved, unexpired Write-Scope Approval."
+                )
+    return errors
 
 
 def plan_id_for(plan: ExecutionPlan, session_id: str) -> str:
@@ -935,7 +1058,11 @@ def readiness_is_writable_root_only_failure(result: ExecutionReadinessResult) ->
 
 
 def apply_writable_root_elevation(guardrails: Any, roots: List[str]) -> List[str]:
-    """Append plan-scoped writable roots to guardrails for this session only."""
+    """Append plan-scoped writable roots to guardrails for this session only.
+
+    Ungoverned / legacy ``--approve-writable-root`` path. A bound Write-Scope
+    run must call ``apply_binding_writable_roots`` instead (replace, not append).
+    """
     approved: List[str] = []
     for raw in roots:
         root = Path(raw).resolve()
@@ -944,6 +1071,13 @@ def apply_writable_root_elevation(guardrails: Any, roots: List[str]) -> List[str
             guardrails.writable_roots.append(root)
         approved.append(str(root))
     return approved
+
+
+def apply_binding_writable_roots(guardrails: Any, roots: List[str]) -> List[str]:
+    """Replace guardrails.writable_roots with Binding roots. Do not append."""
+    resolved = [Path(raw).resolve() for raw in roots]
+    guardrails.writable_roots = list(resolved)
+    return [str(root) for root in resolved]
 
 
 def apply_tool_pack_approval(plan: ExecutionPlan, approved_tool_packs: Set[str]) -> None:

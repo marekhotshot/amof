@@ -10,6 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List
 
+from ..app_paths import generated_context_dir
 from ..manifest import find_repo
 from ..state import get_effective_repos
 from ..utils import matches_any, prepare_patterns, run_command
@@ -687,7 +688,7 @@ def cmd_context(
     
     # Workspace-wide mode
     if not service:
-        output_dir = Path("context") / "_workspace"
+        output_dir = generated_context_dir() / "_workspace"
         output_dir.mkdir(parents=True, exist_ok=True)
         
         relationships = extract_cross_repo_relationships(manifest)
@@ -727,7 +728,7 @@ def cmd_context(
 
     indexed_files = gather_files(repo_path, include, exclude, max_files, max_bytes)
 
-    output_dir = Path("context") / service
+    output_dir = generated_context_dir() / service
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with (output_dir / "index.json").open("w", encoding="utf-8") as f:

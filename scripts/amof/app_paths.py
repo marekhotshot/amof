@@ -200,6 +200,11 @@ def studio_dir() -> Path:
     return get_app_paths().data_root / "studio"
 
 
+def generated_context_dir() -> Path:
+    """App-data root for generated `amof context <name>` files (not the target repo)."""
+    return get_app_paths().data_root / "context"
+
+
 def director_prepare_runs_dir() -> Path:
     return get_app_paths().data_root / "evidence" / "prepare-runs"
 
@@ -363,6 +368,7 @@ __all__ = [
     "ensure_app_roots",
     "ensure_parent_dir",
     "evidence_dir",
+    "generated_context_dir",
     "get_app_paths",
     "indexes_dir",
     "kubeconfigs_dir",

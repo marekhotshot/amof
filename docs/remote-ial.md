@@ -1,6 +1,6 @@
 # Remote IAL
 
-Status: public client contract, verified with installed `AMOF v3.1.1`
+Status: public client contract, verified with the installed public CLI (`amof --version`)
 
 Remote IAL lets installed AMOF route planning calls through an externally
 operated inference gateway while keeping AMOF responsible for the local
@@ -13,7 +13,7 @@ credential material, hosted receipt backends, or deployment-specific details.
 
 ## Verified Capability
 
-The `v3.1.1` release receipts verify:
+Public client receipts for this contract verify:
 
 - installed `amof setup provider remote-ial` writes provider profile references
   only, not raw secrets

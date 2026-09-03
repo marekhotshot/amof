@@ -3,10 +3,10 @@
 Status: public architecture note (documents what already exists in code)  
 Audience: maintainers and operators who might otherwise invent a parallel
 “Intent → ExecutionRequest → ExecutionResult” layer  
-Baseline: public `main` at the AMOF v3.3.0 Write-Scope Authority line
-(`docs/write-scope-authority.md`, Hermes + Claude Code backends, handoff
-dispatch). Private operator projection of delivery verdicts is described only
-at the ownership boundary — not as a second public schema.
+Baseline: public `main` at the AMOF v3.4.0 line
+(`docs/write-scope-authority.md`; backends: Native, Cursor, Hermes, Claude;
+handoff dispatch). Private operator projection of delivery verdicts is
+described only at the ownership boundary — not as a second public schema.
 
 ## Purpose
 

@@ -143,13 +143,29 @@ class RepoAdoptionTests(unittest.TestCase):
 
             ecosystem_result = _run_amof(repo, amof_home, "context", "hotshot-sk")
             repo_name_result = _run_amof(repo, amof_home, "context", "hotshot.sk")
-
-        self.assertEqual(ecosystem_result.returncode, 0, ecosystem_result.stderr)
-        self.assertEqual(repo_name_result.returncode, 0, repo_name_result.stderr)
-        self.assertIn("Context generated under context/hotshot-sk", ecosystem_result.stdout)
-        self.assertIn("Context generated under context/hotshot.sk", repo_name_result.stdout)
-        self.assertNotIn("not found in manifest", ecosystem_result.stderr)
-        self.assertNotIn("not found in manifest", repo_name_result.stderr)
+            target_status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            expected_root = amof_home / "share" / "context"
+            self.assertEqual(ecosystem_result.returncode, 0, ecosystem_result.stderr)
+            self.assertEqual(repo_name_result.returncode, 0, repo_name_result.stderr)
+            self.assertIn(
+                f"Context generated under {expected_root / 'hotshot-sk'}",
+                ecosystem_result.stdout,
+            )
+            self.assertIn(
+                f"Context generated under {expected_root / 'hotshot.sk'}",
+                repo_name_result.stdout,
+            )
+            self.assertTrue((expected_root / "hotshot-sk" / "index.json").is_file())
+            self.assertFalse((repo / "context").exists())
+            self.assertNotIn("context/", target_status.stdout)
+            self.assertNotIn("not found in manifest", ecosystem_result.stderr)
+            self.assertNotIn("not found in manifest", repo_name_result.stderr)
 
     def test_re_adopt_same_repo_replaces_old_ecosystem_alias_without_duplicates(self) -> None:
         with tempfile.TemporaryDirectory(prefix="amof-adopt-idempotent-") as td:

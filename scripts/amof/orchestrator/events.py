@@ -240,6 +240,38 @@ class EventLog:
             approval_source=approval_source,
         )
 
+    def write_scope_bound(
+        self,
+        *,
+        session_id: str,
+        binding_id: str,
+        approval_id: str,
+        writable_roots: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Log that a WriteScopeBinding now restricts this run's writable roots."""
+        return self.log(
+            "write_scope_bound",
+            session_id=session_id,
+            binding_id=binding_id,
+            approval_id=approval_id,
+            writable_roots=list(writable_roots or []),
+        )
+
+    def write_scope_blocked(
+        self,
+        *,
+        path: str,
+        tool: str = "Write",
+        reason: str = "scope_exceeded",
+    ) -> Dict[str, Any]:
+        """Log a tool write blocked by Binding roots."""
+        return self.log(
+            "write_scope_blocked",
+            path=path,
+            tool=tool,
+            reason=reason,
+        )
+
     def tool_pack_approval(
         self,
         *,

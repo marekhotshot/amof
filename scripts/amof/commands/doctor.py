@@ -203,7 +203,13 @@ def _canonical_repo_policy_report(repo_path: Path) -> dict[str, Any]:
     if int(summary.get("dirty_count", 0) or 0):
         issues.append(f"CANONICAL_REPO_DIRTY: {repo_path}")
     if branch == "detached":
-        issues.append(f"CANONICAL_REPO_DETACHED_OR_STALE: {repo_path} is detached")
+        issues.append(
+            f"CANONICAL_REPO_DETACHED_OR_STALE: {repo_path} is detached. "
+            "A detached SHA checkout is normal for `git checkout <sha>` installs. "
+            "This FAIL applies when you are doctoring the AMOF source checkout itself; "
+            "from an adopted user repo, doctor should not treat the CLI checkout as the target. "
+            "Checkout a branch on the AMOF repo, or run doctor from the adopted repo."
+        )
     elif branch != "main":
         issues.append(f"CANONICAL_REPO_IMPLEMENTATION_BRANCH: {repo_path} branch={branch}")
     if head and origin_main and head != origin_main:
@@ -390,6 +396,15 @@ def _detect_layout(start_path: Path | None = None) -> tuple[str, Path]:
     if standalone_root is not None:
         return "standalone_repo", standalone_root
 
+    start_git = _git_toplevel(here)
+    if (
+        start_git is not None
+        and not _is_standalone_repo_root(start_git)
+        and not _is_split_workspace_root(start_git)
+    ):
+        # Adopted / external repo: do not treat the CLI import checkout as the workspace.
+        return "installed_cli", start_git
+
     runtime_root = _runtime_package_root()
     script_repo = _git_toplevel(runtime_root)
     if script_repo is not None:
@@ -486,6 +501,7 @@ def topology_report(
 
     warnings: List[str] = []
     failures: List[str] = []
+    notes: List[str] = []
 
     canonical_runtime_root = canonical_amof if layout_mode == "installed_cli" else canonical_scripts
     if not import_is_canonical:
@@ -532,7 +548,20 @@ def topology_report(
     if secret_exposure["finding_count"]:
         failures.append(f"secret-exposure check found {secret_exposure['finding_count']} obvious source file(s)")
     if canonical_repo_policy is not None:
-        failures.extend(canonical_repo_policy["issues"])
+        policy_issues = list(canonical_repo_policy["issues"])
+        if layout_mode == "installed_cli":
+            for issue in policy_issues:
+                if issue.startswith("CANONICAL_REPO_DETACHED_OR_STALE") or issue.startswith(
+                    "CANONICAL_REPO_IMPLEMENTATION_BRANCH"
+                ):
+                    notes.append(
+                        f"{issue} (CLI source checkout; not the adopted target. "
+                        "Informational unless you are doctoring the AMOF repo itself.)"
+                    )
+                else:
+                    failures.append(issue)
+        else:
+            failures.extend(policy_issues)
 
     verdict = "FAIL" if failures else ("WARN" if warnings else "PASS")
     return {
@@ -559,6 +588,7 @@ def topology_report(
         },
         "secret_exposure": secret_exposure,
         "canonical_repo_policy": canonical_repo_policy,
+        "notes": notes,
         "warnings": warnings,
         "failures": failures,
     }
@@ -600,8 +630,19 @@ def cmd_doctor(args: Any = None) -> int:
         ]
         if optional_missing:
             print(f"  optional tools missing: {', '.join(optional_missing)}")
-        for warning in report["warnings"]:
-            print(f"  WARN: {warning}")
-        for failure in report["failures"]:
-            print(f"  FAIL: {failure}")
-    return 2 if report["verdict"] == "FAIL" else 0
+        notes = list(report.get("notes") or [])
+        if notes:
+            print("Notes:")
+            for note in notes:
+                print(f"  NOTE: {note}")
+        warnings = list(report.get("warnings") or [])
+        if warnings:
+            print("Warnings:")
+            for warning in warnings:
+                print(f"  WARN: {warning}")
+        failures = list(report.get("failures") or [])
+        if failures:
+            print("Failures:")
+            for failure in failures:
+                print(f"  FAIL: {failure}")
+    return 1 if report["verdict"] == "FAIL" else 0

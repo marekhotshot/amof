@@ -297,6 +297,51 @@ class PromoteMainCliTests(unittest.TestCase):
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
 
+    def test_promote_main_unresolved_repo_prints_prefixed_error(self) -> None:
+        temp_root = Path(tempfile.mkdtemp(prefix="amof-promote-unresolved-"))
+        try:
+            amof_home = temp_root / "amof-home"
+            env = _commit_env(
+                {
+                    "PYTHONPATH": str(SCRIPTS_ROOT),
+                    "AMOF_HOME": str(amof_home),
+                    "AMOF_CWD": str(temp_root),
+                }
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "amof",
+                    "promote-main",
+                    "--repo",
+                    "amof",
+                    "--ticket-id",
+                    "AMOF-PUBLIC-TRUTH-CAMPAIGN-001",
+                    "--candidate-branch",
+                    "ticket/dx",
+                    "--source-sha",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "--expected-main-sha",
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "--promotion-reason",
+                    "unresolved repo should not traceback",
+                    "--dry-run",
+                ],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("[promote-main]", result.stderr)
+            self.assertIn("could not be resolved", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertNotIn("Traceback", result.stdout)
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
     def test_promote_main_revert_private_fails_closed(self) -> None:
         result = subprocess.run(
             [

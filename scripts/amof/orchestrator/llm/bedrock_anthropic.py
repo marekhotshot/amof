@@ -10,7 +10,12 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
-from .anthropic import AnthropicClient, DEFAULT_THINKING_BUDGET, _resolve_ca_bundle
+from .anthropic import (
+    AnthropicClient,
+    DEFAULT_THINKING_BUDGET,
+    _http_client_for_ca_bundle,
+    _resolve_ca_bundle,
+)
 from .base import PROVIDER_FAILURE_NETWORK, ProviderError
 
 
@@ -71,10 +76,9 @@ class BedrockAnthropicClient(AnthropicClient):
             if self._aws_profile:
                 kwargs["aws_profile"] = self._aws_profile
             ca_bundle = _resolve_ca_bundle()
-            if ca_bundle:
-                import httpx
-
-                kwargs["http_client"] = httpx.Client(verify=ca_bundle)
+            http_client = _http_client_for_ca_bundle(ca_bundle) if ca_bundle else None
+            if http_client is not None:
+                kwargs["http_client"] = http_client
             self._client = anthropic.AnthropicBedrock(**kwargs)
         return self._client
 

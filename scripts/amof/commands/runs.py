@@ -35,6 +35,8 @@ class RunSummary:
     session_path: str
     events_path: str
     output_path: str | None
+    write_scope: str | None = None
+    blocked_paths: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +56,8 @@ class RunSummary:
             "session_path": self.session_path,
             "events_path": self.events_path,
             "output_path": self.output_path,
+            "write_scope": self.write_scope,
+            "blocked_paths": list(self.blocked_paths),
         }
 
 
@@ -179,6 +183,23 @@ def _compute_run_summary(events_path: Path) -> RunSummary:
     if candidate_output.exists():
         output_path = str(candidate_output)
 
+    write_scope = None
+    blocked: list[str] = []
+    seen_blocked: set[str] = set()
+    for event in events:
+        event_type = _event_type(event)
+        if event_type == "write_scope_bound":
+            binding_id = str(event.get("binding_id") or "").strip()
+            if binding_id:
+                write_scope = f"bound {binding_id}"
+        if event_type == "write_scope_blocked":
+            raw_path = str(event.get("path") or "").strip()
+            if raw_path:
+                label = Path(raw_path).name or raw_path
+                if label not in seen_blocked:
+                    seen_blocked.add(label)
+                    blocked.append(label)
+
     return RunSummary(
         run_id=run_id,
         session_id=session_id,
@@ -196,6 +217,8 @@ def _compute_run_summary(events_path: Path) -> RunSummary:
         session_path=str(session_dir),
         events_path=str(events_path),
         output_path=output_path,
+        write_scope=write_scope,
+        blocked_paths=tuple(blocked),
     )
 
 
@@ -296,6 +319,11 @@ def _print_show(run: RunSummary) -> None:
         ("session_path", run.session_path),
         ("events_path", run.events_path),
         ("output_path", run.output_path or "-"),
+        ("write_scope", run.write_scope or "-"),
+        (
+            "blocked_paths",
+            str(list(run.blocked_paths)) if run.blocked_paths else "-",
+        ),
     ]
     for key, value in pairs:
         print(f"{key}: {value}")

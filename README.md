@@ -2,7 +2,7 @@
   <img src="docs/assets/amof-logo.svg" alt="AMOF logo" width="140" />
 </p>
 
-<h1 align="center">AMOF 3.3 — Write-Scope Authority</h1>
+<h1 align="center">AMOF 3.4 — Native runtime, Trust Layer, acceptance honesty, and a usable public Write-Scope lifecycle</h1>
 
 <p align="center"><strong>Agentic Operations Fabric</strong></p>
 
@@ -15,34 +15,51 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v3.3.0-0A7FFF.svg" alt="release v3.3.0" />
+  <img src="https://img.shields.io/badge/release-v3.4.0-0A7FFF.svg" alt="release v3.4.0" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
 AI agents are cheap. Runtime truth is not.
 
-AMOF v3.3.0 is an OSS-only, installable local-first CLI and governed runtime.
-Its current product claim is **Write-Scope Authority**: workers propose bounded
-repository mutations; operators approve finite, TTL-bound grants; Runtime
-Authority binds and enforces those grants; MutationReceipts prove whether
-execution remained inside scope.
+AMOF v3.4.0 is an OSS-only, installable local-first CLI and governed runtime.
+Its current product claim is **Write-Scope Authority** plus a usable public
+lifecycle: workers propose bounded repository mutations (including via
+`amof scope import-result`); operators approve finite, TTL-bound grants;
+Runtime Authority binds and enforces those grants; MutationReceipts prove
+whether execution remained inside scope. Native and Cursor backends share that
+envelope with Hermes. Trust verify/export is local. Acceptance is honest:
+`completed` with required checks not run is `UNVERIFIED`, never `PASS`.
 
 Lifecycle:
 
 ```text
-propose → inspect → approve → bind → enforce → audit
+import-result → inspect → approve → bind → enforce → audit
 ```
 
 Minimal CLI path:
 
 ```bash
+amof scope import-result <agent-run-result.json> --run-id <run-id>
 amof scope list --from-run <run-id>
 amof scope show <proposal-id>
 amof scope approve <proposal-id> --ttl 2h --approved-by <operator>
-amof handoff execute-agent --handoff-id <id> --write-scope-approval <approval-id> ...
+amof handoff execute-agent --handoff-id <id> --write-scope-approval <approval-id> --approve-capabilities bounded_write ...
+amof agent --plan-execute "…" --write-scope-approval <approval-id> --approve-capabilities bounded_write --no-follow-up
 amof scope audit <approval-id>
 amof scope revoke <approval-id> --reason "..." --revoked-by <operator>
 amof scope recover <binding-id> --decision restore|accept-partial|mark-failed
+```
+
+Learning walkthrough (fixture, not evidence):
+
+import/list/approve/audit run without any model; the `amof agent --plan-execute` step needs a configured provider (`amof setup provider …` or `ANTHROPIC_API_KEY`). With a missing provider the run stops before planning and no Binding is created.
+
+```bash
+amof scope import-result --example src-only --run-id learn-001
+amof scope list
+amof scope approve <wsp-...> --ttl 2h --approved-by operator:you
+amof agent --plan-execute "Write src/ok.py only" --write-scope-approval <wsa-...> --approve-capabilities bounded_write --no-follow-up
+amof scope audit <wsa-...>
 ```
 
 AMOF remains a governed cognition runtime around planning contracts, handoff
@@ -58,8 +75,13 @@ AMOF turns a repository into a governed cognition runtime:
 - `amof init --adopt .` binds an existing Git repo into AMOF app-data.
 - `amof setup provider ...` stores provider references, not raw secrets.
 - `amof scope list|show|approve|revoke|audit|recover` completes Write-Scope
-  Authority for bounded repository mutation.
-- Mutating execution binds an Approval with `--write-scope-approval`.
+  Authority for bounded repository mutation. Import worker evidence with
+  `amof scope import-result` when no execution backend persisted a proposal.
+- Governed mutation runs through `amof handoff execute-agent … --write-scope-approval … --approve-capabilities bounded_write` (execution backends) or `amof agent --plan-execute … --write-scope-approval … --approve-capabilities bounded_write` (builtin executor, roots restricted to the Binding). Without an approval the builtin path is an ungoverned local demo.
+  `--approve-writable-root` is a legacy elevation (adds roots), not a
+  restriction, and cannot be combined with `--write-scope-approval`.
+  A one-time `amof trust keygen --preferred` is required before a
+  governed handoff execute can finalize.
 - `amof chat plan` produces a non-executable proposal through remote IAL.
 - `amof chat start|ask|status|finalize` shape a bounded intake session.
 - `amof chat approve` and `amof chat handoff` create explicit chat-plan approval
@@ -183,7 +205,7 @@ and is not part of the OSS release.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v3.3.0 surface:
+This public `main` intentionally keeps a narrow, installable v3.4.0 surface:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -192,7 +214,7 @@ This public `main` intentionally keeps a narrow, installable v3.3.0 surface:
 - `amof doctor`
 - `amof setup provider`
 - `amof init --adopt .`
-- `amof scope list|show|approve|revoke|audit|recover`
+- `amof scope list|show|approve|revoke|audit|recover|import-result`
 - `amof chat plan "Inspect this repo"`
 - `amof chat start "Clarify this repo"`
 - `amof chat approve <session-id>`
@@ -211,7 +233,7 @@ This public `main` intentionally keeps a narrow, installable v3.3.0 surface:
 
 ## Released Public CLI Surface
 
-What works in v3.3.0:
+What works in v3.4.0:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -227,7 +249,7 @@ What works in v3.3.0:
 - `amof doctor --json`
 - `amof setup provider --list`
 - `amof init --adopt .`
-- `amof scope list|show|approve|revoke|audit|recover`
+- `amof scope list|show|approve|revoke|audit|recover|import-result`
 - `amof chat plan "Inspect this repo" --repo .`
 - `amof chat start "Clarify this repo" --repo .`
 - `amof chat ask <session-id> "Bounded answer"`
@@ -236,8 +258,9 @@ What works in v3.3.0:
 - `amof chat approve <session-id>`
 - `amof chat handoff <approval-id-or-path>`
 - `amof agent --plan "Inspect this repo"`
-- `amof handoff prepare --json`
-- `amof handoff execute-agent <packet-or-dir> --write-scope-approval <approval-id>`
+- `amof handoff prepare --target amof-agent --confirm` (JSON on `--confirm`; no `--json` flag)
+- `amof trust keygen --preferred`
+- `amof handoff execute-agent <packet-or-dir> --write-scope-approval <approval-id> --approve-capabilities bounded_write`
 - `amof studio create --json`
 - `amof studio show --json <studio-session-id>`
 - `amof studio checkpoint add --summary "..." <studio-session-id>`
@@ -323,7 +346,7 @@ an explicit checkout-local virtualenv.
 Use this if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.3.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.4.0"
 ```
 
 This installs the `amof` CLI from the public GitHub tag into a pipx-managed
@@ -352,7 +375,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v3.3.0
+amof update --version v3.4.0
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -432,7 +455,7 @@ Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.3.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.4.0"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
@@ -450,11 +473,14 @@ message rather than fail on missing `--ecosystem/-e`.
 
 ## Bounded Loops and Scan/Report
 
-The v3.3.0 release completes Write-Scope Authority on the public governed
-runtime surface while keeping policy and evidence boundaries explicit:
+The v3.4.0 release keeps Write-Scope Authority on the public governed
+runtime surface while adding Native/Cursor backends, local trust
+verify/export, and `import-result` so the loop is usable without a private
+backend:
 
-- `amof scope` for propose → inspect → approve → bind → enforce → audit/recover
-- `amof handoff execute-agent --write-scope-approval` for bound mutating runs
+- `amof scope` for import-result → inspect → approve → bind → enforce → audit/recover
+- `amof handoff execute-agent --write-scope-approval --approve-capabilities bounded_write` for bound mutating runs (execution backends)
+- `amof agent --plan-execute --write-scope-approval --approve-capabilities bounded_write` for a bound builtin run (roots restricted to the Binding)
 - `amof execution scan` and `amof execution report` for readiness and evidence
   (`NO_EXECUTION_PERFORMED`)
 - `amof loop` for bounded long-running loops with stop conditions and evidence
@@ -621,13 +647,24 @@ Additional public docs retained in this repo include:
 
 ## Release State
 
-- `v3.3.0` is the current AMOF public release (Write-Scope Authority).
-- `v3.2.0` remains as the prior public release in this line.
+- Latest release notes: `docs/releases/amof-3.4.0.md`. Verify the installed
+  version with `amof --version`.
+- Product version in this tree is `3.4.0`. A `v3.4.0` git tag is applied only
+  after promote-main of this candidate, and only to the synthetic SHA that
+  lands on `main`. Until that tag exists, pipx `@v3.4.0` will not resolve.
+- `CHANGELOG.md` `[Unreleased]` is empty; shipped work since the previous
+  public tag is accounted under `[3.4.0]`.
+- Previous public notes remain under `docs/releases/`.
+- `v3.2.0` remains as an earlier public release in this line.
 - `v3.0.0` remains as a historical broken escaped tag and is not rewritten.
 - `v3.0.1` remains as the prior correction release in this line.
-- Public `v3.3.0` includes:
-  - Write-Scope Authority lifecycle: propose → inspect → approve → bind →
-    enforce → audit/recover via `amof scope` and `--write-scope-approval`
+- Public `v3.4.0` includes:
+  - Write-Scope Authority lifecycle: import-result → inspect → approve →
+    bind → enforce → audit/recover via `amof scope` and
+    `--write-scope-approval`
+  - Native and Cursor execution backends beside Hermes and Claude
+  - Local trust keygen / verify / export (not Sigstore)
+  - Honest acceptance: `completed` + validation `not_run` is `UNVERIFIED`
   - MutationReceipt compliance proof on governed mutating runs
   - OSS-only installable CLI (`pipx` / source checkout); no Workforce claim
 - Public `v3.2.0` lineage also includes:
@@ -651,20 +688,22 @@ Additional public docs retained in this repo include:
   - bounded loops with `NO_MUTATION_PERFORMED` and `NO_REMOTE_EXECUTION_DISPATCHED`
   - runtime evidence inspection via `amof runs`
   - standalone smoke current-version hygiene for released artifacts
-- Studio in `v3.3.0` remains positioned as: Experimental Studio Session ledger for
+- Studio in `v3.4.0` remains positioned as: Experimental Studio Session ledger for
   correlating governed runs, checkpoints, and evidence.
-- Current `v3.3.0` limitations:
+- Current `v3.4.0` limitations:
   - detached checkouts still require adoption knowledge
   - raw Studio `runs.json` remains attachment-time ledger truth
   - browser UX for Studio correlation remains private/operator-side
   - no transcript synchronization or active-session discovery
   - no browser/userscript integration is included in this release
+  - builtin `amof agent --plan-execute` without `--write-scope-approval` is
+    not governed by Write-Scope Authority
 - Release evidence docs:
-  - `docs/releases/amof-3.3.0.md`
+  - `docs/releases/amof-3.4.0.md`
   - `docs/write-scope-authority.md`
   - `docs/canonical-execution-chain.md`
+  - previous public notes under `docs/releases/`
   - `docs/releases/amof-3.2.0.md`
-  - `docs/releases/amof-3.1.1.md`
   - `docs/releases/amof-3.0-closeout.md`
   - `docs/releases/amof-3.0.0-tag.md`
 - `docs/releases/amof-3.0-runtime-authority.md` remains historical release evidence for the previous line.

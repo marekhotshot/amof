@@ -1,6 +1,6 @@
 # AMOF 3.0 Runtime Authority is live.
 
-> Historical release note for v3.0; current release: v3.3.0.
+> Historical release note for v3.0; current release: v3.4.0.
 
 Status: released
 Canonical version: `v3.0.3`

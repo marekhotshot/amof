@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 import json
 import os
 import tempfile
@@ -289,6 +291,46 @@ class WriteScopeProposalStoreTests(unittest.TestCase):
         record["body"]["allowed_roots"] = ["docs/mutated.md"]
         with self.assertRaises(WriteScopeProposalError):
             verify_proposal_record(record)
+
+    def test_list_fail_closes_on_tampered_proposal(self) -> None:
+        body = _valid_body()
+        outcome = persist_write_scope_proposals_from_result(
+            _result_envelope(proposal=body),
+            base_dir=self.store,
+        )
+        proposal_id = outcome.persisted[0]["proposal_id"]
+        path = proposal_path(proposal_id, base_dir=self.store)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["body"]["allowed_roots"] = ["docs/tampered.md"]
+        path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+        listed = list_proposals(base_dir=self.store)
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["status"], "corrupt")
+        self.assertEqual(listed[0]["proposal_id"], proposal_id)
+        self.assertIn("body_hash mismatch", listed[0]["integrity_error"])
+
+        args_list = argparse.Namespace(
+            scope_cmd="list",
+            from_run=None,
+            status=None,
+            json=True,
+        )
+        out = StringIO()
+        err = StringIO()
+        with (
+            patch(
+                "amof.commands.scope.list_proposals",
+                side_effect=lambda **kwargs: list_proposals(base_dir=self.store, **kwargs),
+            ),
+            redirect_stdout(out),
+            redirect_stderr(err),
+        ):
+            code = scope_cmd.cmd_scope(args_list)
+        self.assertEqual(code, 1)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload[0]["status"], "corrupt")
+        self.assertIn("corrupt proposal", err.getvalue())
 
     def test_terminal_result_hook_persists_proposals(self) -> None:
         from amof.execution_backends import hermes_opensandbox

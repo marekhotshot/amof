@@ -66,8 +66,9 @@ chmod 0755 "${FAKE_BIN}/cursor"
   git status --short > "${LOG_DIR}/target-status.txt"
 )
 
-if ! rg -q '^AMOF v3\.1\.0$' "${LOG_DIR}/version.txt"; then
-  echo "FAIL: standalone artifact did not report AMOF v3.1.1" >&2
+EXPECTED_VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "${ROOT_DIR}/scripts/amof/__init__.py")"
+if ! rg -q "^AMOF v${EXPECTED_VERSION}$" "${LOG_DIR}/version.txt"; then
+  echo "FAIL: standalone artifact did not report AMOF v${EXPECTED_VERSION}" >&2
   exit 1
 fi
 

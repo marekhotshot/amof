@@ -424,8 +424,22 @@ def list_proposals(
     items: list[dict[str, Any]] = []
     for path in sorted(root.glob("wsp-*.json")):
         try:
-            record = verify_proposal_record(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError, WriteScopeProposalError):
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            record = verify_proposal_record(raw)
+        except (OSError, json.JSONDecodeError, WriteScopeProposalError) as exc:
+            stem = path.stem
+            items.append(
+                {
+                    "kind": "write_scope_proposal",
+                    "proposal_id": stem,
+                    "run_id": "",
+                    "status": "corrupt",
+                    "integrity_error": str(exc),
+                    "created_at": "",
+                    "body": {},
+                    "body_hash": "",
+                }
+            )
             continue
         if run_id is not None and record["run_id"] != run_id:
             continue

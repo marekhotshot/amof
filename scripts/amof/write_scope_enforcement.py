@@ -1042,14 +1042,14 @@ def guardrail_write_allowed(
         if ok:
             return None
         if err == "denied_root":
-            return f"Path '{path}' matches denied write-scope root"
-        return f"Path '{path}' is outside writable roots"
+            return f"scope_exceeded: Path '{path}' matches denied write-scope root"
+        return f"scope_exceeded: Path '{path}' is outside writable roots"
     abs_path = Path(path).resolve(strict=False)
     if denied and any(_path_matches_root(abs_path, root) for root in denied):
-        return f"Path '{path}' matches denied write-scope root"
+        return f"scope_exceeded: Path '{path}' matches denied write-scope root"
     if not any(_path_matches_root(abs_path, root) for root in roots):
         roots_text = ", ".join(str(root) for root in roots)
-        return f"Path '{path}' is outside writable roots: {roots_text}"
+        return f"scope_exceeded: Path '{path}' is outside writable roots: {roots_text}"
     return None
 
 

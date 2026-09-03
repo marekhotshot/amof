@@ -144,9 +144,32 @@ def _confirm(prompt: str) -> bool:
     return answer in {"y", "yes"}
 
 
+def _local_git_describe_if_ahead() -> str | None:
+    """Return `git describe --tags` when this source checkout is ahead of a tag."""
+    checkout = _source_checkout_root()
+    if checkout is None:
+        return None
+    completed = subprocess.run(
+        ["git", "describe", "--tags", "--always"],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    describe = (completed.stdout or "").strip()
+    if not describe or describe in {f"v{__version__}", __version__}:
+        return None
+    return describe
+
+
 def _display_current_and_target(target: str) -> None:
     print(f"[update] Current version: v{__version__}")
     print(f"[update] Target version:  {target}")
+    describe = _local_git_describe_if_ahead()
+    if describe:
+        print(f"[update] Local checkout:  {describe} (ahead of tagged release v{__version__})")
 
 
 def _run_update_command(

@@ -1847,6 +1847,7 @@ def _gate_plan_execute_readiness(
 ) -> tuple[Any, int | None, Optional[Dict[str, Any]]]:
     """Run readiness; optionally elevate capabilities for this plan/session."""
     from ..orchestrator.plan_execute_control import (
+        apply_binding_writable_roots,
         apply_capability_elevation,
         apply_tool_pack_approval,
         apply_writable_root_elevation,
@@ -1864,8 +1865,20 @@ def _gate_plan_execute_readiness(
     )
     from ..write_scope_bindings import (
         WriteScopeBindingError,
+        finalize_binding,
         prepare_execution_write_scope,
     )
+
+    def _fail_created_binding(created: dict[str, Any] | None, reason: str) -> None:
+        if not isinstance(created, dict):
+            return
+        binding_id = str(created.get("binding_id") or "").strip()
+        if not binding_id:
+            return
+        try:
+            finalize_binding(binding_id, success=False, reason=reason)
+        except WriteScopeBindingError:
+            pass
 
     # Wave 3 bind gate: resolve Approval → Binding → absolute writable roots
     # before any worker mutation authority. Read-only (no approval, no naked
@@ -1895,6 +1908,7 @@ def _gate_plan_execute_readiness(
                 "checkpoint_path": None,
             },
         )
+    bound_run = binding is not None
     if binding is not None:
         session.metadata["write_scope_binding_id"] = binding["binding_id"]
         session.metadata["write_scope_approval_id"] = binding["approval_id"]
@@ -1909,12 +1923,37 @@ def _gate_plan_execute_readiness(
                 resolved = root.resolve()
                 if resolved not in existing_denied:
                     guardrails.denied_roots.append(resolved)
+        bound_roots = apply_binding_writable_roots(
+            guardrails, list(binding.get("writable_roots") or resolved_roots or [])
+        )
+        session.metadata["plan_writable_roots"] = bound_roots
+        plan.writable_root_approvals = bound_roots  # type: ignore[attr-defined]
+        if hasattr(events, "write_scope_bound"):
+            events.write_scope_bound(
+                session_id=session.id,
+                binding_id=binding["binding_id"],
+                approval_id=binding["approval_id"],
+                writable_roots=bound_roots,
+            )
+        elif hasattr(events, "log"):
+            events.log(
+                "write_scope_bound",
+                session_id=session.id,
+                binding_id=binding["binding_id"],
+                approval_id=binding["approval_id"],
+                writable_roots=bound_roots,
+            )
         print(
             "[plan-execute] WriteScopeBinding created: "
             f"{binding['binding_id']} (approval={binding['approval_id']})"
         )
+        print(
+            "[plan-execute] Binding writable roots (replace, not append): "
+            + ", ".join(bound_roots)
+        )
     # Prefer Runtime-resolved roots from Approval; legacy naked roots otherwise.
-    approve_writable_roots = resolved_roots or None
+    # A bound run refuses mixed --approve-writable-root (prepare_execution_write_scope).
+    approve_writable_roots = None if bound_run else (resolved_roots or None)
 
     parent_tools = set(getattr(tool_registry, "_tools", {}).keys())
     base_ceiling = set(trust_state.trusted_intent_caps) if trust_state else {"read"}
@@ -1924,6 +1963,7 @@ def _gate_plan_execute_readiness(
             cli_caps = set(parse_capability_names(list(approve_capabilities)))
         except ValueError as exc:
             sys.stderr.write(f"[plan-execute] {exc}\n")
+            _fail_created_binding(binding, "invalid_approve_capabilities")
             return (
                 None,
                 1,
@@ -1963,6 +2003,8 @@ def _gate_plan_execute_readiness(
                 )
 
     cli_writable_roots: set[str] = set()
+    if bound_run:
+        cli_writable_roots = set(session.metadata.get("plan_writable_roots") or [])
     if approve_writable_roots:
         try:
             cli_writable_roots = set(
@@ -1970,6 +2012,7 @@ def _gate_plan_execute_readiness(
             )
         except ValueError as exc:
             sys.stderr.write(f"[plan-execute] {exc}\n")
+            _fail_created_binding(binding, "invalid_approve_writable_roots")
             return (
                 None,
                 1,
@@ -2004,6 +2047,7 @@ def _gate_plan_execute_readiness(
             cli_tool_packs = set(parse_tool_pack_names(list(approve_tool_packs)))
         except ValueError as exc:
             sys.stderr.write(f"[plan-execute] {exc}\n")
+            _fail_created_binding(binding, "invalid_approve_tool_packs")
             return (
                 None,
                 1,
@@ -3051,6 +3095,24 @@ def cmd_agent(
             studio_session_id=requested_studio_session_id,
         )
 
+    # Fail-fast write-scope flag preflight before provider/planner construction.
+    if plan_execute and (goal or resume_session):
+        from ..orchestrator.plan_execute_control import preflight_write_scope_flags
+
+        preflight_errors = preflight_write_scope_flags(
+            write_scope_approval=write_scope_approval,
+            approve_capabilities=approve_capabilities,
+            approve_writable_roots=approve_writable_roots,
+        )
+        if preflight_errors:
+            for msg in preflight_errors:
+                sys.stderr.write(f"[plan-execute] preflight: {msg}\n")
+            return _json_plan_execute_early_exit(
+                json_envelope=_json_envelope,
+                stop_reason="write_scope_preflight_failed",
+                final_text=preflight_errors[0],
+            )
+
     # Export thinking budget from config (picked up by AnthropicClient)
     thinking_budget = cfg.get("thinking_budget")
     if thinking_budget and not os.environ.get("AMOF_THINKING_BUDGET"):
@@ -3880,6 +3942,12 @@ def cmd_agent(
     if plan_execute_resume and not plan_execute:
         plan_execute = True
     if plan_execute and (goal or plan_execute_resume):
+        if not write_scope_approval:
+            sys.stderr.write(
+                "[plan-execute] UNGOVERNED LOCAL MODE: no Write-Scope Approval bound. "
+                "Run governed with: --write-scope-approval <wsa-id> "
+                "--approve-capabilities bounded_write\n"
+            )
         from ..orchestrator.executor import SubtaskExecutor
         from ..orchestrator.llm.base import ProviderError
         from ..orchestrator.planner import (

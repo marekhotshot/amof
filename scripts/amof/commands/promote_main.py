@@ -2441,11 +2441,15 @@ def cmd_promote_main(manifest: dict[str, Any], args: Any, ecosystem: str | None 
         require_run_summary=require_run_summary,
         require_promotion_readiness_result=require_promotion_readiness_result,
     )
-    plan = (
-        plan_promote_main_dry_run(manifest, bundle, ecosystem=ecosystem)
-        if dry_run
-        else execute_promote_main_push(manifest, bundle, ecosystem=ecosystem)
-    )
+    try:
+        plan = (
+            plan_promote_main_dry_run(manifest, bundle, ecosystem=ecosystem)
+            if dry_run
+            else execute_promote_main_push(manifest, bundle, ecosystem=ecosystem)
+        )
+    except RuntimeError as exc:
+        sys.stderr.write(f"[promote-main] {exc}\n")
+        return 1
     _print_plan(plan)
     return 0 if plan.ok else 1
 

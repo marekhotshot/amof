@@ -3,5 +3,5 @@
 A CLI tool for managing multi-repository workspaces with AI agent support.
 """
 
-__version__ = "3.3.0"
+__version__ = "3.4.0"
 

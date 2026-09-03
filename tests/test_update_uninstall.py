@@ -87,6 +87,28 @@ class UpdateCommandTests(unittest.TestCase):
 
         self.assertEqual(latest, "v10.0.0")
 
+    def test_check_prints_git_describe_when_checkout_is_ahead(self) -> None:
+        stdout = StringIO()
+        with (
+            patch.object(update_cmd, "_source_checkout_root", return_value=Path("/tmp/amof-src")),
+            patch.object(
+                update_cmd.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    ["git", "describe", "--tags", "--always"],
+                    0,
+                    stdout="v3.3.0-23-g28a3e73\n",
+                    stderr="",
+                ),
+            ),
+            redirect_stdout(stdout),
+        ):
+            code = update_cmd.cmd_update(_args(check=True, target_version=f"v{update_cmd.__version__}"))
+        self.assertEqual(code, 0)
+        output = stdout.getvalue()
+        self.assertIn("v3.3.0-23-g28a3e73", output)
+        self.assertIn("ahead of tagged release", output)
+
     def test_current_equals_target_exits_cleanly(self) -> None:
         calls = []
         result = update_cmd.cmd_update(

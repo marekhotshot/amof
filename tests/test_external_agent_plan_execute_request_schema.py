@@ -168,10 +168,11 @@ class ExternalAgentPlanExecuteRequestSchemaTests(unittest.TestCase):
         packet = _load(VALID_EXAMPLE_PATH)
         runtime_payload = _runtime_payload(packet)
 
-        self.assertEqual(
-            set(runtime_payload),
-            {field.name for field in fields(AgentPlanExecuteJsonRequest)},
-        )
+        supported = {field.name for field in fields(AgentPlanExecuteJsonRequest)}
+        self.assertLessEqual(set(runtime_payload), supported)
+        self.assertIn("goal", runtime_payload)
+        self.assertIn("write_scope_approval", supported)
+        self.assertIn("legacy_path_elevation", supported)
         request = parse_agent_plan_execute_json_request(runtime_payload)
         self.assertEqual(request.goal, packet["goal"])
         self.assertEqual(request.provider, packet["provider"])

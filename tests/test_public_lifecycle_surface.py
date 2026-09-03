@@ -47,6 +47,9 @@ class PublicLifecycleSurfaceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("public first-run commands", result.stdout)
         self.assertIn("amof init --adopt .", result.stdout)
+        self.assertIn("--target amof-agent", result.stdout)
+        self.assertNotIn("--target zed", result.stdout)
+        self.assertNotIn("troubleshoot", result.stdout)
         self.assertNotIn("promote-main", result.stdout)
         self.assertNotIn("promote-main-revert", result.stdout)
         self.assertNotIn("amof push", result.stdout)
@@ -69,6 +72,24 @@ class PublicLifecycleSurfaceTests(unittest.TestCase):
         self.assertIn("Workspace-only topics", result.stdout)
         self.assertNotIn("Essential commands", result.stdout)
         self.assertNotIn("amof push                      Push all changes", result.stdout)
+
+    def test_help_pipx_tag_equals_package_version(self) -> None:
+        from amof import __version__
+
+        result = self._run_source_amof("help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            f'pipx install "git+https://github.com/marekhotshot/amof.git@v{__version__}"',
+            result.stdout,
+        )
+        self.assertNotIn("@v2.3.0", result.stdout)
+        update = self._run_source_amof("help", "update")
+        self.assertEqual(update.returncode, 0, update.stderr)
+        self.assertIn(f"amof update --version v{__version__}", update.stdout)
+        execute = self._run_source_amof("help", "execute")
+        self.assertEqual(execute.returncode, 0, execute.stderr)
+        self.assertIn("amof trust keygen --preferred", execute.stdout)
+        self.assertIn("ungoverned", self._run_source_amof("help", "agent").stdout)
 
     def test_public_command_builders_raise_removed_surface_error(self) -> None:
         root = REPO_ROOT

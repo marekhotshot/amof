@@ -1,7 +1,7 @@
 # Public Surface Taxonomy
 
-Status: public v3.1.1 Runtime Authority taxonomy
-Date: 2026-06-01
+Status: public v3.4.0 Write-Scope Authority taxonomy
+Date: 2026-09-02
 
 AMOF keeps more code than the first-run public path because the repo also
 contains source-checkout utilities, advanced evidence tooling, optional provider
@@ -37,12 +37,11 @@ These commands belong in the public quickstart and default first-run help:
 - `amof bootstrap bundle`
 - `amof update`
 - `amof uninstall`
-- `amof troubleshoot`
 
 The public install path is:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.1.1"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.4.0"
 ```
 
 After pipx install, the public command is the `amof` shim. System `python -m

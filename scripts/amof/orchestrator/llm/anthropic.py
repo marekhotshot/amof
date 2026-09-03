@@ -8,6 +8,7 @@ Includes retry with exponential backoff for transient API errors.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -42,6 +43,39 @@ MAX_RETRY_DELAY = 30.0  # seconds
 # HTTP status codes that warrant retry
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 529}
 
+# Sampling knobs that newer anthropic SDKs (>= 1.3) no longer accept on
+# Messages.create(). Passing them raises TypeError before any request is made.
+_SAMPLING_KWARGS = ("temperature", "top_p", "top_k")
+_UNSUPPORTED_SAMPLING_WARNED: set = set()
+
+
+def _drop_unsupported_sampling_kwargs(client: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove sampling kwargs the installed SDK's Messages.create() rejects.
+
+    Fresh installs resolve to the newest anthropic SDK, whose create() signature
+    dropped temperature/top_p/top_k. Omitting them yields provider defaults
+    (temperature 1), which is also what thinking models require.
+    """
+    try:
+        params = inspect.signature(client.messages.create).parameters
+    except (TypeError, ValueError, AttributeError):
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    dropped = [k for k in _SAMPLING_KWARGS if k in kwargs and k not in params]
+    if not dropped:
+        return kwargs
+    cleaned = {k: v for k, v in kwargs.items() if k not in dropped}
+    key = tuple(sorted(dropped))
+    if key not in _UNSUPPORTED_SAMPLING_WARNED:
+        _UNSUPPORTED_SAMPLING_WARNED.add(key)
+        logger.warning(
+            "anthropic SDK Messages.create() does not accept %s; sending without them "
+            "(provider defaults apply)",
+            ", ".join(dropped),
+        )
+    return cleaned
+
 
 # Models that have extended thinking enabled by default.
 # These models: require temperature=1, do NOT support assistant prefill,
@@ -68,6 +102,29 @@ def _resolve_ca_bundle() -> Optional[str]:
         if os.path.exists(ca_path):
             return ca_path
     return None
+
+
+def _http_client_for_ca_bundle(ca_bundle: str) -> Any:
+    """Build a verify=bundle HTTP client, or None to keep the SDK default.
+
+    Fresh ``anthropic`` 1.x installs depend on ``httpx2`` (module ``httpx2``),
+    not ``httpx``. Import an HTTP client only when a CA bundle is in play:
+    try ``httpx``, then ``httpx2 as httpx``. If neither is present, warn once
+    and ignore the bundle so the planner can still start.
+    """
+    try:
+        import httpx
+    except ImportError:
+        try:
+            import httpx2 as httpx
+        except ImportError:
+            logger.warning(
+                "CA bundle %s ignored: neither httpx nor httpx2 is installed; "
+                "using the default client",
+                ca_bundle,
+            )
+            return None
+    return httpx.Client(verify=ca_bundle)
 
 
 class AnthropicClient(LLMClient):
@@ -114,11 +171,12 @@ class AnthropicClient(LLMClient):
                 )
 
             # Auto-detect system CA bundle for corporate proxy environments (Zscaler, etc.)
-            import httpx
             ca_bundle = _resolve_ca_bundle()
-            if ca_bundle:
-                http_client = httpx.Client(verify=ca_bundle)
-                self._client = anthropic.Anthropic(api_key=self._api_key, http_client=http_client)
+            http_client = _http_client_for_ca_bundle(ca_bundle) if ca_bundle else None
+            if http_client is not None:
+                self._client = anthropic.Anthropic(
+                    api_key=self._api_key, http_client=http_client
+                )
             else:
                 self._client = anthropic.Anthropic(api_key=self._api_key)
         return self._client
@@ -330,6 +388,7 @@ class AnthropicClient(LLMClient):
         """
         last_error: Optional[BaseException] = None
         retry_count = 0
+        kwargs = _drop_unsupported_sampling_kwargs(client, kwargs)
 
         for attempt in range(self._max_retries + 1):
             try:

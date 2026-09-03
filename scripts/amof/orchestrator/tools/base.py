@@ -634,6 +634,20 @@ class ToolRegistry:
 
         error = self._check_guardrails(tool_call)
         if error:
+            if "scope_exceeded" in error and self.events is not None:
+                blocked_path = str(tool_call.arguments.get("path") or "").strip()
+                if hasattr(self.events, "write_scope_blocked"):
+                    self.events.write_scope_blocked(
+                        path=blocked_path,
+                        tool=tool_call.name,
+                    )
+                elif hasattr(self.events, "log"):
+                    self.events.log(
+                        "write_scope_blocked",
+                        path=blocked_path,
+                        tool=tool_call.name,
+                        reason="scope_exceeded",
+                    )
             # Advisory guardrail redirects (e.g. "use StrReplace instead of
             # overwriting") are surfaced to the model so it can adapt. They are
             # marked advisory so recovery-aware accounting does not treat a

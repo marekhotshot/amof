@@ -338,6 +338,88 @@ class DoctorLayoutTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "FAIL")
         self.assertTrue(any("CANONICAL_REPO_ARTIFACTS_PRESENT:" in item for item in report["failures"]))
 
+    def test_detached_cli_checkout_is_warn_when_doctoring_adopted_repo(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-doctor-detached-adopted-") as td:
+            temp_root = Path(td)
+            cli_checkout = temp_root / "amof-cli"
+            (cli_checkout / "scripts" / "amof").mkdir(parents=True, exist_ok=True)
+            (cli_checkout / "scripts" / "amof" / "__init__.py").write_text(
+                "__version__ = 'test'\n",
+                encoding="utf-8",
+            )
+            _seed_required_contracts(cli_checkout)
+            _init_git_repo(cli_checkout)
+            sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=cli_checkout,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(
+                ["git", "checkout", "--detach", sha],
+                cwd=cli_checkout,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            adopted = temp_root / "adopted-target"
+            _init_git_repo(adopted)
+            runtime_root = cli_checkout / "scripts" / "amof"
+
+            with (
+                patch.dict("os.environ", {"AMOF_HOME": str(temp_root / ".amof-home")}, clear=False),
+                patch("amof.commands.doctor._runtime_package_root", return_value=runtime_root),
+            ):
+                report = topology_report(
+                    start_path=adopted,
+                    import_origin=str(runtime_root / "__init__.py"),
+                    path_entries=[str(cli_checkout / "scripts")],
+                )
+
+        self.assertEqual(report["layout_mode"], "installed_cli")
+        self.assertEqual(report["workspace_root"], str(adopted))
+        self.assertFalse(any("CANONICAL_REPO_DETACHED_OR_STALE" in item for item in report["failures"]))
+        self.assertFalse(any("CANONICAL_REPO_DETACHED_OR_STALE" in item for item in report["warnings"]))
+        self.assertTrue(any("CANONICAL_REPO_DETACHED_OR_STALE" in item for item in report.get("notes") or []))
+        self.assertNotEqual(report["verdict"], "FAIL")
+        if not report["warnings"] and not report["failures"]:
+            self.assertEqual(report["verdict"], "PASS")
+
+    def test_detached_amof_checkout_stays_fail_when_it_is_the_target(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="amof-doctor-detached-self-") as td:
+            temp_root = Path(td)
+            repo = temp_root / "amof"
+            (repo / "scripts" / "amof").mkdir(parents=True, exist_ok=True)
+            (repo / "scripts" / "amof" / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+            _seed_required_contracts(repo)
+            _init_git_repo(repo)
+            sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(
+                ["git", "checkout", "--detach", sha],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            with patch.dict("os.environ", {"AMOF_HOME": str(temp_root / ".amof-home")}, clear=False):
+                report = topology_report(
+                    start_path=repo,
+                    import_origin=str(repo / "scripts" / "amof" / "__init__.py"),
+                    path_entries=[str(repo / "scripts")],
+                )
+
+        self.assertEqual(report["layout_mode"], "standalone_repo")
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertTrue(any("CANONICAL_REPO_DETACHED_OR_STALE" in item for item in report["failures"]))
+
 
 if __name__ == "__main__":
     unittest.main()

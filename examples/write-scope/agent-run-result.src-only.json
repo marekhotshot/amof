@@ -1,0 +1,33 @@
+{
+  "result_kind": "agent_run_result",
+  "contract_version": "agent-run-v1",
+  "schema_version": 1,
+  "status": "completed",
+  "session_id": "example-src-only",
+  "exit_code": 0,
+  "stop_reason": "completed",
+  "final_text": "Learning fixture: worker-shaped result proposing writes under src/ at a placeholder base_sha. Not evidence.",
+  "plan_path": null,
+  "checkpoint_path": null,
+  "event_log_path": "/tmp/amof-example-src-only/events.jsonl",
+  "journal_path": null,
+  "budget_summary": {
+    "limit": null,
+    "spent": 0,
+    "remaining": null
+  },
+  "write_scope_proposal": {
+    "target_id": "local:example-repo:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "allowed_roots": [
+      "src/"
+    ],
+    "denied_roots": [],
+    "reason": "Bounded source-only follow-up for the public learning fixture.",
+    "expected_checks": [
+      "git diff --check"
+    ],
+    "docs_only": false,
+    "source_mutation": true
+  }
+}

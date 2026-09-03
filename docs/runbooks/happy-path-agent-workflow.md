@@ -1,6 +1,6 @@
 # AMOF Happy Path: Adopt a Repo and Run an Agent Plan
 
-Status: public v3.1.1 runbook
+Status: public v3.4.0 runbook
 
 This runbook is for a public user who wants to try AMOF on an existing Git
 repository without learning the workspace and maintainer machinery first.
@@ -23,10 +23,10 @@ keys into terminal transcripts, bug reports, or public docs.
 
 ## Install AMOF
 
-Install the public v3.1.1 release:
+Install the public v3.4.0 release (after the tag exists):
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.1.1"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.4.0"
 ```
 
 Verify the CLI through the pipx-installed shim:
@@ -40,7 +40,7 @@ pipx runpip amof show amof
 Expected version:
 
 ```text
-AMOF v3.1.1
+AMOF v3.4.0
 ```
 
 System `python -m amof` is not the public pipx contract. For source checkouts,
@@ -87,7 +87,7 @@ git status --short
 
 Expected: no output.
 
-AMOF v3.1.1 also resolves the adopted ecosystem through `amof context`; dotted
+AMOF v3.4.0 also resolves the adopted ecosystem through `amof context`; dotted
 repo names such as `hotshot.sk` are covered by the public dogfood fix.
 
 ## Configure A Provider Profile
@@ -135,7 +135,7 @@ Expected after activating the OpenRouter profile without exporting a key:
 ```
 
 The exact provider message depends on the provider you activate or select. The
-important v3.1.1 behavior is that the command reaches provider validation and
+important v3.4.0 behavior is that the command reaches provider validation and
 does not fail with:
 
 ```text
@@ -150,11 +150,31 @@ amof agent --provider openrouter --plan "Inspect this repo" --no-follow-up
 
 ## Bounded Worker Execution
 
-`amof agent --plan-execute` is demoable only in a disposable or intentionally
-prepared repo. It must produce reviewable diffs only. AMOF must not auto-commit,
-auto-push, tag, or promote worker changes.
+Governed mutation runs through `amof handoff execute-agent … --write-scope-approval … --approve-capabilities bounded_write` (execution backends) or `amof agent --plan-execute … --write-scope-approval … --approve-capabilities bounded_write` (builtin executor, roots restricted to the Binding). Without an approval the builtin path is an ungoverned local demo. `--approve-writable-root` is a legacy elevation (adds roots), not a restriction, and cannot be combined with `--write-scope-approval`.
 
-Use this path only when you are prepared to review the resulting Git diff:
+`amof agent --plan-execute` without an approval is demoable only in a disposable
+or intentionally prepared repo. It must produce reviewable diffs only. AMOF
+must not auto-commit, auto-push, tag, or promote worker changes. A governed
+handoff execute also requires `amof trust keygen --preferred`.
+
+Local OpenAI-compatible models use `amof setup provider local-qwen` and
+`--provider local` (or the activated profile) — not a separate `local-qwen`
+agent provider name.
+
+Learning walkthrough (fixture, not evidence):
+
+import/list/approve/audit run without any model; the `amof agent --plan-execute` step needs a configured provider (`amof setup provider …` or `ANTHROPIC_API_KEY`). With a missing provider the run stops before planning and no Binding is created.
+
+```bash
+amof scope import-result --example src-only --run-id learn-001
+amof scope list
+amof scope approve <wsp-...> --ttl 2h --approved-by operator:you
+amof agent --plan-execute "Write src/ok.py only" --write-scope-approval <wsa-...> --approve-capabilities bounded_write --no-follow-up
+amof scope audit <wsa-...>
+```
+
+Use the ungoverned demo path only when you are prepared to review the resulting
+Git diff:
 
 ```bash
 amof agent --provider openrouter --plan-execute \

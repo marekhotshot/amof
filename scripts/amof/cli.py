@@ -31,7 +31,6 @@ PUBLIC_HELP_COMMANDS = (
     "update",
     "uninstall",
     "help",
-    "troubleshoot",
     "shell",
     "handoff",
 )
@@ -64,7 +63,8 @@ def parse_args() -> argparse.Namespace:
         '  amof chat plan "Inspect this repo"  Route read-only planning through remote IAL\n'
         "  amof studio create                Start a Studio Session ledger\n"
         '  amof agent --plan "Inspect this repo"  Run a read-only plan\n'
-        "  amof handoff prepare --payload-kind selected-text --source chatgpt --target zed --preview\n"
+        "  amof handoff prepare --payload-kind selected-text --source chatgpt --target amof-agent --preview\n"
+        "  (zed/other targets are transport-only; execute-agent accepts only amof-agent)\n"
         "  amof bootstrap bundle --json       Emit bootstrap evidence\n"
         "\n"
         "Advanced, workspace, and maintainer commands remain callable when known.\n"
@@ -581,6 +581,10 @@ def parse_args() -> argparse.Namespace:
     doctor_parser = subparsers.add_parser(
         "doctor",
         help="Report AMOF bootstrap guardrails for topology, app-data, contracts, and toolchain",
+        description=(
+            "Report AMOF bootstrap readiness. Exit 0 when usable (PASS or WARN). "
+            "Exit 1 when blocked (FAIL)."
+        ),
     )
     doctor_parser.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON"
@@ -1264,6 +1268,36 @@ def parse_args() -> argparse.Namespace:
     scope_recover.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON"
     )
+    scope_import_result = scope_sub.add_parser(
+        "import-result",
+        help=(
+            "Import WriteScopeProposal evidence from an agent-run-result JSON "
+            "file (operator imports worker-authored roots; never authors them)"
+        ),
+    )
+    scope_import_result.add_argument(
+        "result_file",
+        nargs="?",
+        default="",
+        help="Path to an agent-run-result.json produced by a worker",
+    )
+    scope_import_result.add_argument(
+        "--example",
+        choices=["src-only"],
+        help=(
+            "Import a packaged worker-shaped fixture (not evidence). "
+            "src-only proposes allowed_roots: [\"src/\"] at a placeholder base_sha."
+        ),
+    )
+    scope_import_result.add_argument(
+        "--run-id",
+        required=True,
+        dest="run_id",
+        help="Parent run_id / session_id to bind imported proposals to",
+    )
+    scope_import_result.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
 
     runs_logs = runs_sub.add_parser(
         "logs",
@@ -1618,9 +1652,9 @@ def parse_args() -> argparse.Namespace:
     )
     agent_parser.add_argument(
         "--provider",
-        choices=["anthropic", "openai", "openrouter", "bedrock", "remote-ial"],
+        choices=["anthropic", "openai", "openrouter", "bedrock", "remote-ial", "local"],
         default=None,
-        help="LLM provider (default: from config or anthropic)",
+        help="LLM provider (default: from config or anthropic). local selects an activated local profile (for example setup provider local-qwen).",
     )
     agent_parser.add_argument(
         "--plan",
