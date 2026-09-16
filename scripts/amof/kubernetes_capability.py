@@ -16,6 +16,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -72,7 +73,9 @@ ACCEPTANCE_PASS = "PASS"
 ACCEPTANCE_FAIL = "FAIL"
 ACCEPTANCE_UNVERIFIED = "UNVERIFIED"
 
-ALLOWED_PATCH_KEYS = frozenset({"replicas"})
+ALLOWED_PATCH_KEYS = frozenset({"replicas", "annotation"})
+ALLOWED_ANNOTATION_KEY = "amof.dev/capability-probe"
+_ANNOTATION_VALUE_RE = re.compile(r"^[A-Za-z0-9._:/=@-]{1,128}$")
 _WORKER_IDENTITY_MARKERS = frozenset(
     {
         "worker",
@@ -225,6 +228,30 @@ def append_capability_event(
     return event
 
 
+def _normalize_annotation(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise KubernetesCapabilityError("patch.annotation must be an object", code="invalid_patch")
+    extra = set(value) - {"key", "value"}
+    if extra:
+        raise KubernetesCapabilityError(
+            f"unsupported annotation fields {sorted(extra)}",
+            code="invalid_patch",
+        )
+    key = str(value.get("key") or "").strip()
+    if key != ALLOWED_ANNOTATION_KEY:
+        raise KubernetesCapabilityError(
+            f"annotation key must be {ALLOWED_ANNOTATION_KEY}",
+            code="invalid_patch",
+        )
+    text = value.get("value")
+    if not isinstance(text, str) or _ANNOTATION_VALUE_RE.fullmatch(text) is None:
+        raise KubernetesCapabilityError(
+            "annotation value must be a bounded AMOF-owned token",
+            code="invalid_patch",
+        )
+    return {"key": key, "value": text}
+
+
 def normalize_patch(value: Any) -> dict[str, Any] | None:
     if value is None:
         return None
@@ -236,6 +263,13 @@ def normalize_patch(value: Any) -> dict[str, Any] | None:
             f"unsupported patch fields {sorted(extra)}; v0 allows {sorted(ALLOWED_PATCH_KEYS)}",
             code="invalid_patch",
         )
+    if not value:
+        raise KubernetesCapabilityError("patch must not be empty", code="invalid_patch")
+    if "replicas" in value and "annotation" in value:
+        raise KubernetesCapabilityError(
+            "patch must use one bounded operation shape",
+            code="invalid_patch",
+        )
     if "replicas" in value:
         replicas = value["replicas"]
         if not isinstance(replicas, int) or isinstance(replicas, bool) or replicas < 0:
@@ -243,9 +277,8 @@ def normalize_patch(value: Any) -> dict[str, Any] | None:
                 "patch.replicas must be a non-negative integer",
                 code="invalid_patch",
             )
-    if not value:
-        raise KubernetesCapabilityError("patch must not be empty", code="invalid_patch")
-    return {"replicas": int(value["replicas"])} if "replicas" in value else {}
+        return {"replicas": int(replicas)}
+    return {"annotation": _normalize_annotation(value.get("annotation"))}
 
 
 def operation_digest(operation: KubernetesOperation) -> str:
@@ -306,6 +339,7 @@ def default_fixture_state() -> dict[str, Any]:
                         "replicas": 1,
                         "generation": 1,
                         "resource_version": "1",
+                        "annotations": {},
                     }
                 }
             }
@@ -380,6 +414,10 @@ class FixtureKubernetesExecutor:
             updated = copy.deepcopy(current)
             if "replicas" in patch:
                 updated["replicas"] = patch["replicas"]
+            if "annotation" in patch:
+                annotations = dict(updated.get("annotations") or {})
+                annotations[patch["annotation"]["key"]] = patch["annotation"]["value"]
+                updated["annotations"] = annotations
             updated["generation"] = int(updated.get("generation") or 0) + 1
             updated["resource_version"] = str(int(updated.get("resource_version") or 0) + 1)
             bucket[operation.name] = updated
@@ -388,6 +426,8 @@ class FixtureKubernetesExecutor:
                 "verified": True,
                 "verification_method": "fixture_state_compare",
                 "result_digest": _sha256_canonical({"before": before, "after": updated}),
+                "before_digest": _sha256_canonical(before),
+                "after_digest": _sha256_canonical(updated),
                 "before": before,
                 "after": copy.deepcopy(updated),
                 "changed": before != updated,
@@ -944,6 +984,33 @@ def compute_receipt_id(
     )
 
 
+def _operation_name(operation: KubernetesOperation) -> str:
+    patch = normalize_patch(operation.patch)
+    if patch and "annotation" in patch:
+        return "annotation_patch"
+    if patch and "replicas" in patch:
+        return "replica_patch"
+    return str(operation.verb or "").strip().lower() or "unknown"
+
+
+def _generation_of(value: Any) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    generation = value.get("generation")
+    if isinstance(generation, int) and not isinstance(generation, bool):
+        return generation
+    return None
+
+
+def _resource_version_of(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    raw = value.get("resourceVersion", value.get("resource_version"))
+    if raw is None:
+        return None
+    return str(raw)
+
+
 def _acceptance_for(compliance: str, *, verified: bool, executed: bool) -> str:
     if compliance == COMPLIANCE_UNVERIFIED or not verified:
         return ACCEPTANCE_UNVERIFIED
@@ -1014,6 +1081,7 @@ def _build_receipt(
         },
         "operation": {
             "verb": operation.verb,
+            "name": _operation_name(operation),
             "digest": operation_digest(operation),
         },
         "change": change,
@@ -1080,12 +1148,27 @@ def _denial(
     }
 
 
+def _coerce_executor(executor: KubernetesExecutor | str | None) -> KubernetesExecutor:
+    if executor is None or executor == "fixture":
+        return FixtureKubernetesExecutor()
+    if executor == "live":
+        from .kubernetes_live import LiveKubernetesExecutor
+
+        return LiveKubernetesExecutor()
+    if hasattr(executor, "execute"):
+        return executor  # type: ignore[return-value]
+    raise KubernetesCapabilityError(
+        f"unsupported executor: {executor!r}",
+        code="invalid_request",
+    )
+
+
 def execute_kubernetes_capability(
     *,
     operation: KubernetesOperation,
     approval_id: str | None = None,
     binding_id: str | None = None,
-    executor: KubernetesExecutor | None = None,
+    executor: KubernetesExecutor | str | None = None,
     store: KubernetesCapabilityStore | None = None,
     now: datetime | None = None,
 ) -> ExecutionOutcome:
@@ -1095,7 +1178,7 @@ def execute_kubernetes_capability(
     Interrupted or unverified execution never mints PASS.
     """
     store = store or KubernetesCapabilityStore.from_env()
-    executor = executor or FixtureKubernetesExecutor()
+    executor = _coerce_executor(executor)
     op = KubernetesOperation(
         cluster=str(operation.cluster or "").strip(),
         namespace=str(operation.namespace or "").strip(),
@@ -1292,12 +1375,22 @@ def execute_kubernetes_capability(
     if result.get("changed") or verb_requires_mutate(op.verb):
         change = {
             "digest": result.get("result_digest"),
-            "before_generation": None
-            if not isinstance(result.get("before"), dict)
-            else result["before"].get("generation"),
-            "after_generation": None
-            if not isinstance(result.get("after"), dict)
-            else result["after"].get("generation"),
+            "before_digest": result.get("before_digest")
+            or (
+                None
+                if result.get("before") is None
+                else _sha256_canonical(result.get("before"))
+            ),
+            "after_digest": result.get("after_digest")
+            or (
+                None
+                if result.get("after") is None
+                else _sha256_canonical(result.get("after"))
+            ),
+            "before_generation": _generation_of(result.get("before")),
+            "after_generation": _generation_of(result.get("after")),
+            "before_resource_version": _resource_version_of(result.get("before")),
+            "after_resource_version": _resource_version_of(result.get("after")),
             "changed": bool(result.get("changed")),
         }
 
@@ -1425,6 +1518,7 @@ __all__ = [
     "ACCEPTANCE_FAIL",
     "ACCEPTANCE_PASS",
     "ACCEPTANCE_UNVERIFIED",
+    "ALLOWED_ANNOTATION_KEY",
     "APPROVAL_KIND",
     "BINDING_KIND",
     "DEFAULT_FIXTURE_CLUSTER",

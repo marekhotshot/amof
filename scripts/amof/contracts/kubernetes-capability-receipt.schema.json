@@ -56,6 +56,7 @@
       "required": ["verb", "digest"],
       "properties": {
         "verb": { "type": "string" },
+        "name": { "type": "string" },
         "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
       }
     },
@@ -63,8 +64,12 @@
       "type": ["object", "null"],
       "properties": {
         "digest": { "type": ["string", "null"] },
+        "before_digest": { "type": ["string", "null"] },
+        "after_digest": { "type": ["string", "null"] },
         "before_generation": { "type": ["integer", "null"] },
         "after_generation": { "type": ["integer", "null"] },
+        "before_resource_version": { "type": ["string", "null"] },
+        "after_resource_version": { "type": ["string", "null"] },
         "changed": { "type": "boolean" }
       }
     },

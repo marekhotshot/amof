@@ -38,10 +38,15 @@ controller. It is one governed capability slice.
 | Cluster | logical target id (not a kubeconfig path) |
 | Namespace | required; deny wins over allow |
 | TTL | mandatory on Approval |
-| Executor | in-process fixture (`amof scope execute --executor fixture`) |
+| Executor | in-process fixture (`--executor fixture`) or one governed live adapter (`--executor live`) |
 
-Live `kubectl`, production clusters, operators, and network/database/Jira
-capability authority are out of scope.
+The live adapter is one AMOF-owned Kubernetes path: `Deployment` `get` and
+annotation `patch` against a named logical cluster target. It is not a
+Kubernetes platform, generic `kubectl` surface, or worker command runner.
+
+Logical cluster ids resolve from
+`capabilities/kubernetes/targets.json` (or `AMOF_K8S_TARGETS_FILE`) to an
+existing kubeconfig path + context. Receipts store only the logical id.
 
 ## Enforcement guarantees
 
@@ -115,7 +120,9 @@ ids on the existing Write-Scope CLI surface. No second orchestration path.
 
 - Not perfect OS or container isolation.
 - Not a Kubernetes RBAC replacement or admission controller.
-- Not a live cluster client; v0 CI/demo uses a fixture executor.
+- Not a Kubernetes platform. The live adapter is one Deployment get/patch lane
+  after proposal → approval → binding. It does not expose raw `kubectl` or
+  unrestricted worker cluster mutation.
 - Not autonomous approval or automatic privilege renewal.
 - Not network, database, secrets, or Jira capability authority.
 - Not Predator / Workforce / runner-architecture replacement.
