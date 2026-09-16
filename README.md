@@ -2,7 +2,7 @@
   <img src="docs/assets/amof-logo.svg" alt="AMOF logo" width="140" />
 </p>
 
-<h1 align="center">AMOF 3.4 — Native runtime, Trust Layer, acceptance honesty, and a usable public Write-Scope lifecycle</h1>
+<h1 align="center">AMOF — Runtime Authority for governed AI execution</h1>
 
 <p align="center"><strong>Agentic Operations Fabric</strong></p>
 
@@ -21,14 +21,18 @@
 
 AI agents are cheap. Runtime truth is not.
 
-AMOF v3.4.0 is an OSS-only, installable local-first CLI and governed runtime.
-Its current product claim is **Write-Scope Authority** plus a usable public
-lifecycle: workers propose bounded repository mutations (including via
-`amof scope import-result`); operators approve finite, TTL-bound grants;
-Runtime Authority binds and enforces those grants; MutationReceipts prove
-whether execution remained inside scope. Native and Cursor backends share that
-envelope with Hermes. Trust verify/export is local. Acceptance is honest:
-`completed` with required checks not run is `UNVERIFIED`, never `PASS`.
+AMOF is an OSS-only, installable local-first CLI. **Runtime Authority** owns
+proposal, approval, binding, enforcement, execution, verification, and
+receipts. Current public capability kinds are `git.write` (Write-Scope),
+`kubernetes.read` / `kubernetes.mutate`, and `reference.action` (local
+reference fixtures used by `amof demo`).
+
+The last tagged line is **v3.4.0**. Canonical `main` is ahead of that tag with
+the Kubernetes live gate, the 15-minute demo, and public promotion proofs.
+Trust verify/export is local. Acceptance is honest: `completed` with required
+checks not run is `UNVERIFIED`, never `PASS`.
+
+Public docs map: [`docs/INDEX.md`](docs/INDEX.md).
 
 Lifecycle:
 
@@ -110,18 +114,20 @@ amof agent --plan-execute "Write src/ok.py only" --write-scope-approval <wsa-...
 amof scope audit <wsa-...>
 ```
 
-AMOF remains a governed cognition runtime around planning contracts, handoff
-execution, runtime evidence, and receipts. LLM calls are workers inside that
-runtime, not the authority for source truth, runtime truth, or mutation policy.
-Studio remains an optional experimental session ledger.
+LLM calls are workers inside that runtime, not the authority for source truth,
+runtime truth, or mutation policy. Studio remains an optional experimental
+session ledger. Older “governed cognition runtime” copy is archived under
+[`docs/historical/`](docs/historical/INDEX.md).
 
 ## What AMOF Is
 
-AMOF turns a repository into a governed cognition runtime:
+AMOF is a governed Runtime Authority CLI:
 
 - `amof check` and `amof doctor` verify the workstation and app-data layout.
 - `amof init --adopt .` binds an existing Git repo into AMOF app-data.
 - `amof setup provider ...` stores provider references, not raw secrets.
+- `amof demo` runs one Runtime Authority scenario to a verified receipt.
+- `amof proof list|show` binds a promoted SHA to public-safe verification.
 - `amof scope list|show|approve|revoke|audit|recover` completes Write-Scope
   Authority for bounded repository mutation. `amof scope propose|execute`
   adds the v0 Kubernetes capability sibling. Import worker evidence with
@@ -147,15 +153,15 @@ source repo + runtime evidence
 AMOF governance loop ---- receipts / provenance / write-scope grants
         |
         v
-optional cognition worker: local model, hosted provider, or remote IAL gateway
+optional worker: local model, hosted provider, or configured gateway
         |
         v
 proposal → approval → bound execution → MutationReceipt
 ```
 
 AMOF owns the loop around source truth, runtime truth, receipts, and approval
-boundaries. Vendor runtimes and local models are optional cognition workers
-behind that loop.
+boundaries. Vendor runtimes and local models are optional workers behind that
+loop. See [`docs/runtime-authority.md`](docs/runtime-authority.md).
 
 ## Runtime Authority
 
@@ -189,7 +195,10 @@ chain; see `docs/canonical-execution-chain.md`.
 
 Public runtime authority surfaces:
 
+- one-command proof via `amof demo`
+- public promotion proof via `amof proof`
 - write-scope propose / inspect / approve / bind / enforce / audit / recover via `amof scope`
+- Kubernetes capability propose / execute via `amof scope` (fixture or optional disposable live cluster)
 - context selection via `amof context`
 - governed intake validation/submission via `amof intake`
 - runner registry metadata via `amof runner`
@@ -260,7 +269,7 @@ and is not part of the OSS release.
 
 ## Public Surface
 
-This public `main` intentionally keeps a narrow, installable v3.4.0 surface:
+This public `main` intentionally keeps a narrow, installable surface:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -269,7 +278,9 @@ This public `main` intentionally keeps a narrow, installable v3.4.0 surface:
 - `amof doctor`
 - `amof setup provider`
 - `amof init --adopt .`
-- `amof scope list|show|approve|revoke|audit|recover|import-result`
+- `amof demo`
+- `amof proof list|show`
+- `amof scope list|show|approve|revoke|audit|recover|import-result|propose|execute`
 - `amof chat plan "Inspect this repo"`
 - `amof chat start "Clarify this repo"`
 - `amof chat approve <session-id>`
@@ -304,7 +315,9 @@ What works in v3.4.0:
 - `amof doctor --json`
 - `amof setup provider --list`
 - `amof init --adopt .`
-- `amof scope list|show|approve|revoke|audit|recover|import-result`
+- `amof demo`
+- `amof proof list|show`
+- `amof scope list|show|approve|revoke|audit|recover|import-result|propose|execute`
 - `amof chat plan "Inspect this repo" --repo .`
 - `amof chat start "Clarify this repo" --repo .`
 - `amof chat ask <session-id> "Bounded answer"`
@@ -334,7 +347,9 @@ What works in v3.4.0:
 What is intentionally not included on this canonical main:
 
 - runtime services
-- Kubernetes or Helm deployment flows
+- Kubernetes or Helm *deployment* flows (the v0 `kubernetes.read` /
+  `kubernetes.mutate` capability sibling is included; it is not a cluster
+  platform)
 - infrastructure, runtime adapters, and embedded workspace trees
 - demo UIs, cloud/prod deployment stacks, and runtime operator surfaces
 
@@ -683,22 +698,16 @@ that directory as a flat app-data root.
 
 ## Documentation
 
-Additional public docs retained in this repo include:
+Current public docs path: [`docs/INDEX.md`](docs/INDEX.md).
 
-- `docs/write-scope-authority.md`
-- `docs/governed-cognition-runtime.md`
-- `docs/remote-ial.md`
-- `docs/runbooks/install.md`
-- `docs/runbooks/happy-path-agent-workflow.md`
-- `docs/runbooks/installed-cli-bedrock.md`
-- `docs/operations/amof-269-operator-supplied-bedrock-live-smoke.md`
-- `docs/operations/source-checkout-bootstrap.md`
-- `docs/operations/public-surface-taxonomy.md`
-- `docs/operations/public-smoke-matrix.md`
-- `docs/adr/AMOF-198-app-data-context-scope.md`
-- `docs/adr/AMOF-201-installer-bootstrap-design.md`
-- `contracts/README.md`
-- `contracts/INDEX.md`
+- Understand: [`docs/runtime-authority.md`](docs/runtime-authority.md),
+  [`docs/capability-authority.md`](docs/capability-authority.md),
+  [`docs/write-scope-authority.md`](docs/write-scope-authority.md),
+  [`docs/architecture/public-private-boundary.md`](docs/architecture/public-private-boundary.md)
+- Try it: `amof demo` and [`docs/runbooks/install.md`](docs/runbooks/install.md)
+- Verify: [`docs/proofs/INDEX.md`](docs/proofs/INDEX.md)
+- Reference: [`contracts/INDEX.md`](contracts/INDEX.md)
+- Historical: [`docs/historical/INDEX.md`](docs/historical/INDEX.md)
 
 ## Release State
 

@@ -36,7 +36,7 @@ AMOF 3.0 proves:
 Reference index (local receipt artifact, not committed): `/home/hotshot/work/amof-operating/worktrees/public/AMOF-300-RELEASE-CLOSEOUT-001-release-closeout/receipts/release-closeout/AMOF-300-RELEASE-CLOSEOUT-001/evidence-index.md`
 
 - Cost truth smoke (known good): `receipts/client-ial-smoke/AMOF-CLIENT-IAL-SMOKE-CONTRACT-001/runs/run-20260529-220052/summary.json` (request id `f5701fd4-61ab-401a-9371-7c3c1e2909c6`, sanitization `sanitized_hash_only`).
-- UltraPlan 300 planning spine: `docs/roadmap/AMOF-ULTRAPLAN-300.md`.
+- UltraPlan 300 planning spine: `docs/historical/roadmap/AMOF-ULTRAPLAN-300.md`.
 - Config/minimal-context and runtime-log/runs/context/intake/runner/execution/loop validations: `receipts/release-closeout/AMOF-300-RELEASE-CLOSEOUT-001/validation.log`.
 - Local closeout smoke summary: `receipts/release-closeout/AMOF-300-RELEASE-CLOSEOUT-001/smoke-summary.json`.
 - Ticket artifacts and promoted SHAs for completed UP300 chain are indexed in the evidence index document.

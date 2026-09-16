@@ -130,7 +130,7 @@ That outcome is the intended use of this process — not an anomaly.
 
 | Artifact | Location |
 |---|---|
-| Candidate document | `docs/security/AMOF-TRUST-MODEL-v1.md` (ticket; not canonical until revised + gated) |
+| Candidate document | `docs/historical/AMOF-TRUST-MODEL-v1.md` (archived draft; not canonical until revised + gated) |
 | Director synthesis | Operator evidence: `evidence/AMOF-TRUST-MODEL-v1-REDTEAM/DIRECTOR-SYNTHESIS.md` |
 | Isolated reviews | `evidence/AMOF-TRUST-MODEL-v1-REDTEAM/REVIEWER-{A,B,C,D,E}.md` |
 | Baseline implementation (at review time) | `origin/main` @ `134978a` (Trust Waves 001–004) |

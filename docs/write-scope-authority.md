@@ -1,7 +1,10 @@
 # Write-Scope Authority
 
-Status: public Runtime Authority surface (v3.4.0)  
-Audience: OSS operators using the public AMOF CLI (no Predator required)
+Status: public Runtime Authority surface  
+Audience: OSS operators using the public AMOF CLI (no Predator required)  
+Current docs map: [INDEX.md](INDEX.md) · [runtime-authority.md](runtime-authority.md)
+
+First proof: `python3 scripts/amof.py demo git --non-interactive`
 
 ## Model
 

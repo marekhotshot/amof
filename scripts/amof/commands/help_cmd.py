@@ -521,6 +521,7 @@ def cmd_help(topic: Optional[str] = None) -> int:
 
   More detail:
     amof help <topic>
+    docs/INDEX.md
     docs/runbooks/happy-path-agent-workflow.md
     docs/operations/public-surface-taxonomy.md
 """)

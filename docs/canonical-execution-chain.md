@@ -132,6 +132,7 @@ that a new execution-boundary abstraction is missing.
 - `contracts/agent-run-result.schema.json`
 - `contracts/execution-handoff-result.schema.json` (workspace materialization only)
 - `docs/write-scope-authority.md`
-- `docs/governed-cognition-runtime.md`
+- `docs/runtime-authority.md`
+- `docs/historical/governed-cognition-runtime.md` (archived positioning)
 - `docs/architecture/public-private-boundary.md`
 - `scripts/amof/execution_backends/README.md`

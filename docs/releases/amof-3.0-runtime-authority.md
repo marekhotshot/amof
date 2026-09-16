@@ -6,8 +6,8 @@ Status: released
 Canonical version: `v3.0.3`
 Code name: `AMOF-ULTRAPLAN-300`
 Related:
-- `docs/roadmap/AMOF-ULTRAPLAN-300.md`
-- `docs/governed-cognition-runtime.md`
+- `docs/historical/roadmap/AMOF-ULTRAPLAN-300.md`
+- `docs/historical/governed-cognition-runtime.md`
 - `docs/releases/amof-3.0-closeout.md`
 - `docs/releases/amof-3.0.0-tag.md`
 

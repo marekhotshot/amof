@@ -2,8 +2,16 @@
 
 Status: public v3.4.0 runbook
 
-This runbook is for a public user who wants to try AMOF on an existing Git
-repository without learning the workspace and maintainer machinery first.
+The shortest public proof does not need adoption or a provider:
+
+```bash
+git clone https://github.com/marekhotshot/amof.git
+cd amof
+python3 scripts/amof.py demo migration --non-interactive
+```
+
+This runbook is the next step: try AMOF on an existing Git repository without
+learning the workspace and maintainer machinery first.
 
 It proves four things:
 
