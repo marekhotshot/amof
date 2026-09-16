@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/reference-capability-receipt.schema.json",
+  "title": "Reference Capability Receipt",
+  "description": "Runtime proof of one local reference-system action. Not an enterprise integration. UNVERIFIED must never become PASS.",
+  "type": "object",
+  "required": [
+    "kind",
+    "schema_version",
+    "receipt_id",
+    "run_id",
+    "mission_id",
+    "requested_by",
+    "approval_id",
+    "binding_id",
+    "capability",
+    "granted",
+    "target",
+    "operation",
+    "within_scope",
+    "verification",
+    "executed",
+    "compliance",
+    "acceptance_state",
+    "created_at",
+    "evaluated_at",
+    "secrets_omitted"
+  ],
+  "properties": {
+    "kind": { "type": "string", "const": "reference_capability_receipt" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "receipt_id": { "type": "string", "pattern": "^rcr-[0-9a-f]{24}$" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "mission_id": { "type": "string", "minLength": 1 },
+    "requested_by": { "type": "string" },
+    "proposal_id": { "type": "string", "pattern": "^rcp-[0-9a-f]{24}$" },
+    "approval_id": { "type": "string", "pattern": "^rca-[0-9a-f]{24}$" },
+    "binding_id": { "type": "string", "pattern": "^rcb-[0-9a-f]{24}$" },
+    "capability": { "type": "string", "const": "reference.action" },
+    "granted": { "type": "object", "additionalProperties": true },
+    "target": {
+      "type": "object",
+      "required": ["system", "object"],
+      "properties": {
+        "system": { "type": "string" },
+        "object": { "type": "string" }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "required": ["action", "digest"],
+      "properties": {
+        "action": { "type": "string" },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "change": { "type": ["object", "null"] },
+    "within_scope": { "type": "boolean" },
+    "verification": {
+      "type": "object",
+      "required": ["verified"],
+      "properties": {
+        "method": { "type": ["string", "null"] },
+        "verified": { "type": "boolean" }
+      }
+    },
+    "executed": { "type": "boolean" },
+    "compliance": { "type": "string", "enum": ["within_scope", "denied", "unverified"] },
+    "acceptance_state": { "type": "string", "enum": ["PASS", "FAIL", "UNVERIFIED"] },
+    "binding_status": { "type": "string" },
+    "approval_status": { "type": "string" },
+    "created_at": { "type": "string" },
+    "evaluated_at": { "type": "string" },
+    "stop_reason": { "type": ["string", "null"] },
+    "denial_code": { "type": ["string", "null"] },
+    "secrets_omitted": { "type": "boolean", "const": true }
+  },
+  "additionalProperties": false
+}

@@ -12,9 +12,14 @@ This slice adds the smallest sibling needed for a second execution surface:
 ```text
 Authority
  ├── git.write            existing Write-Scope Authority
- └── kubernetes.read      this slice
-     kubernetes.mutate    this slice
+ ├── kubernetes.read      Kubernetes sibling
+ │   kubernetes.mutate
+ └── reference.action     local reference-system sibling
 ```
+
+`reference.action` is one object/action/state primitive for local reference
+systems used by `amof demo`. It is not an insurer, bank, hospital, IAM, or
+migration-platform integration.
 
 The lifecycle is the same:
 

@@ -3,12 +3,14 @@
 Conceptual tree — not a second permission platform:
 
     Authority
-     ├── git.write          existing Write-Scope Authority (unchanged)
-     └── kubernetes.read    this slice
-         kubernetes.mutate  this slice
+     ├── git.write            existing Write-Scope Authority (unchanged)
+     ├── kubernetes.read      Kubernetes sibling
+     │   kubernetes.mutate
+     └── reference.action     local reference-system sibling (demo fixtures)
 
-Write-Scope remains the Git filesystem implementation. This module only names
-the sibling kinds and the v0 Kubernetes body. Do not treat this as generic RBAC.
+    Write-Scope remains the Git filesystem implementation. Kubernetes remains
+    one Deployment get/patch lane. reference.action is one object/action/state
+    primitive for local reference systems — not enterprise integrations or RBAC.
 """
 
 from __future__ import annotations
@@ -21,10 +23,12 @@ from typing import Any
 CAPABILITY_GIT_WRITE = "git.write"
 CAPABILITY_KUBERNETES_READ = "kubernetes.read"
 CAPABILITY_KUBERNETES_MUTATE = "kubernetes.mutate"
+CAPABILITY_REFERENCE_ACTION = "reference.action"
 
 KUBERNETES_CAPABILITIES = frozenset(
     {CAPABILITY_KUBERNETES_READ, CAPABILITY_KUBERNETES_MUTATE}
 )
+REFERENCE_CAPABILITIES = frozenset({CAPABILITY_REFERENCE_ACTION})
 
 READ_VERBS = frozenset({"get", "list"})
 MUTATE_VERBS = frozenset({"patch"})
@@ -203,7 +207,9 @@ __all__ = [
     "CAPABILITY_GIT_WRITE",
     "CAPABILITY_KUBERNETES_MUTATE",
     "CAPABILITY_KUBERNETES_READ",
+    "CAPABILITY_REFERENCE_ACTION",
     "CapabilityBodyError",
+    "REFERENCE_CAPABILITIES",
     "KUBERNETES_BODY_FIELDS",
     "KUBERNETES_BODY_HASH_FIELDS",
     "KUBERNETES_CAPABILITIES",

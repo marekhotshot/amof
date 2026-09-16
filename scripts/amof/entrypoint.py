@@ -35,6 +35,7 @@ NO_ECOSYSTEM_COMMANDS = {
     "loop",
     "runs",
     "scope",
+    "demo",
     "studio",
     "update",
     "uninstall",
@@ -197,6 +198,7 @@ cmd_execution = _lazy_command("execution", "cmd_execution")
 cmd_loop = _lazy_command("loop", "cmd_loop")
 cmd_runs = _lazy_command("runs", "cmd_runs")
 cmd_scope = _lazy_command("scope", "cmd_scope")
+cmd_demo = _lazy_command("demo", "cmd_demo")
 cmd_studio = _lazy_command("studio", "cmd_studio")
 cmd_agent = _lazy_command("agent_cmd", "cmd_agent")
 cmd_manifest = _lazy_command("manifest_cmd", "cmd_manifest")
@@ -288,6 +290,8 @@ def main() -> None:
             sys.exit(cmd_runs(args))
         if args.command == "scope":
             sys.exit(cmd_scope(args))
+        if args.command == "demo":
+            sys.exit(cmd_demo(args))
         if args.command == "studio":
             sys.exit(cmd_studio(args))
         if args.command == "update":
