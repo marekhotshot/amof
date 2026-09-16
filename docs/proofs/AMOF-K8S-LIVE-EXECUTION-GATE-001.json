@@ -1,0 +1,21 @@
+{
+  "acceptance": "PASS",
+  "authority": "kubernetes.mutate",
+  "bundle_id": "75d56c9b5a5f7988ce71d62a7024c4b77c157a690584fa8573820dc095f7692c",
+  "candidate_branch": "ticket/AMOF-K8S-LIVE-EXECUTION-GATE-001-on-main",
+  "environment": {
+    "identity": null,
+    "kind": "none",
+    "note": "Code-only promotion. GitOps-SHA is none. Live verification uses an optional disposable local cluster, not a published environment identity."
+  },
+  "evidence_digest": "sha256:a35973ee39e859a212f109035fbb04bc71bf1c2bede3dad362a44ed5437535f7",
+  "gitops_sha": null,
+  "promotion_id": "promote-75d56c9b5a5f7988",
+  "promotion_sha": "d34aca3b44e4c4fcc25ccdcd8de4c5571c66e816",
+  "proof": "docs/proofs/AMOF-K8S-LIVE-EXECUTION-GATE-001.json",
+  "schema": "amof.public_promotion_proof/v0",
+  "source_sha": "331a04aa4ee4b634a82cb657c55a1d5d99bcdeb1",
+  "ticket_id": "AMOF-K8S-LIVE-EXECUTION-GATE-001",
+  "verification": "PASS",
+  "verification_method": "unit_and_optional_disposable_k3d"
+}

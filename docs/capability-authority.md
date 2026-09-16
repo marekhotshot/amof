@@ -30,6 +30,12 @@ proposal → approval → binding → execution → verification → receipt
 A worker proposal is never authority. An execution without a valid Approval and
 Binding fails closed.
 
+Promoted revisions can be bound to public-safe verification with
+`amof proof show <ticket-or-sha>`. Those files project `promote-main`
+identity (`promotion_sha`, `source_sha`, `bundle_id`, `promotion_id`,
+optional `gitops_sha`). They are not a second promotion authority and
+they do not contain app-data.
+
 This is **not** a generic RBAC platform, policy language, or Kubernetes-native
 controller. It is one governed capability slice.
 

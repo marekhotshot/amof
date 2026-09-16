@@ -87,6 +87,17 @@ Truth labels:
 These reference scenarios prove execution authority. They are not bank,
 hospital, insurer, IAM, or migration products.
 
+Bind a promoted SHA to public-safe verification (no app-data):
+
+```bash
+python3 scripts/amof.py proof list
+python3 scripts/amof.py proof show AMOF-15MIN-RUNTIME-AUTHORITY-DEMO-001
+```
+
+Proofs live in `docs/proofs/` and project governed `promote-main` identity.
+`GitOps-SHA` is optional environment-commit identity and is `none` for these
+code-only promotions.
+
 Learning walkthrough (fixture, not evidence):
 
 import/list/approve/audit run without any model; the `amof agent --plan-execute` step needs a configured provider (`amof setup provider …` or `ANTHROPIC_API_KEY`). With a missing provider the run stops before planning and no Binding is created.

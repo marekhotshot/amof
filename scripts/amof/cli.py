@@ -26,6 +26,7 @@ PUBLIC_HELP_COMMANDS = (
     "runs",
     "scope",
     "demo",
+    "proof",
     "studio",
     "agent",
     "bootstrap",
@@ -1170,6 +1171,31 @@ def parse_args() -> argparse.Namespace:
         "--json",
         action="store_true",
         help="Emit machine-readable demo result JSON",
+    )
+
+    proof_parser = subparsers.add_parser(
+        "proof",
+        help="Show public promotion proofs for promoted SHAs",
+    )
+    proof_sub = proof_parser.add_subparsers(dest="proof_cmd")
+    proof_list = proof_sub.add_parser("list", help="List published public proofs")
+    proof_list.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable proof list JSON",
+    )
+    proof_show = proof_sub.add_parser(
+        "show",
+        help="Show one public proof by ticket or SHA",
+    )
+    proof_show.add_argument(
+        "ref",
+        help="Ticket id, promotion SHA, source SHA, or promotion id",
+    )
+    proof_show.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable proof JSON",
     )
 
     scope_parser = subparsers.add_parser(
