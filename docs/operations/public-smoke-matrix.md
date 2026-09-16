@@ -1,13 +1,13 @@
 # Public Smoke Matrix
 
-Status: public v3.4.0 Runtime Authority smoke matrix
-Date: 2026-09-02
+Status: public v3.5.0 Runtime Authority smoke matrix
+Date: 2026-09-17
 
 This matrix defines public smoke evidence for Runtime Authority on canonical
-`main`. Tagged `v3.4.0` install smokes remain valid for that tag. Current
-`main` is ahead of the tag (demo, Kubernetes capability, public proofs).
-The default gate is no-key and local-only. Live provider calls are
-optional/manual and must never run as part of the default public smoke.
+`main`. Tagged `v3.5.0` install smokes are the current-release pin. The
+`v3.4.0` tag remains a historical install pin. The default gate is no-key and
+local-only. Live provider calls are optional/manual and must never run as
+part of the default public smoke.
 
 ## 0. Current-main demo and public proof
 
@@ -20,16 +20,16 @@ optional/manual and must never run as part of the default public smoke.
 
 ## 1. Public Pipx Install Smoke
 
-- Command: `pipx install --force "git+https://github.com/marekhotshot/amof.git@v3.4.0" && amof --version && pipx runpip amof show amof`
-- Expected result: installs public tag and reports AMOF v3.4.0 plus package metadata
+- Command: `pipx install --force "git+https://github.com/marekhotshot/amof.git@v3.5.0" && amof --version && pipx runpip amof show amof`
+- Expected result: installs public tag and reports AMOF v3.5.0 plus package metadata
 - Requires network: yes
 - Requires provider key: no
 - Mutates target repo: no
-- Pass/fail criteria: pass if install exits 0, `amof --version` is v3.4.0, and package metadata name is `amof`; fail on system `python -m amof` assumptions
+- Pass/fail criteria: pass if install exits 0, `amof --version` is v3.5.0, and package metadata name is `amof`; fail on system `python -m amof` assumptions
 
 ## 2. Source Checkout Install Smoke
 
-- Command: `git clone --branch v3.4.0 --single-branch https://github.com/marekhotshot/amof.git /tmp/amof-src && cd /tmp/amof-src && ./scripts/install-amof.sh && ./.venv/bin/amof doctor`
+- Command: `git clone --branch v3.5.0 --single-branch https://github.com/marekhotshot/amof.git /tmp/amof-src && cd /tmp/amof-src && ./scripts/install-amof.sh && ./.venv/bin/amof doctor`
 - Expected result: clean source checkout creates local venv and doctor passes or reports only understood warnings
 - Requires network: yes
 - Requires provider key: no

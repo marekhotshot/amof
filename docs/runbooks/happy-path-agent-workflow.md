@@ -1,6 +1,6 @@
 # AMOF Happy Path: Adopt a Repo and Run an Agent Plan
 
-Status: public v3.4.0 runbook
+Status: public v3.5.0 runbook
 
 The shortest public proof does not need adoption or a provider:
 
@@ -31,10 +31,10 @@ keys into terminal transcripts, bug reports, or public docs.
 
 ## Install AMOF
 
-Install the public v3.4.0 release (after the tag exists):
+Install the public v3.5.0 release (after the tag exists):
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.4.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.5.0"
 ```
 
 Verify the CLI through the pipx-installed shim:
@@ -48,7 +48,7 @@ pipx runpip amof show amof
 Expected version:
 
 ```text
-AMOF v3.4.0
+AMOF v3.5.0
 ```
 
 System `python -m amof` is not the public pipx contract. For source checkouts,
@@ -95,7 +95,7 @@ git status --short
 
 Expected: no output.
 
-AMOF v3.4.0 also resolves the adopted ecosystem through `amof context`; dotted
+AMOF v3.5.0 also resolves the adopted ecosystem through `amof context`; dotted
 repo names such as `hotshot.sk` are covered by the public dogfood fix.
 
 ## Configure A Provider Profile
@@ -143,7 +143,7 @@ Expected after activating the OpenRouter profile without exporting a key:
 ```
 
 The exact provider message depends on the provider you activate or select. The
-important v3.4.0 behavior is that the command reaches provider validation and
+important v3.5.0 behavior is that the command reaches provider validation and
 does not fail with:
 
 ```text

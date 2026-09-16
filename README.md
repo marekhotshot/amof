@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache-2.0 license" /></a>
-  <img src="https://img.shields.io/badge/release-v3.4.0-0A7FFF.svg" alt="release v3.4.0" />
+  <img src="https://img.shields.io/badge/release-v3.5.0-0A7FFF.svg" alt="release v3.5.0" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg" alt="Python 3.11+" />
 </p>
 
@@ -27,10 +27,10 @@ receipts. Current public capability kinds are `git.write` (Write-Scope),
 `kubernetes.read` / `kubernetes.mutate`, and `reference.action` (local
 reference fixtures used by `amof demo`).
 
-The last tagged line is **v3.4.0**. Canonical `main` is ahead of that tag with
-the Kubernetes live gate, the 15-minute demo, and public promotion proofs.
-Trust verify/export is local. Acceptance is honest: `completed` with required
-checks not run is `UNVERIFIED`, never `PASS`.
+The current public release is **v3.5.0**. It adds Kubernetes Capability
+Authority, `amof demo`, and portable public proofs on top of the v3.4.0
+Write-Scope line. Trust verify/export is local. Acceptance is honest:
+`completed` with required checks not run is `UNVERIFIED`, never `PASS`.
 
 Public docs map: [`docs/INDEX.md`](docs/INDEX.md).
 
@@ -299,7 +299,7 @@ This public `main` intentionally keeps a narrow, installable surface:
 
 ## Released Public CLI Surface
 
-What works in v3.4.0:
+What works in v3.5.0:
 
 - `./scripts/install-amof.sh`
 - `./scripts/build-standalone-amof.sh`
@@ -416,7 +416,7 @@ an explicit checkout-local virtualenv.
 Use this if you prefer an isolated user install:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.4.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.5.0"
 ```
 
 This installs the `amof` CLI from the public GitHub tag into a pipx-managed
@@ -445,7 +445,7 @@ amof update
 To target a specific public release:
 
 ```bash
-amof update --version v3.4.0
+amof update --version v3.5.0
 ```
 
 `amof update` uses `pipx install --force` for pipx-managed installs, so pipx
@@ -525,7 +525,7 @@ Use this path when you want AMOF to remember an existing Git repository without
 manually creating an ecosystem manifest or passing `-e` on every agent command:
 
 ```bash
-pipx install "git+https://github.com/marekhotshot/amof.git@v3.4.0"
+pipx install "git+https://github.com/marekhotshot/amof.git@v3.5.0"
 cd /path/to/my-repo
 git init  # only needed if this is not already a Git repo
 amof init --adopt .
@@ -543,7 +543,7 @@ message rather than fail on missing `--ecosystem/-e`.
 
 ## Bounded Loops and Scan/Report
 
-The v3.4.0 release keeps Write-Scope Authority on the public governed
+The v3.5.0 release keeps Write-Scope Authority on the public governed
 runtime surface while adding Native/Cursor backends, local trust
 verify/export, and `import-result` so the loop is usable without a private
 backend:
@@ -711,18 +711,23 @@ Current public docs path: [`docs/INDEX.md`](docs/INDEX.md).
 
 ## Release State
 
-- Latest release notes: `docs/releases/amof-3.4.0.md`. Verify the installed
+- Latest release notes: `docs/releases/amof-3.5.0.md`. Verify the installed
   version with `amof --version`.
-- Product version in this tree is `3.4.0`. A `v3.4.0` git tag is applied only
+- Product version in this tree is `3.5.0`. A `v3.5.0` git tag is applied only
   after promote-main of this candidate, and only to the synthetic SHA that
-  lands on `main`. Until that tag exists, pipx `@v3.4.0` will not resolve.
-- `CHANGELOG.md` `[Unreleased]` is empty; shipped work since the previous
-  public tag is accounted under `[3.4.0]`.
+  lands on `main`. Until that tag exists, pipx `@v3.5.0` will not resolve.
+- `CHANGELOG.md` `[Unreleased]` is empty; shipped work since `v3.4.0` is
+  accounted under `[3.5.0]`.
 - Previous public notes remain under `docs/releases/`.
 - `v3.2.0` remains as an earlier public release in this line.
 - `v3.0.0` remains as a historical broken escaped tag and is not rewritten.
 - `v3.0.1` remains as the prior correction release in this line.
-- Public `v3.4.0` includes:
+- Public `v3.5.0` includes the v3.4.0 Write-Scope line plus:
+  - Kubernetes Capability Authority (`kubernetes.read` / `kubernetes.mutate`)
+  - `amof demo` and `reference.action` local reference fixtures
+  - `amof proof` public promotion verification
+  - current-truth public docs map (`docs/INDEX.md`)
+- Public `v3.4.0` included:
   - Write-Scope Authority lifecycle: import-result → inspect → approve →
     bind → enforce → audit/recover via `amof scope` and
     `--write-scope-approval`
@@ -752,9 +757,9 @@ Current public docs path: [`docs/INDEX.md`](docs/INDEX.md).
   - bounded loops with `NO_MUTATION_PERFORMED` and `NO_REMOTE_EXECUTION_DISPATCHED`
   - runtime evidence inspection via `amof runs`
   - standalone smoke current-version hygiene for released artifacts
-- Studio in `v3.4.0` remains positioned as: Experimental Studio Session ledger for
+- Studio remains positioned as: Experimental Studio Session ledger for
   correlating governed runs, checkpoints, and evidence.
-- Current `v3.4.0` limitations:
+- Current `v3.5.0` limitations:
   - detached checkouts still require adoption knowledge
   - raw Studio `runs.json` remains attachment-time ledger truth
   - browser UX for Studio correlation remains private/operator-side
@@ -763,6 +768,7 @@ Current public docs path: [`docs/INDEX.md`](docs/INDEX.md).
   - builtin `amof agent --plan-execute` without `--write-scope-approval` is
     not governed by Write-Scope Authority
 - Release evidence docs:
+  - `docs/releases/amof-3.5.0.md`
   - `docs/releases/amof-3.4.0.md`
   - `docs/write-scope-authority.md`
   - `docs/canonical-execution-chain.md`
