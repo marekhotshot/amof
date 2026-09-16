@@ -47,6 +47,7 @@ from ..write_scope_proposals import (
 )
 from ..write_scope_recovery import WriteScopeRecoveryError, recover_binding
 from ..kubernetes_capability import (
+    ALLOWED_ANNOTATION_KEY,
     KubernetesCapabilityError,
     KubernetesOperation,
     approve_proposal as approve_kubernetes_proposal,
@@ -572,7 +573,19 @@ def cmd_scope(args: argparse.Namespace) -> int:
             approval_id = str(getattr(args, "approval_id", "") or "").strip() or None
             binding_id = str(getattr(args, "binding_id", "") or "").strip() or None
             patch_replicas = getattr(args, "patch_replicas", None)
-            patch = None if patch_replicas is None else {"replicas": int(patch_replicas)}
+            patch_annotation = getattr(args, "patch_annotation", None)
+            if patch_replicas is not None and patch_annotation:
+                raise ScopeCliError("pass only one bounded patch shape")
+            patch = None
+            if patch_replicas is not None:
+                patch = {"replicas": int(patch_replicas)}
+            elif patch_annotation:
+                patch = {
+                    "annotation": {
+                        "key": ALLOWED_ANNOTATION_KEY,
+                        "value": str(patch_annotation),
+                    }
+                }
             operation = KubernetesOperation(
                 cluster=str(getattr(args, "cluster", "") or "").strip(),
                 namespace=str(getattr(args, "namespace", "") or "").strip(),
@@ -590,6 +603,7 @@ def cmd_scope(args: argparse.Namespace) -> int:
                     operation=operation,
                     approval_id=approval_id,
                     binding_id=binding_id,
+                    executor=str(getattr(args, "executor", "fixture") or "fixture"),
                 )
             except KubernetesCapabilityError as exc:
                 raise ScopeCliError(str(exc)) from exc

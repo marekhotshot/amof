@@ -128,8 +128,9 @@ not the happy path.
 
 Kubernetes capability authority is a v0 sibling of the same lifecycle for
 `kubernetes.read` / `kubernetes.mutate`. It uses `amof scope propose|execute`
-and a fixture executor. It is **not** Kubernetes RBAC or OS isolation. See
-`docs/capability-authority.md`.
+with a fixture executor or one governed live Deployment get/patch adapter.
+It is **not** Kubernetes RBAC, a cluster platform, or unrestricted worker
+`kubectl`. See `docs/capability-authority.md`.
 
 See `docs/write-scope-authority.md` for the lifecycle, failure model, and a
 worked OSS example.
