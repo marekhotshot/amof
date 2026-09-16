@@ -76,12 +76,20 @@ Approvals. Passing `--approve-writable-root` together with
 replaces guardrail writable roots with the Binding roots; the flag cannot
 widen that set.
 
+## Sibling: Kubernetes capability (v0)
+
+The same propose → approve → bind → execute → receipt lifecycle now has a
+narrow non-Git sibling for `kubernetes.read` / `kubernetes.mutate`. It does
+**not** replace Write-Scope or Kubernetes RBAC. See
+`docs/capability-authority.md`.
+
 ## What this is not
 
 - Not perfect OS sandboxing or transactional rollback (`rollback_atomic: false`)
 - Not autonomous approval
 - Not Predator / Workforce / ladder selection
 - Not long-running checkpoint mutation authority (deferred)
+- Not Kubernetes-native RBAC or live-cluster admission control
 
 ## Worked OSS example
 

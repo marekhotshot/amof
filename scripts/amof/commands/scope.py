@@ -46,6 +46,23 @@ from ..write_scope_proposals import (
     persist_write_scope_proposals_from_result,
 )
 from ..write_scope_recovery import WriteScopeRecoveryError, recover_binding
+from ..kubernetes_capability import (
+    KubernetesCapabilityError,
+    KubernetesOperation,
+    approve_proposal as approve_kubernetes_proposal,
+    audit_kubernetes_capability,
+    execute_kubernetes_capability,
+    is_kubernetes_scope_id,
+    list_approvals as list_kubernetes_approvals,
+    list_bindings as list_kubernetes_bindings,
+    list_proposals as list_kubernetes_proposals,
+    load_approval as load_kubernetes_approval,
+    load_binding as load_kubernetes_binding,
+    load_proposal as load_kubernetes_proposal,
+    load_receipt as load_kubernetes_receipt,
+    propose_kubernetes_capability,
+    revoke_approval as revoke_kubernetes_approval,
+)
 
 PROPOSAL_STATUSES = frozenset({"proposed"})
 APPROVAL_STATUSES = frozenset(
@@ -90,23 +107,23 @@ def _print_list_table(records: list[dict[str, Any]]) -> None:
     for record in records:
         kind = str(record.get("kind") or "-")
         body = record.get("body") or {}
-        if kind == "write_scope_binding":
+        if kind in {"write_scope_binding", "kubernetes_capability_binding"}:
             record_id = str(record.get("binding_id") or "-")
             when = str(record.get("bound_at") or "-")
             expires = "-"
-            target = str(record.get("target_id") or "-")
+            target = str(record.get("target_id") or body.get("cluster") or "-")
             body_hash = str(record.get("body_hash") or "-")
-        elif kind == "write_scope_approval":
+        elif kind in {"write_scope_approval", "kubernetes_capability_approval"}:
             record_id = str(record.get("approval_id") or "-")
             when = str(record.get("approved_at") or "-")
             expires = str(record.get("expires_at") or "-")
-            target = str(body.get("target_id") or "-")
+            target = str(body.get("target_id") or body.get("cluster") or "-")
             body_hash = str(record.get("body_hash") or "-")
         else:
             record_id = str(record.get("proposal_id") or "-")
             when = str(record.get("created_at") or "-")
             expires = "-"
-            target = str(body.get("target_id") or "-")
+            target = str(body.get("target_id") or body.get("cluster") or "-")
             body_hash = str(record.get("body_hash") or "-")
         print(
             "\t".join(
@@ -249,11 +266,52 @@ def _print_recovery(record: dict[str, Any]) -> None:
         print(f"{key}: {value}")
 
 
+def _print_kubernetes_record(record: dict[str, Any]) -> None:
+    body = record.get("body") or {}
+    pairs = [
+        ("kind", record.get("kind") or "-"),
+        ("id", record.get("proposal_id") or record.get("approval_id") or record.get("binding_id") or record.get("receipt_id") or "-"),
+        ("status", record.get("status") or record.get("acceptance_state") or "-"),
+        ("run_id", record.get("run_id") or "-"),
+        ("capability", body.get("capability") or record.get("capability") or "-"),
+        ("cluster", body.get("cluster") or (record.get("target") or {}).get("cluster") or "-"),
+        ("namespaces", ", ".join(body.get("namespaces") or []) or "-"),
+        ("verbs", ", ".join(body.get("verbs") or []) or "-"),
+        ("resources", ", ".join(body.get("resources") or []) or "-"),
+        ("body_hash", record.get("body_hash") or "-"),
+        ("expires_at", record.get("expires_at") or "-"),
+        ("acceptance_state", record.get("acceptance_state") or "-"),
+        ("within_scope", record.get("within_scope") if "within_scope" in record else "-"),
+    ]
+    for key, value in pairs:
+        print(f"{key}: {value}")
+
+
 def _load_show_record(ref: str) -> dict[str, Any]:
     """Show proposal, approval, or binding by id prefix / fallback lookup."""
     text = str(ref or "").strip()
     if not text:
         raise ScopeCliError("id is required (proposal_id, approval_id, or binding_id).")
+    if text.startswith("kcr-"):
+        try:
+            return load_kubernetes_receipt(text)
+        except KubernetesCapabilityError as exc:
+            raise ScopeCliError(str(exc)) from exc
+    if text.startswith("kcb-"):
+        try:
+            return load_kubernetes_binding(text)
+        except KubernetesCapabilityError as exc:
+            raise ScopeCliError(str(exc)) from exc
+    if text.startswith("kca-"):
+        try:
+            return load_kubernetes_approval(text)
+        except KubernetesCapabilityError as exc:
+            raise ScopeCliError(str(exc)) from exc
+    if text.startswith("kcp-"):
+        try:
+            return load_kubernetes_proposal(text)
+        except KubernetesCapabilityError as exc:
+            raise ScopeCliError(str(exc)) from exc
     if text.startswith("wsb-"):
         try:
             return load_binding(text)
@@ -430,11 +488,30 @@ def cmd_scope(args: argparse.Namespace) -> int:
                     records.extend(
                         list_bindings(run_id=run_id, status=binding_status)
                     )
+            if include_proposals:
+                records.extend(list_kubernetes_proposals(run_id=run_id))
+            if include_approvals:
+                records.extend(
+                    list_kubernetes_approvals(
+                        run_id=run_id,
+                        status=status if status in APPROVAL_STATUSES else None,
+                    )
+                )
+            if include_bindings:
+                records.extend(
+                    list_kubernetes_bindings(
+                        run_id=run_id,
+                        status=status if status in BINDING_STATUSES else None,
+                    )
+                )
 
             kind_order = {
                 "write_scope_proposal": 0,
                 "write_scope_approval": 1,
                 "write_scope_binding": 2,
+                "kubernetes_capability_proposal": 3,
+                "kubernetes_capability_approval": 4,
+                "kubernetes_capability_binding": 5,
             }
             records.sort(
                 key=lambda item: (
@@ -464,6 +541,85 @@ def cmd_scope(args: argparse.Namespace) -> int:
         if action == "import-result":
             return _cmd_scope_import_result(args)
 
+        if action == "propose":
+            body = {
+                "capability": str(getattr(args, "capability", "") or "").strip(),
+                "cluster": str(getattr(args, "cluster", "") or "").strip(),
+                "namespaces": list(getattr(args, "namespaces", None) or []),
+                "verbs": list(getattr(args, "verbs", None) or []),
+                "resources": list(getattr(args, "resources", None) or []),
+                "denied_namespaces": list(getattr(args, "denied_namespaces", None) or []),
+                "denied_verbs": list(getattr(args, "denied_verbs", None) or []),
+                "denied_resources": list(getattr(args, "denied_resources", None) or []),
+                "reason": str(getattr(args, "reason", "") or "").strip(),
+            }
+            try:
+                record = propose_kubernetes_capability(
+                    run_id=str(getattr(args, "from_run", "") or "").strip(),
+                    body=body,
+                    requested_by=str(getattr(args, "requested_by", "") or "").strip(),
+                )
+            except KubernetesCapabilityError as exc:
+                raise ScopeCliError(str(exc)) from exc
+            if bool(getattr(args, "json", False)):
+                print(json.dumps(record, indent=2))
+            else:
+                print(f"proposal_id: {record['proposal_id']}")
+                print("note: Proposal is not authority; operator approve + bind required.")
+            return 0
+
+        if action == "execute":
+            approval_id = str(getattr(args, "approval_id", "") or "").strip() or None
+            binding_id = str(getattr(args, "binding_id", "") or "").strip() or None
+            patch_replicas = getattr(args, "patch_replicas", None)
+            patch = None if patch_replicas is None else {"replicas": int(patch_replicas)}
+            operation = KubernetesOperation(
+                cluster=str(getattr(args, "cluster", "") or "").strip(),
+                namespace=str(getattr(args, "namespace", "") or "").strip(),
+                verb=str(getattr(args, "verb", "") or "").strip(),
+                resource=str(getattr(args, "resource", "") or "").strip(),
+                name=str(getattr(args, "name", "") or "").strip() or None,
+                patch=patch,
+                mission_id=str(getattr(args, "mission_id", "") or "").strip()
+                or str(getattr(args, "run_id", "") or "").strip(),
+                requested_by=str(getattr(args, "requested_by", "") or "").strip(),
+                run_id=str(getattr(args, "run_id", "") or "").strip(),
+            )
+            try:
+                outcome = execute_kubernetes_capability(
+                    operation=operation,
+                    approval_id=approval_id,
+                    binding_id=binding_id,
+                )
+            except KubernetesCapabilityError as exc:
+                raise ScopeCliError(str(exc)) from exc
+            payload = {
+                "ok": outcome.ok,
+                "code": outcome.code,
+                "receipt": outcome.receipt,
+                "denial": outcome.denial,
+                "binding": outcome.binding,
+                "approval": None
+                if outcome.approval is None
+                else {
+                    "approval_id": outcome.approval.get("approval_id"),
+                    "status": outcome.approval.get("status"),
+                },
+            }
+            if bool(getattr(args, "json", False)):
+                print(json.dumps(payload, indent=2))
+            else:
+                print(f"ok: {outcome.ok}")
+                print(f"code: {outcome.code}")
+                if outcome.receipt:
+                    print(f"receipt_id: {outcome.receipt.get('receipt_id')}")
+                    print(f"acceptance_state: {outcome.receipt.get('acceptance_state')}")
+                    print(f"within_scope: {outcome.receipt.get('within_scope')}")
+                if outcome.denial:
+                    print(f"denial: {outcome.denial.get('code')}")
+                    print(f"message: {outcome.denial.get('message')}")
+            return 0 if outcome.ok else 1
+
         if action == "show":
             ref = str(
                 getattr(args, "scope_id", None)
@@ -473,6 +629,8 @@ def cmd_scope(args: argparse.Namespace) -> int:
             record = _load_show_record(ref)
             if bool(getattr(args, "json", False)):
                 print(json.dumps(record, indent=2))
+            elif str(record.get("kind") or "").startswith("kubernetes_capability_"):
+                _print_kubernetes_record(record)
             elif record.get("kind") == "write_scope_binding":
                 _print_binding(record)
             elif record.get("kind") == "write_scope_approval":
@@ -494,14 +652,21 @@ def cmd_scope(args: argparse.Namespace) -> int:
                     "operator identity is required: pass --approved-by <operator-id>."
                 )
             try:
-                record = approve_proposal(
-                    proposal_id,
-                    ttl=ttl,
-                    approved_by=approved_by,
-                    approval_source="cli",
-                    provenance="operator_asserted",
-                )
-            except WriteScopeApprovalError as exc:
+                if proposal_id.startswith("kcp-"):
+                    record = approve_kubernetes_proposal(
+                        proposal_id,
+                        ttl=ttl,
+                        approved_by=approved_by,
+                    )
+                else:
+                    record = approve_proposal(
+                        proposal_id,
+                        ttl=ttl,
+                        approved_by=approved_by,
+                        approval_source="cli",
+                        provenance="operator_asserted",
+                    )
+            except (WriteScopeApprovalError, KubernetesCapabilityError) as exc:
                 raise ScopeCliError(str(exc)) from exc
             if bool(getattr(args, "json", False)):
                 print(json.dumps(record, indent=2))
@@ -509,10 +674,16 @@ def cmd_scope(args: argparse.Namespace) -> int:
                 print(f"approval_id: {record['approval_id']}")
                 print(f"status: {record['status']}")
                 print(f"expires_at: {record['expires_at']}")
-                print(
-                    "note: Approval alone does not enable mutation execution "
-                    "(use --write-scope-approval to bind)."
-                )
+                if proposal_id.startswith("kcp-"):
+                    print(
+                        "note: Approval alone does not enable Kubernetes execution "
+                        "(use amof scope execute --approval <id>)."
+                    )
+                else:
+                    print(
+                        "note: Approval alone does not enable mutation execution "
+                        "(use --write-scope-approval to bind)."
+                    )
             return 0
 
         if action == "revoke":
@@ -528,13 +699,20 @@ def cmd_scope(args: argparse.Namespace) -> int:
                     "operator identity is required: pass --revoked-by <operator-id>."
                 )
             try:
-                approval, revocation, already = revoke_approval(
-                    approval_id,
-                    reason=reason,
-                    revoked_by=revoked_by,
-                    provenance="operator_asserted",
-                )
-            except WriteScopeApprovalError as exc:
+                if approval_id.startswith("kca-"):
+                    approval, revocation, already = revoke_kubernetes_approval(
+                        approval_id,
+                        reason=reason,
+                        revoked_by=revoked_by,
+                    )
+                else:
+                    approval, revocation, already = revoke_approval(
+                        approval_id,
+                        reason=reason,
+                        revoked_by=revoked_by,
+                        provenance="operator_asserted",
+                    )
+            except (WriteScopeApprovalError, KubernetesCapabilityError) as exc:
                 raise ScopeCliError(str(exc)) from exc
             payload = {
                 "approval": approval,
@@ -557,8 +735,11 @@ def cmd_scope(args: argparse.Namespace) -> int:
                     "id is required (proposal_id, approval_id, binding_id, or run_id)."
                 )
             try:
-                record = audit_write_scope(ref)
-            except WriteScopeAuditError as exc:
+                if is_kubernetes_scope_id(ref):
+                    record = audit_kubernetes_capability(ref)
+                else:
+                    record = audit_write_scope(ref)
+            except (WriteScopeAuditError, KubernetesCapabilityError) as exc:
                 raise ScopeCliError(str(exc)) from exc
             if bool(getattr(args, "json", False)):
                 print(json.dumps(record, indent=2))
@@ -586,7 +767,7 @@ def cmd_scope(args: argparse.Namespace) -> int:
             return 0
 
         sys.stderr.write(
-            "Usage: amof scope {list,show,approve,revoke,audit,recover,import-result} ...\n"
+            "Usage: amof scope {list,show,propose,approve,revoke,execute,audit,recover,import-result} ...\n"
         )
         return 1
     except ScopeCliError as exc:

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/kubernetes-capability-approval.schema.json",
+  "title": "Kubernetes Capability Approval",
+  "description": "Operator grant for a frozen Kubernetes capability body. Approval alone does not enable execution; a Binding is required. TTL is mandatory.",
+  "type": "object",
+  "required": [
+    "kind",
+    "schema_version",
+    "approval_id",
+    "proposal_id",
+    "run_id",
+    "requested_by",
+    "body",
+    "body_hash",
+    "approved_by",
+    "approved_at",
+    "expires_at",
+    "status",
+    "approval_source",
+    "provenance"
+  ],
+  "properties": {
+    "kind": { "type": "string", "const": "kubernetes_capability_approval" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "approval_id": { "type": "string", "pattern": "^kca-[0-9a-f]{24}$" },
+    "proposal_id": { "type": "string", "pattern": "^kcp-[0-9a-f]{24}$" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "requested_by": { "type": "string", "minLength": 1 },
+    "body": { "$ref": "kubernetes-capability-proposal.schema.json#/$defs/KubernetesCapabilityBody" },
+    "body_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "approved_by": { "type": "string", "minLength": 1 },
+    "approved_at": { "type": "string", "minLength": 1 },
+    "expires_at": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["approved", "revoked", "expired", "consumed"]
+    },
+    "approval_source": { "type": "string", "enum": ["cli", "api"] },
+    "provenance": { "type": "string", "const": "operator_asserted" },
+    "revocation_id": { "type": "string", "pattern": "^kcv-[0-9a-f]{24}$" }
+  },
+  "additionalProperties": false
+}

@@ -196,6 +196,11 @@ def write_scope_events_dir() -> Path:
     return write_scopes_dir() / "events"
 
 
+def kubernetes_capabilities_dir() -> Path:
+    """Sibling capability store for Kubernetes v0 grants."""
+    return get_app_paths().data_root / "capabilities" / "kubernetes"
+
+
 def studio_dir() -> Path:
     return get_app_paths().data_root / "studio"
 
@@ -371,6 +376,7 @@ __all__ = [
     "generated_context_dir",
     "get_app_paths",
     "indexes_dir",
+    "kubernetes_capabilities_dir",
     "kubeconfigs_dir",
     "locks_dir",
     "logs_dir",

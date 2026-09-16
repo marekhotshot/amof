@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/kubernetes-capability-revocation.schema.json",
+  "title": "Kubernetes Capability Revocation",
+  "description": "Operator kill switch for a Kubernetes capability Approval. Idempotent but auditable.",
+  "type": "object",
+  "required": [
+    "kind",
+    "schema_version",
+    "revocation_id",
+    "approval_id",
+    "revoked_by",
+    "revoked_at",
+    "reason",
+    "provenance"
+  ],
+  "properties": {
+    "kind": { "type": "string", "const": "kubernetes_capability_revocation" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "revocation_id": { "type": "string", "pattern": "^kcv-[0-9a-f]{24}$" },
+    "approval_id": { "type": "string", "pattern": "^kca-[0-9a-f]{24}$" },
+    "revoked_by": { "type": "string", "minLength": 1 },
+    "revoked_at": { "type": "string", "minLength": 1 },
+    "reason": { "type": "string", "minLength": 1 },
+    "provenance": { "type": "string", "const": "operator_asserted" }
+  },
+  "additionalProperties": false
+}

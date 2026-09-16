@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/kubernetes-capability-binding.schema.json",
+  "title": "Kubernetes Capability Binding",
+  "description": "Runtime reservation of one Kubernetes capability Approval for one execution attempt. Frozen body_hash must match the Approval.",
+  "type": "object",
+  "required": [
+    "kind",
+    "schema_version",
+    "binding_id",
+    "approval_id",
+    "proposal_id",
+    "run_id",
+    "bound_at",
+    "status",
+    "body",
+    "body_hash",
+    "capability",
+    "consumes_approval"
+  ],
+  "properties": {
+    "kind": { "type": "string", "const": "kubernetes_capability_binding" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "binding_id": { "type": "string", "pattern": "^kcb-[0-9a-f]{24}$" },
+    "approval_id": { "type": "string", "pattern": "^kca-[0-9a-f]{24}$" },
+    "proposal_id": { "type": "string", "pattern": "^kcp-[0-9a-f]{24}$" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "bound_at": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["active", "completed", "failed", "revoked", "suspended"]
+    },
+    "body": { "$ref": "kubernetes-capability-proposal.schema.json#/$defs/KubernetesCapabilityBody" },
+    "body_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "capability": {
+      "type": "string",
+      "enum": ["kubernetes.read", "kubernetes.mutate"]
+    },
+    "consumes_approval": {
+      "type": "boolean",
+      "description": "True only after a successful in-scope mutation. Completed reads do not consume."
+    },
+    "terminal_at": { "type": "string", "minLength": 1 },
+    "terminal_reason": { "type": "string" }
+  },
+  "additionalProperties": false
+}

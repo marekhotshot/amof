@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/kubernetes-capability-proposal.schema.json",
+  "title": "Kubernetes Capability Proposal",
+  "description": "Worker-authored Kubernetes capability request. Proposals are untrusted evidence and never authorize execution.",
+  "type": "object",
+  "$defs": {
+    "KubernetesCapabilityBody": {
+      "type": "object",
+      "required": [
+        "capability",
+        "cluster",
+        "namespaces",
+        "verbs",
+        "resources",
+        "denied_namespaces",
+        "denied_verbs",
+        "denied_resources",
+        "reason"
+      ],
+      "properties": {
+        "capability": {
+          "type": "string",
+          "enum": ["kubernetes.read", "kubernetes.mutate"]
+        },
+        "cluster": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Logical cluster target. Not a kubeconfig path."
+        },
+        "namespaces": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "verbs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "enum": ["get", "list", "patch"] }
+        },
+        "resources": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "denied_namespaces": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "denied_verbs": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["get", "list", "patch"] }
+        },
+        "denied_resources": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human rationale. Non-authoritative for body_hash."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "kind",
+    "schema_version",
+    "proposal_id",
+    "run_id",
+    "requested_by",
+    "body",
+    "body_hash",
+    "created_at",
+    "status"
+  ],
+  "properties": {
+    "kind": { "type": "string", "const": "kubernetes_capability_proposal" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "proposal_id": {
+      "type": "string",
+      "pattern": "^kcp-[0-9a-f]{24}$"
+    },
+    "run_id": { "type": "string", "minLength": 1 },
+    "requested_by": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Worker identity. Not operator authority."
+    },
+    "body": { "$ref": "#/$defs/KubernetesCapabilityBody" },
+    "body_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "created_at": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "const": "proposed" }
+  },
+  "additionalProperties": false
+}
