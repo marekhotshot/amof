@@ -1396,7 +1396,7 @@ def parse_args() -> argparse.Namespace:
     scope_execute = scope_sub.add_parser(
         "execute",
         help=(
-            "Bind a Kubernetes capability Approval and execute one fixture "
+            "Bind a Kubernetes capability Approval and execute one governed "
             "attempt (fails closed without approval+binding)"
         ),
     )
@@ -1434,6 +1434,14 @@ def parse_args() -> argparse.Namespace:
         help="Structured replica patch (hashed; no raw payload)",
     )
     scope_execute.add_argument(
+        "--patch-annotation",
+        dest="patch_annotation",
+        help=(
+            "Bounded AMOF-owned annotation value for key "
+            "amof.dev/capability-probe (no raw patch payload)"
+        ),
+    )
+    scope_execute.add_argument(
         "--mission-id",
         dest="mission_id",
         help="Mission id recorded on the receipt (defaults to --run-id)",
@@ -1453,8 +1461,8 @@ def parse_args() -> argparse.Namespace:
     scope_execute.add_argument(
         "--executor",
         default="fixture",
-        choices=("fixture",),
-        help="v0 executor (fixture only; no live cluster)",
+        choices=("fixture", "live"),
+        help="fixture cluster or the governed live Kubernetes adapter",
     )
     scope_execute.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON"

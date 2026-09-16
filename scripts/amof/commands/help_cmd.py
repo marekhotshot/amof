@@ -140,6 +140,7 @@ _HELP: Dict[str, str] = {
     amof scope audit <wsa-...>
     amof scope propose --capability kubernetes.mutate --cluster local-fixture --namespace demo --verb patch --resource deployments --from-run <id> --requested-by worker:demo --reason "..."
     amof scope execute --approval <kca-...> --cluster local-fixture --namespace demo --verb patch --resource deployments --name web --patch-replicas 3 --run-id <id>
+    amof scope execute --approval <kca-...> --cluster local-kind --namespace amof-cap-test --verb patch --resource deployments --name demo --patch-annotation amof-live-probe-1 --executor live --run-id <id>
 
   `--example src-only` imports a packaged worker-shaped fixture for learning
   (not evidence). import/list/approve/audit run without any model. The
