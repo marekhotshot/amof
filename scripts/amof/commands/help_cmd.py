@@ -145,6 +145,19 @@ _HELP: Dict[str, str] = {
   healthcare, and IAM are local reference systems, not product integrations.
 """,
 
+    "proof": """
+  amof proof — Public promotion proof
+
+  Public use:
+    amof proof list
+    amof proof show AMOF-15MIN-RUNTIME-AUTHORITY-DEMO-001
+    amof proof show 2fe9a4516f568d3d4aa1e0124df99f8b377ab097
+
+  Binds a promoted SHA to public-safe acceptance and verification. Fields
+  come from governed promote-main identity. No app-data, kubeconfigs, or
+  secrets. GitOps-SHA is optional env-commit identity and may be none.
+""",
+
     "scope": """
   amof scope — Write-Scope and Kubernetes capability authority
 
@@ -416,6 +429,7 @@ _PUBLIC_TOPICS = [
     "studio",
     "scope",
     "demo",
+    "proof",
     "handoff",
     "execute",
     "capabilities",

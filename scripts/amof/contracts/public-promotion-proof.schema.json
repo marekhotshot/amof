@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amof.dev/contracts/public-promotion-proof.schema.json",
+  "title": "Public Promotion Proof",
+  "description": "Portable public projection of a governed promote-main identity. No app-data, secrets, or kubeconfigs. GitOps-SHA remains optional env-commit identity and may be null.",
+  "type": "object",
+  "required": [
+    "schema",
+    "promotion_sha",
+    "ticket_id",
+    "candidate_branch",
+    "source_sha",
+    "gitops_sha",
+    "bundle_id",
+    "promotion_id",
+    "authority",
+    "acceptance",
+    "verification",
+    "verification_method",
+    "evidence_digest",
+    "proof",
+    "environment"
+  ],
+  "properties": {
+    "schema": { "type": "string", "const": "amof.public_promotion_proof/v0" },
+    "promotion_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "ticket_id": { "type": "string", "pattern": "^AMOF-" },
+    "candidate_branch": { "type": "string", "minLength": 1 },
+    "source_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "gitops_sha": { "type": ["string", "null"] },
+    "bundle_id": { "type": "string", "minLength": 1 },
+    "promotion_id": { "type": "string", "pattern": "^promote-" },
+    "authority": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+      ]
+    },
+    "acceptance": { "type": "string", "const": "PASS" },
+    "verification": { "type": "string", "const": "PASS" },
+    "verification_method": { "type": "string", "minLength": 1 },
+    "evidence_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "proof": { "type": "string", "minLength": 1 },
+    "environment": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string" },
+        "identity": { "type": ["string", "null"] },
+        "note": { "type": "string" }
+      }
+    }
+  },
+  "additionalProperties": false
+}
