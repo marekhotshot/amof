@@ -1,7 +1,8 @@
 # Capability Authority (v0)
 
 Status: public Runtime Authority sibling of Write-Scope  
-Audience: OSS operators using the public AMOF CLI
+Audience: OSS operators using the public AMOF CLI  
+Current docs map: [INDEX.md](INDEX.md) · [runtime-authority.md](runtime-authority.md)
 
 ## Concept
 

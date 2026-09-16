@@ -29,6 +29,9 @@ These commands belong in the public quickstart and default first-run help:
 - `amof runner list`
 - `amof runner doctor`
 - `amof runner match`
+- `amof demo`
+- `amof proof list`
+- `amof proof show <ticket-or-sha>`
 - `amof agent --plan "Inspect this repo"`
 - `amof execution scan`
 - `amof execution report`

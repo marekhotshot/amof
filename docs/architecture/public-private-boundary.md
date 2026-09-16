@@ -1,7 +1,7 @@
 # AMOF Public / Private Boundary
 
-Status: public governance boundary
-Date: 2026-05-25
+Status: public governance boundary (current)
+Date: 2026-09-17
 
 ## Principle
 

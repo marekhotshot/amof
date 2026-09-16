@@ -12,13 +12,24 @@ This runbook explains the three supported public install paths:
 
 AMOF installs a local CLI that can:
 
+- run `amof demo` to a verified receipt (no provider key, no cluster)
+- bind a promoted SHA with `amof proof show`
 - check workstation prerequisites
 - store app-data under user-local paths
 - adopt an existing repo without polluting it
 - store provider profile references
 - run read-only planning or explicitly requested bounded execution
-- expose Runtime Authority surfaces for runtime truth, bounded loops, execution
-  evidence, intake templates, and runner/execution readiness checks
+- expose Runtime Authority surfaces for write-scope, Kubernetes capability,
+  receipts, bounded loops, and execution evidence
+
+First proof from a source checkout, before any install path:
+
+```bash
+git clone https://github.com/marekhotshot/amof.git
+cd amof
+python3 scripts/amof.py demo migration --non-interactive
+python3 scripts/amof.py proof show AMOF-15MIN-RUNTIME-AUTHORITY-DEMO-001
+```
 
 AMOF is evidence-first. It does not auto-commit or push on its own, and it does
 not store raw provider secrets in profile setup.

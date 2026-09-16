@@ -3,10 +3,20 @@
 Status: public v3.4.0 Runtime Authority smoke matrix
 Date: 2026-09-02
 
-This matrix defines public smoke evidence for the current AMOF v3.4.0 Runtime
-Authority surface. The default gate is no-key and local-only. Live provider
-calls are optional/manual and must never run as part of the default public
-smoke.
+This matrix defines public smoke evidence for Runtime Authority on canonical
+`main`. Tagged `v3.4.0` install smokes remain valid for that tag. Current
+`main` is ahead of the tag (demo, Kubernetes capability, public proofs).
+The default gate is no-key and local-only. Live provider calls are
+optional/manual and must never run as part of the default public smoke.
+
+## 0. Current-main demo and public proof
+
+- Command: `python3 scripts/amof.py demo migration --non-interactive && python3 scripts/amof.py proof show AMOF-15MIN-RUNTIME-AUTHORITY-DEMO-001`
+- Expected result: PASS receipt; proof binds promoted SHA `2fe9a45…` without app-data
+- Requires network: no (after clone)
+- Requires provider key: no
+- Mutates target repo: no
+- Pass/fail criteria: pass if acceptance is PASS and proof JSON has `gitops_sha` null
 
 ## 1. Public Pipx Install Smoke
 
