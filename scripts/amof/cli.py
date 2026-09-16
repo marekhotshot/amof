@@ -25,6 +25,7 @@ PUBLIC_HELP_COMMANDS = (
     "loop",
     "runs",
     "scope",
+    "demo",
     "studio",
     "agent",
     "bootstrap",
@@ -1139,6 +1140,36 @@ def parse_args() -> argparse.Namespace:
     runs_show.add_argument("run_id", help="Run id or session id to inspect")
     runs_show.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+
+    demo_parser = subparsers.add_parser(
+        "demo",
+        help="Run one Runtime Authority proof scenario to a verified receipt",
+    )
+    demo_parser.add_argument(
+        "scenario",
+        nargs="?",
+        help="migration|kubernetes|security|insurance|banking|healthcare|git",
+    )
+    demo_parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="No prompts; default scenario is migration",
+    )
+    demo_parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Kubernetes only: use the governed live disposable-cluster lane",
+    )
+    demo_parser.add_argument(
+        "--show-receipt",
+        action="store_true",
+        help="Print the receipt JSON after the proof",
+    )
+    demo_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable demo result JSON",
     )
 
     scope_parser = subparsers.add_parser(

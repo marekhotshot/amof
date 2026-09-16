@@ -50,6 +50,43 @@ amof scope revoke <approval-id> --reason "..." --revoked-by <operator>
 amof scope recover <binding-id> --decision restore|accept-partial|mark-failed
 ```
 
+## Try Runtime Authority in <15 minutes
+
+From a clean clone, no provider key and no cluster required:
+
+```bash
+git clone https://github.com/marekhotshot/amof.git
+cd amof
+python3 scripts/amof.py demo
+```
+
+Or, after `amof` is on your PATH:
+
+```bash
+amof demo
+```
+
+The recommended first scenario is **Migration** (a local reference system).
+One command runs proposal → approval → binding → allowed action → blocked
+action → verification → receipt. You do not copy IDs between commands.
+
+Non-interactive:
+
+```bash
+python3 scripts/amof.py demo migration --non-interactive
+```
+
+Truth labels:
+
+| Scenario | Mode |
+|---|---|
+| Migration, Security / IAM, Insurance, Banking, Healthcare | LOCAL REFERENCE SYSTEM |
+| Kubernetes | LOCAL REFERENCE SYSTEM (fixture) or REAL (opt-in disposable cluster) |
+| Software / Git | REAL (disposable local repository) |
+
+These reference scenarios prove execution authority. They are not bank,
+hospital, insurer, IAM, or migration products.
+
 Learning walkthrough (fixture, not evidence):
 
 import/list/approve/audit run without any model; the `amof agent --plan-execute` step needs a configured provider (`amof setup provider …` or `ANTHROPIC_API_KEY`). With a missing provider the run stops before planning and no Binding is created.

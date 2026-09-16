@@ -127,6 +127,24 @@ _HELP: Dict[str, str] = {
   Governed mutation also runs through `amof agent --plan-execute … --write-scope-approval … --approve-capabilities bounded_write` (builtin executor, roots restricted to the Binding). Without an approval the builtin path is an ungoverned local demo.
 """,
 
+    "demo": """
+  amof demo — Runtime Authority executable proof
+
+  Public use:
+    amof demo
+    amof demo migration --non-interactive
+    amof demo kubernetes --non-interactive
+    amof demo git --non-interactive
+
+  One command runs proposal → approval → binding → allowed action →
+  blocked action → verification → receipt. IDs are carried automatically.
+
+  Migration is the recommended first scenario and uses a local reference
+  system. Kubernetes defaults to the fixture executor. Git uses a real
+  disposable local repository and a MutationReceipt. Insurance, banking,
+  healthcare, and IAM are local reference systems, not product integrations.
+""",
+
     "scope": """
   amof scope — Write-Scope and Kubernetes capability authority
 
@@ -397,6 +415,7 @@ _PUBLIC_TOPICS = [
     "uninstall",
     "studio",
     "scope",
+    "demo",
     "handoff",
     "execute",
     "capabilities",

@@ -22,6 +22,7 @@ Status: canonical
 - [kubernetes-capability-binding.schema.json](kubernetes-capability-binding.schema.json)
 - [kubernetes-capability-revocation.schema.json](kubernetes-capability-revocation.schema.json)
 - [kubernetes-capability-receipt.schema.json](kubernetes-capability-receipt.schema.json)
+- [reference-capability-receipt.schema.json](reference-capability-receipt.schema.json)
 - [external-agent-plan-execute-request.schema.json](external-agent-plan-execute-request.schema.json)
 - [examples/external-agent-plan-execute-request.example.json](examples/external-agent-plan-execute-request.example.json)
 - [examples/external-agent-plan-execute-request.minimal.example.json](examples/external-agent-plan-execute-request.minimal.example.json)
