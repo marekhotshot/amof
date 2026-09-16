@@ -6,6 +6,44 @@ AMOF uses a clean public lineage starting with `v2.0.1`. Earlier prototype, priv
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-09-17
+
+Runtime Authority becomes executable and independently verifiable.
+
+- Date: 2026-09-17.
+- Minor release after `v3.4.0`.
+- Packages the governed public `main` delta since the `v3.4.0` tag: Kubernetes
+  Capability Authority (including one live disposable-cluster lane),
+  `amof demo`, public promotion proofs, and current-truth documentation.
+
+### Added
+
+- `amof demo` runs one Runtime Authority scenario to a verified receipt
+  without copying IDs. Migration is the recommended first scenario and is a
+  **LOCAL REFERENCE SYSTEM**, not a migration product.
+- `reference.action` is the local reference-system capability sibling used by
+  demo verticals (migration, IAM, insurance, banking, healthcare).
+- Kubernetes Capability Authority v0: `kubernetes.read` / `kubernetes.mutate`
+  with fixture executor and one optional disposable live Deployment
+  get/annotation-patch lane. Not a Kubernetes platform or RBAC replacement.
+- `amof proof list|show` binds a promoted SHA to public-safe acceptance and
+  verification. No app-data. `GitOps-SHA` remains optional env-commit identity
+  and is none for these code-only promotions.
+- Public docs map at `docs/INDEX.md`. Superseded roadmap and cognition/IAL
+  positioning moved to `docs/historical/`.
+
+### Changed
+
+- README first-run path is `python3 scripts/amof.py demo`, then proof, then
+  Write-Scope learning walkthrough.
+- Public help and taxonomy include `demo` and `proof`.
+
+### Non-claims
+
+- Not Predator / Workforce / an operator console in OSS.
+- Not a bank, hospital, insurer, IAM, or migration product.
+- Not autonomous approval or auto-promotion.
+
 ## [3.4.0] - 2026-09-02
 
 Native runtime, Trust Layer, acceptance honesty, and a usable public Write-Scope lifecycle.
