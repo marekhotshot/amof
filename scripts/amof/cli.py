@@ -1144,9 +1144,10 @@ def parse_args() -> argparse.Namespace:
     scope_parser = subparsers.add_parser(
         "scope",
         help=(
-            "Write-Scope Authority: propose evidence, operator approve/revoke, "
-            "Runtime bind/enforce, audit lineage, and crash recover "
-            "(workers propose; operators approve; Runtime binds and enforces)"
+            "Write-Scope and Kubernetes capability authority: propose evidence, "
+            "operator approve/revoke, Runtime bind/enforce, audit lineage, and "
+            "crash recover (workers propose; operators approve; Runtime binds "
+            "and enforces)"
         ),
     )
     scope_sub = scope_parser.add_subparsers(dest="scope_cmd", required=True)
@@ -1180,13 +1181,101 @@ def parse_args() -> argparse.Namespace:
     scope_list.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON"
     )
+    scope_propose = scope_sub.add_parser(
+        "propose",
+        help=(
+            "Record a worker Kubernetes capability proposal "
+            "(kcp-...; never grants execution authority)"
+        ),
+    )
+    scope_propose.add_argument(
+        "--capability",
+        required=True,
+        choices=("kubernetes.read", "kubernetes.mutate"),
+        help="Requested capability kind",
+    )
+    scope_propose.add_argument(
+        "--cluster",
+        required=True,
+        help="Logical cluster target (not a kubeconfig path)",
+    )
+    scope_propose.add_argument(
+        "--namespace",
+        dest="namespaces",
+        action="append",
+        required=True,
+        help="Allowed namespace (repeatable)",
+    )
+    scope_propose.add_argument(
+        "--verb",
+        dest="verbs",
+        action="append",
+        required=True,
+        choices=("get", "list", "patch"),
+        help="Allowed verb (repeatable): get, list, patch",
+    )
+    scope_propose.add_argument(
+        "--resource",
+        dest="resources",
+        action="append",
+        required=True,
+        help="Allowed resource type (repeatable), e.g. deployments",
+    )
+    scope_propose.add_argument(
+        "--denied-namespace",
+        dest="denied_namespaces",
+        action="append",
+        default=[],
+        help="Denied namespace (deny wins; repeatable)",
+    )
+    scope_propose.add_argument(
+        "--denied-verb",
+        dest="denied_verbs",
+        action="append",
+        default=[],
+        choices=("get", "list", "patch"),
+        help="Denied verb (deny wins; repeatable)",
+    )
+    scope_propose.add_argument(
+        "--denied-resource",
+        dest="denied_resources",
+        action="append",
+        default=[],
+        help="Denied resource type (deny wins; repeatable)",
+    )
+    scope_propose.add_argument(
+        "--from-run",
+        required=True,
+        dest="from_run",
+        help="Parent mission / run id",
+    )
+    scope_propose.add_argument(
+        "--requested-by",
+        required=True,
+        dest="requested_by",
+        help="Worker identity that requested the capability",
+    )
+    scope_propose.add_argument(
+        "--reason",
+        required=True,
+        help="Human rationale (non-authoritative for body_hash)",
+    )
+    scope_propose.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
     scope_show = scope_sub.add_parser(
         "show",
-        help="Show one WriteScopeProposal (wsp-...), Approval (wsa-...), or Binding (wsb-...)",
+        help=(
+            "Show one write-scope or Kubernetes capability record "
+            "(wsp-/wsa-/wsb-... or kcp-/kca-/kcb-/kcr-...)"
+        ),
     )
     scope_show.add_argument(
         "scope_id",
-        help="Durable proposal_id (wsp-...), approval_id (wsa-...), or binding_id (wsb-...)",
+        help=(
+            "Durable proposal/approval/binding/receipt id "
+            "(wsp-/wsa-/wsb-... or kcp-/kca-/kcb-/kcr-...)"
+        ),
     )
     scope_show.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON"
@@ -1198,7 +1287,10 @@ def parse_args() -> argparse.Namespace:
             "mutation requires --write-scope-approval bind on execute)"
         ),
     )
-    scope_approve.add_argument("proposal_id", help="Durable proposal id (wsp-...)")
+    scope_approve.add_argument(
+        "proposal_id",
+        help="Durable proposal id (wsp-... or kcp-...)",
+    )
     scope_approve.add_argument(
         "--ttl",
         required=True,
@@ -1217,7 +1309,10 @@ def parse_args() -> argparse.Namespace:
         "revoke",
         help="Revoke a WriteScopeApproval (idempotent but auditable)",
     )
-    scope_revoke.add_argument("approval_id", help="Durable approval id (wsa-...)")
+    scope_revoke.add_argument(
+        "approval_id",
+        help="Durable approval id (wsa-... or kca-...)",
+    )
     scope_revoke.add_argument(
         "--reason",
         required=True,
@@ -1296,6 +1391,72 @@ def parse_args() -> argparse.Namespace:
         help="Parent run_id / session_id to bind imported proposals to",
     )
     scope_import_result.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON"
+    )
+    scope_execute = scope_sub.add_parser(
+        "execute",
+        help=(
+            "Bind a Kubernetes capability Approval and execute one fixture "
+            "attempt (fails closed without approval+binding)"
+        ),
+    )
+    scope_execute.add_argument(
+        "--approval",
+        dest="approval_id",
+        help="Kubernetes capability approval id (kca-...)",
+    )
+    scope_execute.add_argument(
+        "--binding",
+        dest="binding_id",
+        help="Existing active binding id (kcb-...); optional instead of --approval",
+    )
+    scope_execute.add_argument("--cluster", required=True, help="Logical cluster target")
+    scope_execute.add_argument("--namespace", required=True, help="Target namespace")
+    scope_execute.add_argument(
+        "--verb",
+        required=True,
+        choices=("get", "list", "patch"),
+        help="Requested verb",
+    )
+    scope_execute.add_argument(
+        "--resource",
+        required=True,
+        help="Requested resource type, e.g. deployments",
+    )
+    scope_execute.add_argument(
+        "--name",
+        help="Object name (required for get/patch)",
+    )
+    scope_execute.add_argument(
+        "--patch-replicas",
+        dest="patch_replicas",
+        type=int,
+        help="Structured replica patch (hashed; no raw payload)",
+    )
+    scope_execute.add_argument(
+        "--mission-id",
+        dest="mission_id",
+        help="Mission id recorded on the receipt (defaults to --run-id)",
+    )
+    scope_execute.add_argument(
+        "--run-id",
+        required=True,
+        dest="run_id",
+        help="Execution attempt / run id",
+    )
+    scope_execute.add_argument(
+        "--requested-by",
+        dest="requested_by",
+        default="worker:unknown",
+        help="Worker identity recorded on the receipt",
+    )
+    scope_execute.add_argument(
+        "--executor",
+        default="fixture",
+        choices=("fixture",),
+        help="v0 executor (fixture only; no live cluster)",
+    )
+    scope_execute.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON"
     )
 

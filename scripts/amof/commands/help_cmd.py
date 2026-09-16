@@ -128,7 +128,7 @@ _HELP: Dict[str, str] = {
 """,
 
     "scope": """
-  amof scope — Write-Scope Authority inspect / approve / audit
+  amof scope — Write-Scope and Kubernetes capability authority
 
   Public lifecycle:
     amof scope import-result --example src-only --run-id <id>
@@ -138,6 +138,8 @@ _HELP: Dict[str, str] = {
     amof handoff execute-agent --handoff-id <id> --write-scope-approval <wsa-...> --approve-capabilities bounded_write
     amof agent --plan-execute "…" --write-scope-approval <wsa-...> --approve-capabilities bounded_write --no-follow-up
     amof scope audit <wsa-...>
+    amof scope propose --capability kubernetes.mutate --cluster local-fixture --namespace demo --verb patch --resource deployments --from-run <id> --requested-by worker:demo --reason "..."
+    amof scope execute --approval <kca-...> --cluster local-fixture --namespace demo --verb patch --resource deployments --name web --patch-replicas 3 --run-id <id>
 
   `--example src-only` imports a packaged worker-shaped fixture for learning
   (not evidence). import/list/approve/audit run without any model. The

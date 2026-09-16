@@ -75,7 +75,8 @@ AMOF turns a repository into a governed cognition runtime:
 - `amof init --adopt .` binds an existing Git repo into AMOF app-data.
 - `amof setup provider ...` stores provider references, not raw secrets.
 - `amof scope list|show|approve|revoke|audit|recover` completes Write-Scope
-  Authority for bounded repository mutation. Import worker evidence with
+  Authority for bounded repository mutation. `amof scope propose|execute`
+  adds the v0 Kubernetes capability sibling. Import worker evidence with
   `amof scope import-result` when no execution backend persisted a proposal.
 - Governed mutation runs through `amof handoff execute-agent … --write-scope-approval … --approve-capabilities bounded_write` (execution backends) or `amof agent --plan-execute … --write-scope-approval … --approve-capabilities bounded_write` (builtin executor, roots restricted to the Binding). Without an approval the builtin path is an ungoverned local demo.
   `--approve-writable-root` is a legacy elevation (adds roots), not a
@@ -124,6 +125,11 @@ filesystem paths. MutationReceipts prove whether execution stayed inside scope.
 Legacy `--approve-writable-root` remains a deprecated path-elevation shim with a
 warning. It does **not** create WriteScopeApproval or Binding evidence and is
 not the happy path.
+
+Kubernetes capability authority is a v0 sibling of the same lifecycle for
+`kubernetes.read` / `kubernetes.mutate`. It uses `amof scope propose|execute`
+and a fixture executor. It is **not** Kubernetes RBAC or OS isolation. See
+`docs/capability-authority.md`.
 
 See `docs/write-scope-authority.md` for the lifecycle, failure model, and a
 worked OSS example.
