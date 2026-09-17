@@ -47,6 +47,62 @@ def public_routes(allowlist: dict) -> dict[str, str]:
     return {rel: published_name(rel) for rel in allowlist["pages"]}
 
 
+def include_projection_map(root: Path, allowlist: dict) -> dict[str, str]:
+    """Map each include source to the public page that includes it."""
+    mapping: dict[str, str] = {}
+    for page_rel in allowlist["pages"]:
+        text = (root / page_rel).read_text(encoding="utf-8")
+        for spec in INCLUDE_RE.findall(text):
+            rel = include_rel(root / page_rel, spec, root)
+            existing = mapping.get(rel)
+            if existing and existing != page_rel:
+                raise SystemExit(f"include {rel} mapped to both {existing} and {page_rel}")
+            mapping[rel] = page_rel
+    return mapping
+
+
+def projection_link_map(root: Path, allowlist: dict) -> dict[str, str]:
+    """Canonical source path -> published HTML route.
+
+    Rule: source canonical doc -> projected public page -> rendered route.
+    Public pages, include sources, and explicit projection_map entries
+    all resolve to the same published name the nav already uses.
+    """
+    pages = set(allowlist["pages"])
+    routes = public_routes(allowlist)
+    derived = include_projection_map(root, allowlist)
+    explicit = dict(allowlist.get("projection_map") or {})
+
+    for src in allowlist["include_sources"]:
+        page = derived.get(src) or explicit.get(src)
+        if page is None:
+            raise SystemExit(f"include source has no public page: {src}")
+        if page not in pages:
+            raise SystemExit(f"projection target is not a public page: {src} -> {page}")
+        html = published_name(page)
+        if src in routes and routes[src] != html:
+            raise SystemExit(f"projection conflict for {src}: {routes[src]} vs {html}")
+        routes[src] = html
+
+    for src, page in explicit.items():
+        if page not in pages:
+            raise SystemExit(f"projection_map target is not a public page: {src} -> {page}")
+        html = published_name(page)
+        if src in routes and routes[src] != html:
+            raise SystemExit(f"projection_map conflict for {src}: {routes[src]} vs {html}")
+        routes[src] = html
+        if not (root / src).is_file():
+            raise SystemExit(f"projection_map source missing: {src}")
+
+    for src, page in derived.items():
+        html = published_name(page)
+        if src in routes and routes[src] != html:
+            raise SystemExit(f"include projection conflict for {src}: {routes[src]} vs {html}")
+        routes[src] = html
+
+    return routes
+
+
 def is_external_href(href: str) -> bool:
     stripped = href.strip()
     if stripped.startswith(EXTERNAL_SCHEMES) or stripped.startswith("//"):
@@ -61,19 +117,24 @@ def split_href(href: str) -> tuple[str, str]:
 
 
 def resolve_repo_rel(source_rel: str, href_path: str) -> str:
+    cleaned = href_path[2:] if href_path.startswith("./") else href_path
+    if cleaned.startswith("/"):
+        return posixpath.normpath(cleaned.lstrip("/"))
+    if cleaned.startswith("docs/"):
+        return posixpath.normpath(cleaned)
     base_dir = posixpath.dirname(source_rel)
-    joined = posixpath.normpath(posixpath.join(base_dir, href_path))
+    joined = posixpath.normpath(posixpath.join(base_dir, cleaned))
     if joined in {".", "/"}:
         return source_rel
     return joined.lstrip("/")
 
 
 def project_href(href: str, source_rel: str, routes: dict[str, str]) -> str:
-    """Map a markdown href using the allowlisted public page routes.
+    """Resolve a markdown href through the public projection map.
 
-    Allowlisted sibling/relative .md targets become the same published
-    HTML route the nav already uses. Other .md targets become GitHub
-    blob URLs so they do not invent a missing public route.
+    Mapped canonical sources become the curated public route. Explicit
+    GitHub/external URLs stay unchanged. Unmapped .md sources become
+    GitHub blob URLs so the site never emits a broken local route.
     """
     raw = href.strip()
     if not raw or is_external_href(raw) or raw.startswith("#"):
@@ -81,7 +142,7 @@ def project_href(href: str, source_rel: str, routes: dict[str, str]) -> str:
     path, fragment = split_href(raw)
     if not path:
         return raw
-    if path.startswith("/") and not path.endswith(".md"):
+    if path.startswith("/") and not (path.endswith(".md") or path.startswith("/docs/")):
         return raw
     resolved = resolve_repo_rel(source_rel, path)
     if resolved in routes:
@@ -339,7 +400,12 @@ def iter_html_hrefs(html_text: str) -> list[str]:
 
 def broken_internal_hrefs(out: Path) -> list[tuple[str, str]]:
     """Return (page, href) pairs that are internal and missing from dist."""
-    broken: list[tuple[str, str]] = []
+    return [(page, href) for page, href, _reason in validate_generated_hrefs(out)]
+
+
+def validate_generated_hrefs(out: Path) -> list[tuple[str, str, str]]:
+    """Crawl generated HTML for internal-link invariant failures."""
+    failures: list[tuple[str, str, str]] = []
     for page in sorted(out.glob("*.html")):
         for href in iter_html_hrefs(page.read_text(encoding="utf-8")):
             if is_external_href(href) or href.startswith("#"):
@@ -350,17 +416,22 @@ def broken_internal_hrefs(out: Path) -> list[tuple[str, str]]:
             candidate = path[2:] if path.startswith("./") else path.lstrip("/")
             if not candidate:
                 continue
-            if (out / candidate).is_file():
+            if candidate.endswith(".md"):
+                failures.append((page.name, href, "internal href ends in .md"))
                 continue
-            broken.append((page.name, href))
-    return broken
+            if candidate.startswith("docs/") or "/docs/" in candidate:
+                failures.append((page.name, href, "internal href points to a non-rendered source path"))
+                continue
+            if not (out / candidate).is_file():
+                failures.append((page.name, href, "internal href target missing from dist/public-docs"))
+    return failures
 
 
 def build(root: Path, out: Path) -> None:
     allowlist = load_allowlist(root)
     pages = [root / rel for rel in allowlist["pages"]]
     include_allowed = set(allowlist["include_sources"])
-    routes = public_routes(allowlist)
+    routes = projection_link_map(root, allowlist)
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
@@ -381,9 +452,9 @@ def build(root: Path, out: Path) -> None:
             page_html(title, render_markdown(expanded), html_name),
             encoding="utf-8",
         )
-    broken = broken_internal_hrefs(out)
-    if broken:
-        detail = "; ".join(f"{page} -> {href}" for page, href in broken)
+    failures = validate_generated_hrefs(out)
+    if failures:
+        detail = "; ".join(f"{page} -> {href} ({reason})" for page, href, reason in failures)
         raise SystemExit(f"broken internal docs links: {detail}")
 
 

@@ -1,6 +1,6 @@
 {
   "schema": "amof.public_docs_allowlist/v1",
-  "description": "Only these files may appear in the docs.amof.dev build input. Includes may only resolve to listed sources.",
+  "description": "Only these files may appear in the docs.amof.dev build input. Includes may only resolve to listed sources. projection_map lists canonical sources represented by a curated public page but not necessarily included wholesale.",
   "pages": [
     "docs/public/index.md",
     "docs/public/runtime-authority.md",
@@ -16,5 +16,12 @@
     "docs/proofs/INDEX.md",
     "docs/runbooks/install.md",
     "docs/releases/amof-3.5.0.md"
-  ]
+  ],
+  "projection_map": {
+    "docs/runtime-authority.md": "docs/public/runtime-authority.md",
+    "docs/architecture/public-private-boundary.md": "docs/public/architecture.md",
+    "docs/proofs/INDEX.md": "docs/public/evidence.md",
+    "docs/runbooks/install.md": "docs/public/install.md",
+    "docs/releases/amof-3.5.0.md": "docs/public/releases.md"
+  }
 }
