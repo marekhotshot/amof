@@ -1,12 +1,10 @@
 <p align="center">
-  <img src="docs/assets/amof-logo.svg" alt="AMOF logo" width="140" />
+  <img src="docs/assets/amof-logo.svg" alt="AMOF Runtime Authority logo" width="140" />
 </p>
 
-<h1 align="center">AMOF 3.5</h1>
+<h1 align="center">AMOF Runtime Authority 3.5</h1>
 
-<p align="center"><strong>Runtime Authority for governed AI execution</strong></p>
-
-<p align="center">Agentic Operations Fabric</p>
+<p align="center"><strong>Governed execution for AI workers.</strong></p>
 
 <p align="center">
   Workers propose bounded repository mutations.<br />
@@ -23,11 +21,11 @@
 
 AI agents are cheap. Runtime truth is not.
 
-AMOF is an OSS-only, installable local-first CLI. **Runtime Authority** owns
-proposal, approval, binding, enforcement, execution, verification, and
-receipts. Current public capability kinds are `git.write` (Write-Scope),
-`kubernetes.read` / `kubernetes.mutate`, and `reference.action` (local
-reference fixtures used by `amof demo`).
+**AMOF** is the project shorthand and the installable local-first CLI (`amof`).
+**Runtime Authority** is the product: it owns proposal, approval, binding,
+enforcement, execution, verification, and receipts. Current public capability
+kinds are `git.write` (Write-Scope), `kubernetes.read` / `kubernetes.mutate`,
+and `reference.action` (local reference fixtures used by `amof demo`).
 
 The current public release is **v3.5.0**. It adds Kubernetes Capability
 Authority, `amof demo`, and portable public proofs on top of the v3.4.0

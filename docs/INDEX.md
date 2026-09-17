@@ -1,5 +1,7 @@
 # Public documentation
 
+AMOF Runtime Authority — current public product docs for **v3.5.0**.
+
 Status: current  
 Canonical product truth: public `origin/main`, CLI, contracts, tests, and
 accepted Runtime Authority missions.

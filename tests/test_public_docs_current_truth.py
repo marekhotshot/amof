@@ -55,6 +55,8 @@ class PublicDocsCurrentTruthTests(unittest.TestCase):
         self.assertIn("amof demo", text)
         self.assertIn("amof proof", text)
         self.assertIn("docs/INDEX.md", text)
+        self.assertIn("AMOF Runtime Authority 3.5", text)
+        self.assertIn("Governed execution for AI workers.", text)
         self.assertNotIn("docs/governed-cognition-runtime.md", text)
 
 

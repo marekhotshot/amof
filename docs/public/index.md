@@ -1,4 +1,4 @@
-# AMOF 3.5 public docs
+# AMOF Runtime Authority 3.5
 
 This site is a curated projection of public AMOF on GitHub. It is not a
 mirror of the whole `docs/` tree. Git remains source of truth.

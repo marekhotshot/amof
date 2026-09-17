@@ -86,7 +86,7 @@ class PublicDocsProjectionTests(unittest.TestCase):
 
     def test_brand_and_non_claims_present(self) -> None:
         index = (PUBLIC_DIR / "index.md").read_text(encoding="utf-8")
-        self.assertIn("AMOF 3.5", index)
+        self.assertIn("AMOF Runtime Authority 3.5", index)
         self.assertIn("Not a published Trust Model", index)
         self.assertIn("LOCAL REFERENCE", (PUBLIC_DIR / "in-practice.md").read_text(encoding="utf-8"))
 
@@ -113,8 +113,10 @@ class PublicDocsProjectionTests(unittest.TestCase):
                 ],
             )
             index = (out / "index.html").read_text(encoding="utf-8")
-            self.assertIn("AMOF", index)
+            self.assertIn("AMOF Runtime Authority", index)
             self.assertIn("3.5", index)
+            self.assertIn("AMOF Runtime Authority — Governed AI Execution", index)
+            self.assertIn('aria-label="AMOF Runtime Authority home"', index)
             self.assertNotIn("docs/historical/", index)
             self.assertIn("docs.amof.dev", (out / "CNAME").read_text(encoding="utf-8"))
             self.assertIn('href="install.html"', index)
