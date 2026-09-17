@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import tempfile
@@ -9,6 +10,14 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+_SPEC = importlib.util.spec_from_file_location(
+    "build_public_docs",
+    ROOT / "scripts" / "build-public-docs.py",
+)
+builder = importlib.util.module_from_spec(_SPEC)
+assert _SPEC.loader is not None
+_SPEC.loader.exec_module(builder)
+
 ALLOWLIST_PATH = ROOT / "docs" / "public" / "ALLOWLIST.json"
 PUBLIC_DIR = ROOT / "docs" / "public"
 FORBIDDEN_SNIPPETS = (
@@ -108,6 +117,97 @@ class PublicDocsProjectionTests(unittest.TestCase):
             self.assertIn("3.5", index)
             self.assertNotIn("docs/historical/", index)
             self.assertIn("docs.amof.dev", (out / "CNAME").read_text(encoding="utf-8"))
+            self.assertIn('href="install.html"', index)
+            self.assertIn('href="in-practice.html"', index)
+            self.assertIn('href="runtime-authority.html"', index)
+            self.assertIn('href="evidence.html"', index)
+            self.assertNotIn('href="install.md"', index)
+            self.assertNotIn('href="in-practice.md"', index)
+            self.assertNotIn('href="runtime-authority.md"', index)
+            self.assertNotIn('href="evidence.md"', index)
+            self.assertEqual(builder.broken_internal_hrefs(out), [])
+
+    def test_project_href_public_md_to_html(self) -> None:
+        routes = builder.public_routes(self.allowlist)
+        source = "docs/public/index.md"
+        self.assertEqual(builder.project_href("install.md", source, routes), "install.html")
+        self.assertEqual(builder.project_href("./in-practice.md", source, routes), "in-practice.html")
+        self.assertEqual(
+            builder.project_href("runtime-authority.md", source, routes),
+            "runtime-authority.html",
+        )
+        self.assertEqual(builder.project_href("evidence.md", source, routes), "evidence.html")
+
+    def test_project_href_preserves_anchor(self) -> None:
+        routes = builder.public_routes(self.allowlist)
+        self.assertEqual(
+            builder.project_href(
+                "runtime-authority.md#lifecycle",
+                "docs/public/index.md",
+                routes,
+            ),
+            "runtime-authority.html#lifecycle",
+        )
+        self.assertEqual(
+            builder.project_href(
+                "./install.md#supported-install-paths",
+                "docs/public/index.md",
+                routes,
+            ),
+            "install.html#supported-install-paths",
+        )
+
+    def test_project_href_external_unchanged(self) -> None:
+        routes = builder.public_routes(self.allowlist)
+        github = "https://github.com/marekhotshot/amof/blob/v3.5.0/docs/INDEX.md"
+        self.assertEqual(
+            builder.project_href(github, "docs/public/index.md", routes),
+            github,
+        )
+        self.assertEqual(
+            builder.project_href("https://amof.dev", "docs/public/cli.md", routes),
+            "https://amof.dev",
+        )
+
+    def test_project_href_non_public_md_is_github_not_html(self) -> None:
+        routes = builder.public_routes(self.allowlist)
+        href = builder.project_href(
+            "write-scope-authority.md",
+            "docs/runtime-authority.md",
+            routes,
+        )
+        self.assertEqual(
+            href,
+            "https://github.com/marekhotshot/amof/blob/main/docs/write-scope-authority.md",
+        )
+        self.assertFalse(href.endswith(".html"))
+        self.assertNotEqual(href, "write-scope-authority.html")
+        nested = builder.project_href(
+            "../INDEX.md",
+            "docs/releases/amof-3.5.0.md",
+            routes,
+        )
+        self.assertEqual(
+            nested,
+            "https://github.com/marekhotshot/amof/blob/main/docs/INDEX.md",
+        )
+
+    def test_generated_nav_and_body_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "site"
+            subprocess.run(
+                ["python3", str(ROOT / "scripts" / "build-public-docs.py"), "--out", str(out)],
+                check=True,
+                cwd=ROOT,
+            )
+            index = (out / "index.html").read_text(encoding="utf-8")
+            self.assertIn('<nav aria-label="Docs">', index)
+            self.assertIn('href="install.html"', index)
+            ra = (out / "runtime-authority.html").read_text(encoding="utf-8")
+            self.assertIn("github.com/marekhotshot/amof/blob/main/docs/write-scope-authority.md", ra)
+            self.assertNotIn('href="write-scope-authority.md"', ra)
+            self.assertNotIn('href="write-scope-authority.html"', ra)
+            self.assertEqual(builder.broken_internal_hrefs(out), [])
 
 
 def _include_specs(text: str) -> list[str]:

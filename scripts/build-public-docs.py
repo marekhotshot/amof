@@ -11,13 +11,19 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import posixpath
 import re
 import shutil
 from pathlib import Path
+from urllib.parse import urlparse
 
 INCLUDE_RE = re.compile(r"<!--\s*public-docs-include:\s*([^\s]+)\s*-->")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 FENCE_RE = re.compile(r"^```(.*)$")
+MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+HTML_HREF_RE = re.compile(r'href="([^"]+)"')
+GITHUB_BLOB = "https://github.com/marekhotshot/amof/blob/main/"
+EXTERNAL_SCHEMES = ("http://", "https://", "mailto:", "data:")
 
 
 def repo_root() -> Path:
@@ -32,24 +38,101 @@ def load_allowlist(root: Path) -> dict:
     return data
 
 
-def resolve_include(page: Path, spec: str, root: Path, allowed: set[str]) -> str:
+def published_name(page_rel: str) -> str:
+    stem = Path(page_rel).stem
+    return "index.html" if stem == "index" else f"{stem}.html"
+
+
+def public_routes(allowlist: dict) -> dict[str, str]:
+    return {rel: published_name(rel) for rel in allowlist["pages"]}
+
+
+def is_external_href(href: str) -> bool:
+    stripped = href.strip()
+    if stripped.startswith(EXTERNAL_SCHEMES) or stripped.startswith("//"):
+        return True
+    parsed = urlparse(stripped)
+    return bool(parsed.scheme)
+
+
+def split_href(href: str) -> tuple[str, str]:
+    path, sep, fragment = href.strip().partition("#")
+    return path, (sep + fragment if sep else "")
+
+
+def resolve_repo_rel(source_rel: str, href_path: str) -> str:
+    base_dir = posixpath.dirname(source_rel)
+    joined = posixpath.normpath(posixpath.join(base_dir, href_path))
+    if joined in {".", "/"}:
+        return source_rel
+    return joined.lstrip("/")
+
+
+def project_href(href: str, source_rel: str, routes: dict[str, str]) -> str:
+    """Map a markdown href using the allowlisted public page routes.
+
+    Allowlisted sibling/relative .md targets become the same published
+    HTML route the nav already uses. Other .md targets become GitHub
+    blob URLs so they do not invent a missing public route.
+    """
+    raw = href.strip()
+    if not raw or is_external_href(raw) or raw.startswith("#"):
+        return raw
+    path, fragment = split_href(raw)
+    if not path:
+        return raw
+    if path.startswith("/") and not path.endswith(".md"):
+        return raw
+    resolved = resolve_repo_rel(source_rel, path)
+    if resolved in routes:
+        return routes[resolved] + fragment
+    if path.endswith(".md") or resolved.endswith(".md"):
+        return GITHUB_BLOB + resolved + fragment
+    return raw
+
+
+def rewrite_markdown_links(text: str, source_rel: str, routes: dict[str, str]) -> str:
+    def _sub(match: re.Match[str]) -> str:
+        label, href = match.group(1), match.group(2)
+        projected = project_href(href, source_rel, routes)
+        return f"[{label}]({projected})"
+
+    return MD_LINK_RE.sub(_sub, text)
+
+
+def include_rel(page: Path, spec: str, root: Path) -> str:
     target = (page.parent / spec).resolve()
     try:
-        rel = target.relative_to(root).as_posix()
+        return target.relative_to(root).as_posix()
     except ValueError as exc:
         raise SystemExit(f"include escapes repo: {spec}") from exc
+
+
+def resolve_include(page: Path, spec: str, root: Path, allowed: set[str]) -> tuple[str, str]:
+    rel = include_rel(page, spec, root)
     if rel not in allowed:
         raise SystemExit(f"include not allowlisted: {rel}")
+    target = root / rel
     if not target.is_file():
         raise SystemExit(f"include missing: {rel}")
-    return target.read_text(encoding="utf-8")
+    return rel, target.read_text(encoding="utf-8")
 
 
-def expand_includes(text: str, page: Path, root: Path, allowed: set[str]) -> str:
+def expand_includes(
+    text: str,
+    page: Path,
+    root: Path,
+    allowed: set[str],
+    routes: dict[str, str],
+) -> str:
     def _sub(match: re.Match[str]) -> str:
-        return resolve_include(page, match.group(1), root, allowed)
+        spec = match.group(1)
+        rel, body = resolve_include(page, spec, root, allowed)
+        return rewrite_markdown_links(body, rel, routes)
 
-    return INCLUDE_RE.sub(_sub, text)
+    expanded = INCLUDE_RE.sub(_sub, text)
+    page_rel = page.relative_to(root).as_posix()
+    return rewrite_markdown_links(expanded, page_rel, routes)
 
 
 def inline(text: str) -> str:
@@ -250,10 +333,34 @@ def first_heading(md: str) -> str:
     return "AMOF 3.5"
 
 
+def iter_html_hrefs(html_text: str) -> list[str]:
+    return HTML_HREF_RE.findall(html_text)
+
+
+def broken_internal_hrefs(out: Path) -> list[tuple[str, str]]:
+    """Return (page, href) pairs that are internal and missing from dist."""
+    broken: list[tuple[str, str]] = []
+    for page in sorted(out.glob("*.html")):
+        for href in iter_html_hrefs(page.read_text(encoding="utf-8")):
+            if is_external_href(href) or href.startswith("#"):
+                continue
+            path, _fragment = split_href(href)
+            if not path:
+                continue
+            candidate = path[2:] if path.startswith("./") else path.lstrip("/")
+            if not candidate:
+                continue
+            if (out / candidate).is_file():
+                continue
+            broken.append((page.name, href))
+    return broken
+
+
 def build(root: Path, out: Path) -> None:
     allowlist = load_allowlist(root)
     pages = [root / rel for rel in allowlist["pages"]]
     include_allowed = set(allowlist["include_sources"])
+    routes = public_routes(allowlist)
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
@@ -267,13 +374,17 @@ def build(root: Path, out: Path) -> None:
         if rel not in allowlist["pages"]:
             raise SystemExit(f"unexpected page {rel}")
         raw = page.read_text(encoding="utf-8")
-        expanded = expand_includes(raw, page, root, include_allowed)
+        expanded = expand_includes(raw, page, root, include_allowed, routes)
         title = first_heading(expanded)
-        html_name = "index.html" if page.stem == "index" else f"{page.stem}.html"
+        html_name = published_name(rel)
         (out / html_name).write_text(
             page_html(title, render_markdown(expanded), html_name),
             encoding="utf-8",
         )
+    broken = broken_internal_hrefs(out)
+    if broken:
+        detail = "; ".join(f"{page} -> {href}" for page, href in broken)
+        raise SystemExit(f"broken internal docs links: {detail}")
 
 
 def main() -> int:
