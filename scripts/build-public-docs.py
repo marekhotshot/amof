@@ -316,22 +316,34 @@ def page_html(title: str, body: str, current: str) -> str:
         cls = ' class="is-current"' if href == current else ""
         links.append(f'<a href="{href}"{cls}>{html.escape(label)}</a>')
     nav = "\n        ".join(links)
+    site_title = (
+        "AMOF Runtime Authority — Governed AI Execution"
+        if current == "index.html"
+        else f"{title} — AMOF Runtime Authority"
+    )
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{html.escape(title)} — AMOF 3.5 docs</title>
-  <meta name="description" content="Curated public documentation for AMOF 3.5 Runtime Authority.">
+  <title>{html.escape(site_title)}</title>
+  <meta name="description" content="Runtime Authority for bounded, verifiable AI execution.">
+  <meta property="og:title" content="{html.escape(site_title)}">
+  <meta property="og:description" content="Runtime Authority for bounded, verifiable AI execution.">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{html.escape(site_title)}">
+  <meta name="twitter:description" content="Runtime Authority for bounded, verifiable AI execution.">
   <link rel="icon" href="./amof-logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <header class="site-nav">
-    <a class="brand" href="./index.html" aria-label="AMOF 3.5 docs home">
+    <a class="brand" href="./index.html" aria-label="AMOF Runtime Authority home">
       <img src="./amof-logo.svg" width="32" height="34" alt="">
-      <span>AMOF</span>
-      <span class="brand-version">3.5</span>
+      <span class="brand-lockup">
+        <span class="brand-name">AMOF Runtime Authority</span>
+        <span class="brand-version">3.5</span>
+      </span>
     </a>
     <nav aria-label="Docs">
         {nav}
@@ -369,7 +381,12 @@ a { color: var(--accent); }
 }
 .brand { display: inline-flex; align-items: center; gap: 0.5rem; color: var(--ink); text-decoration: none; font-weight: 700; }
 .brand img { width: 1.7rem; height: auto; }
-.brand-version { font-size: 0.78rem; font-weight: 600; letter-spacing: 0.06em; color: var(--ink-muted); }
+.brand-lockup { display: flex; flex-direction: column; line-height: 1.05; }
+.brand-name { font-size: 0.92rem; letter-spacing: 0.02em; }
+.brand-version { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.06em; color: var(--ink-muted); }
+@media (max-width: 640px) {
+  .brand-name { font-size: 0.8rem; }
+}
 .site-nav nav { display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; margin-left: auto; font-size: 0.95rem; }
 .site-nav nav a { color: var(--ink-muted); text-decoration: none; }
 .site-nav nav a.is-current, .site-nav nav a:hover { color: var(--ink); }
@@ -391,7 +408,7 @@ def first_heading(md: str) -> str:
         match = HEADING_RE.match(line)
         if match:
             return match.group(2).strip()
-    return "AMOF 3.5"
+    return "AMOF Runtime Authority 3.5"
 
 
 def iter_html_hrefs(html_text: str) -> list[str]:

@@ -1,6 +1,6 @@
 # Public CLI
 
-First-run commands for AMOF 3.5. Maintainer mutation commands are not
+First-run commands for AMOF Runtime Authority 3.5. Maintainer mutation commands are not
 quickstart.
 
 ```bash
