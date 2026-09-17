@@ -10,6 +10,8 @@ REPO = Path(__file__).resolve().parents[1]
 CURRENT = (
     "README.md",
     "docs/INDEX.md",
+    "docs/public/index.md",
+    "docs/public/ALLOWLIST.json",
     "docs/runtime-authority.md",
     "docs/capability-authority.md",
     "docs/write-scope-authority.md",

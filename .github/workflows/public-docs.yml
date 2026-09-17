@@ -1,0 +1,33 @@
+name: Public docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - docs/public/**
+      - docs/runtime-authority.md
+      - docs/proofs/INDEX.md
+      - docs/runbooks/install.md
+      - docs/releases/amof-3.5.0.md
+      - docs/assets/amof-logo.svg
+      - scripts/build-public-docs.py
+      - .github/workflows/public-docs.yml
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build allowlisted public docs
+        run: python3 scripts/build-public-docs.py --out dist/public-docs
+      - name: Deploy to Cloudflare Pages
+        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist/public-docs --project-name amof-docs --branch HEAD --commit-hash ${{ github.sha }}

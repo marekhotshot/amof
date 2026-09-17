@@ -1,0 +1,20 @@
+{
+  "schema": "amof.public_docs_allowlist/v1",
+  "description": "Only these files may appear in the docs.amof.dev build input. Includes may only resolve to listed sources.",
+  "pages": [
+    "docs/public/index.md",
+    "docs/public/runtime-authority.md",
+    "docs/public/architecture.md",
+    "docs/public/in-practice.md",
+    "docs/public/evidence.md",
+    "docs/public/cli.md",
+    "docs/public/install.md",
+    "docs/public/releases.md"
+  ],
+  "include_sources": [
+    "docs/runtime-authority.md",
+    "docs/proofs/INDEX.md",
+    "docs/runbooks/install.md",
+    "docs/releases/amof-3.5.0.md"
+  ]
+}
