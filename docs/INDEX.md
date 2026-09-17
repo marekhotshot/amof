@@ -10,6 +10,7 @@ under [historical/](historical/INDEX.md).
 ## START HERE
 
 - [README](../README.md)
+- Curated public projection: [docs/public/](public/index.md) → [docs.amof.dev](https://docs.amof.dev)
 
 ## UNDERSTAND
 

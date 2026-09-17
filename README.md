@@ -2,9 +2,11 @@
   <img src="docs/assets/amof-logo.svg" alt="AMOF logo" width="140" />
 </p>
 
-<h1 align="center">AMOF — Runtime Authority for governed AI execution</h1>
+<h1 align="center">AMOF 3.5</h1>
 
-<p align="center"><strong>Agentic Operations Fabric</strong></p>
+<p align="center"><strong>Runtime Authority for governed AI execution</strong></p>
+
+<p align="center">Agentic Operations Fabric</p>
 
 <p align="center">
   Workers propose bounded repository mutations.<br />
@@ -32,7 +34,8 @@ Authority, `amof demo`, and portable public proofs on top of the v3.4.0
 Write-Scope line. Trust verify/export is local. Acceptance is honest:
 `completed` with required checks not run is `UNVERIFIED`, never `PASS`.
 
-Public docs map: [`docs/INDEX.md`](docs/INDEX.md).
+Public docs: [docs.amof.dev](https://docs.amof.dev) (curated). Repository map:
+[`docs/INDEX.md`](docs/INDEX.md).
 
 Lifecycle:
 
