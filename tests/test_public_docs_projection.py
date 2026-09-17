@@ -127,8 +127,20 @@ class PublicDocsProjectionTests(unittest.TestCase):
             self.assertNotIn('href="evidence.md"', index)
             self.assertEqual(builder.broken_internal_hrefs(out), [])
 
+    def test_projection_map_canonical_sources(self) -> None:
+        routes = builder.projection_link_map(ROOT, self.allowlist)
+        self.assertEqual(routes["docs/runtime-authority.md"], "runtime-authority.html")
+        self.assertEqual(
+            routes["docs/architecture/public-private-boundary.md"],
+            "architecture.html",
+        )
+        self.assertEqual(routes["docs/proofs/INDEX.md"], "evidence.html")
+        self.assertEqual(routes["docs/runbooks/install.md"], "install.html")
+        self.assertEqual(routes["docs/releases/amof-3.5.0.md"], "releases.html")
+        self.assertEqual(routes["docs/public/runtime-authority.md"], "runtime-authority.html")
+
     def test_project_href_public_md_to_html(self) -> None:
-        routes = builder.public_routes(self.allowlist)
+        routes = builder.projection_link_map(ROOT, self.allowlist)
         source = "docs/public/index.md"
         self.assertEqual(builder.project_href("install.md", source, routes), "install.html")
         self.assertEqual(builder.project_href("./in-practice.md", source, routes), "in-practice.html")
@@ -138,8 +150,29 @@ class PublicDocsProjectionTests(unittest.TestCase):
         )
         self.assertEqual(builder.project_href("evidence.md", source, routes), "evidence.html")
 
+    def test_project_href_canonical_source_to_public_route(self) -> None:
+        routes = builder.projection_link_map(ROOT, self.allowlist)
+        source = "docs/runtime-authority.md"
+        self.assertEqual(
+            builder.project_href("runtime-authority.md", source, routes),
+            "runtime-authority.html",
+        )
+        self.assertEqual(
+            builder.project_href("docs/runtime-authority.md", "docs/public/index.md", routes),
+            "runtime-authority.html",
+        )
+        self.assertEqual(
+            builder.project_href("architecture/public-private-boundary.md", source, routes),
+            "architecture.html",
+        )
+        self.assertEqual(builder.project_href("proofs/INDEX.md", source, routes), "evidence.html")
+        self.assertEqual(
+            builder.project_href("../runbooks/install.md", "docs/public/evidence.md", routes),
+            "install.html",
+        )
+
     def test_project_href_preserves_anchor(self) -> None:
-        routes = builder.public_routes(self.allowlist)
+        routes = builder.projection_link_map(ROOT, self.allowlist)
         self.assertEqual(
             builder.project_href(
                 "runtime-authority.md#lifecycle",
@@ -147,6 +180,14 @@ class PublicDocsProjectionTests(unittest.TestCase):
                 routes,
             ),
             "runtime-authority.html#lifecycle",
+        )
+        self.assertEqual(
+            builder.project_href(
+                "proofs/INDEX.md#public-promotion-proofs",
+                "docs/runtime-authority.md",
+                routes,
+            ),
+            "evidence.html#public-promotion-proofs",
         )
         self.assertEqual(
             builder.project_href(
@@ -158,7 +199,7 @@ class PublicDocsProjectionTests(unittest.TestCase):
         )
 
     def test_project_href_external_unchanged(self) -> None:
-        routes = builder.public_routes(self.allowlist)
+        routes = builder.projection_link_map(ROOT, self.allowlist)
         github = "https://github.com/marekhotshot/amof/blob/v3.5.0/docs/INDEX.md"
         self.assertEqual(
             builder.project_href(github, "docs/public/index.md", routes),
@@ -168,9 +209,17 @@ class PublicDocsProjectionTests(unittest.TestCase):
             builder.project_href("https://amof.dev", "docs/public/cli.md", routes),
             "https://amof.dev",
         )
+        explicit = (
+            "https://github.com/marekhotshot/amof/blob/v3.5.0/"
+            "docs/architecture/public-private-boundary.md"
+        )
+        self.assertEqual(
+            builder.project_href(explicit, "docs/public/architecture.md", routes),
+            explicit,
+        )
 
     def test_project_href_non_public_md_is_github_not_html(self) -> None:
-        routes = builder.public_routes(self.allowlist)
+        routes = builder.projection_link_map(ROOT, self.allowlist)
         href = builder.project_href(
             "write-scope-authority.md",
             "docs/runtime-authority.md",
@@ -204,10 +253,43 @@ class PublicDocsProjectionTests(unittest.TestCase):
             self.assertIn('<nav aria-label="Docs">', index)
             self.assertIn('href="install.html"', index)
             ra = (out / "runtime-authority.html").read_text(encoding="utf-8")
+            self.assertIn('href="architecture.html"', ra)
+            self.assertIn('href="evidence.html"', ra)
+            self.assertNotIn("blob/main/docs/proofs/INDEX.md", ra)
+            self.assertNotIn("blob/main/docs/architecture/public-private-boundary.md", ra)
             self.assertIn("github.com/marekhotshot/amof/blob/main/docs/write-scope-authority.md", ra)
             self.assertNotIn('href="write-scope-authority.md"', ra)
             self.assertNotIn('href="write-scope-authority.html"', ra)
-            self.assertEqual(builder.broken_internal_hrefs(out), [])
+            self.assertEqual(builder.validate_generated_hrefs(out), [])
+
+    def test_generated_html_has_no_leaked_source_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "site"
+            subprocess.run(
+                ["python3", str(ROOT / "scripts" / "build-public-docs.py"), "--out", str(out)],
+                check=True,
+                cwd=ROOT,
+            )
+            for page in out.glob("*.html"):
+                for href in builder.iter_html_hrefs(page.read_text(encoding="utf-8")):
+                    if builder.is_external_href(href) or href.startswith("#"):
+                        continue
+                    path, _frag = builder.split_href(href)
+                    candidate = path[2:] if path.startswith("./") else path.lstrip("/")
+                    if not candidate:
+                        continue
+                    self.assertFalse(
+                        candidate.endswith(".md"),
+                        f"{page.name} internal href ends in .md: {href}",
+                    )
+                    self.assertFalse(
+                        candidate.startswith("docs/") or "/docs/" in candidate,
+                        f"{page.name} points at a non-rendered source path: {href}",
+                    )
+                    self.assertTrue(
+                        (out / candidate).is_file(),
+                        f"{page.name} missing target {href}",
+                    )
 
 
 def _include_specs(text: str) -> list[str]:
