@@ -637,6 +637,7 @@ class NativeAgentTools:
     def __init__(self, enforcer: _GrantEnforcer) -> None:
         self.enforcer = enforcer
         self.repo_root = enforcer.repo_roots[0]
+        self.write_receipts: list[dict[str, Any]] = []
 
     def read_file(self, path: str) -> str:
         target = self.enforcer.resolve_read_path(path)
@@ -679,13 +680,46 @@ class NativeAgentTools:
         return sorted(set(matches))[:500]
 
     def write_file(self, path: str, content: str) -> str:
-        target = self.enforcer.resolve_write_path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        import socket
+        import uuid
+
+        socket_path = os.environ.get("AMOF_NATIVE_WRITE_SOCKET")
+        token = os.environ.get("AMOF_NATIVE_WRITE_TOKEN")
+        if not socket_path or not token:
+            raise AmofNativeBackendError("governed write boundary unavailable")
         normalized = _normalize_repository_relative_scope_path(path)
-        return normalized or path
+        if not normalized:
+            raise AmofNativeBackendError("governed write path invalid")
+        data = content.encode("utf-8")
+        request = {
+            "contract": "amof.native_write/v1",
+            "token": token,
+            "operation_id": str(uuid.uuid4()),
+            "path": normalized,
+            "content": content,
+            "content_sha256": hashlib.sha256(data).hexdigest(),
+            "content_length": len(data),
+            **{key: os.environ.get(f"AMOF_NATIVE_{key.upper()}", "") for key in (
+                "mission_id", "run_id", "handoff_id", "target_id", "base_sha", "grant_id"
+            )},
+        }
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                conn.settimeout(30)
+                conn.connect(socket_path)
+                conn.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
+                with conn.makefile("rb") as handle:
+                    response = json.loads(handle.readline())
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise AmofNativeBackendError(f"governed write unavailable: {type(exc).__name__}") from exc
+        self.write_receipts.append({"operation_id": request["operation_id"], **response})
+        if response.get("status") != "COMPLETED":
+            raise AmofNativeBackendError(f"governed write {response.get('status')}: {response.get('reason')}")
+        return normalized
 
     def run_shell(self, command: str) -> str:
+        if not os.environ.get("AMOF_NATIVE_WRITE_SOCKET") or not os.environ.get("AMOF_NATIVE_WRITE_TOKEN"):
+            raise AmofNativeBackendError("run_shell requires the isolated Native runtime")
         text = str(command or "").strip()
         if not text:
             raise AmofNativeBackendError("run_shell: empty command")
@@ -1518,7 +1552,10 @@ def run(
     validation_gates: list[str] | None = None,
 ) -> dict[str, Any]:
     health = runtime_health()
-    run_id = (
+    bound_run_id = os.environ.get("AMOF_NATIVE_RUN_ID")
+    if bound_run_id and _safe_id(bound_run_id) != bound_run_id:
+        raise AmofNativeBackendError("invalid parent-bound Native run identity")
+    run_id = bound_run_id or (
         f"amof-native-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
         f"-{_safe_id(request_id)}"
     )
@@ -1864,6 +1901,7 @@ def run(
         proposal_missing_reason=proposal_missing_reason,
         usage_acc=usage_acc,
         loop_budget=loop_budget_telemetry or None,
+        native_write_receipts=tools.write_receipts,
     )
     result = _shared._apply_write_scope_enforcement_if_bound(
         result,
@@ -1917,6 +1955,7 @@ def _result_payload(
     usage_acc: dict[str, Any] | None = None,
     loop_budget: dict[str, Any] | None = None,
     tests_executed: list[str] | None = None,
+    native_write_receipts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     write_scope_proposal = write_scope_proposals[0] if write_scope_proposals else None
     acc = usage_acc if isinstance(usage_acc, dict) else _runtime_usage.empty_usage_accumulator()
@@ -2082,6 +2121,7 @@ def _result_payload(
             "writable_roots_relative": list(selection.writable_roots_relative),
             "remote_ial_usage": remote_ial_usage,
             "runtime_usage": runtime_usage,
+            "native_write_receipts": list(native_write_receipts or []),
             **(
                 {"native_loop_budget": loop_budget_payload}
                 if loop_budget_payload is not None

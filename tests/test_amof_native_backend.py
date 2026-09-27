@@ -20,6 +20,28 @@ from amof.commands import runner as runner_cmd
 from amof.execution_backends import amof_native, hermes_opensandbox
 
 
+def _fixture_write(self: amof_native.NativeAgentTools, path: str, content: str) -> str:
+    """Model-loop fixture actuator; real boundary lives in private parent tests."""
+    target = self.enforcer.resolve_write_path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return path
+
+
+class NativeGovernedWriteContractTests(unittest.TestCase):
+    def test_no_parent_boundary_never_direct_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            enforcer = type("FixtureEnforcer", (), {"repo_roots": [root]})()
+            tools = amof_native.NativeAgentTools(enforcer)
+            with patch.dict(os.environ, {"AMOF_NATIVE_WRITE_SOCKET": "", "AMOF_NATIVE_WRITE_TOKEN": ""}):
+                with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "boundary unavailable"):
+                    tools.write_file("allowed.md", "not written")
+                with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "isolated Native runtime"):
+                    tools.run_shell("touch allowed.md")
+            self.assertFalse((root / "allowed.md").exists())
+
+
 def _init_git_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
@@ -315,7 +337,7 @@ class AmofNativeGrantNormalizationTests(unittest.TestCase):
             def _fake_chat(**_kwargs: object) -> dict:
                 return responses.pop(0)
 
-            with patch.object(amof_native, "_chat_completion", side_effect=_fake_chat):
+            with patch.object(amof_native, "_chat_completion", side_effect=_fake_chat), patch.object(amof_native.NativeAgentTools, "write_file", _fixture_write):
                 status, stop_reason, findings = amof_native._run_model_loop(
                     goal="write readme",
                     tools=tools,
@@ -372,11 +394,12 @@ class AmofNativeScriptedRunTests(unittest.TestCase):
                     {"type": "final", "text": "done"},
                 ],
             )
-            result = _run_with_script(
-                workspace=workspace,
-                script_path=script,
-                writable_roots=["docs/"],
-            )
+            with patch.object(amof_native.NativeAgentTools, "write_file", _fixture_write):
+                result = _run_with_script(
+                    workspace=workspace,
+                    script_path=script,
+                    writable_roots=["docs/"],
+                )
             self.assertEqual(result["status"], "completed")
             self.assertTrue((workspace / "docs" / "x.md").is_file())
             self.assertIn("docs/x.md", result["changed_paths"])
@@ -997,7 +1020,7 @@ class AmofNativeExecutionBudgetTests(unittest.TestCase):
                     attempt_id="t2:attempt:1",
                 )
 
-            real_write = amof_native.NativeAgentTools.write_file
+            real_write = _fixture_write
 
             def counting_write(self: object, path: str, content: str) -> str:
                 writes["count"] += 1
