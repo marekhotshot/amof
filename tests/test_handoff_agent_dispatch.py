@@ -310,6 +310,77 @@ def _correlation_envelope(
 
 
 class HandoffAgentDispatchTests(unittest.TestCase):
+    def test_deferred_result_is_signed_only_by_explicit_parent_finalizer(self) -> None:
+        with TemporaryDirectory(prefix="amof-handoff-parent-finalize-") as td:
+            home = Path(td)
+            _write_packet(home)
+            with (
+                patch.dict(os.environ, {"AMOF_HANDOFF_DEFER_FINALIZATION": "1"}),
+                patch("amof.commands.handoff._load_execution_manifest",
+                      return_value={"ecosystem": "demo-repo", "repos": []}),
+                patch("amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope",
+                      return_value=_correlation_envelope()),
+            ):
+                code, stdout, _stderr = _run_execute(_execute_args(confirm=True), home)
+            self.assertEqual(code, 0)
+            deferred = json.loads(stdout)
+            self.assertFalse(deferred["finalized"])
+            self.assertEqual(deferred["evidence"]["finalization"], "PENDING_PARENT_FINALIZATION")
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                output = io.StringIO()
+                args = SimpleNamespace(handoff_id="handoff-test-001", workspace_root=str(home), base_sha="a" * 40)
+                with redirect_stdout(output):
+                    self.assertEqual(handoff.cmd_handoff_finalize_agent(args), 0)
+                finalized = json.loads(output.getvalue())
+                self.assertTrue(finalized["finalized"])
+                self.assertEqual(finalized["status"], "completed")
+                self.assertTrue(Path(finalized["evidence"]["bundle_path"], "signature.json").is_file())
+                # Repeated processing verifies and returns the same signed result.
+                again = io.StringIO()
+                with redirect_stdout(again):
+                    self.assertEqual(handoff.cmd_handoff_finalize_agent(args), 0)
+                self.assertEqual(json.loads(again.getvalue()), finalized)
+
+    def test_parent_finalizer_missing_key_fails_closed_without_publication(self) -> None:
+        with TemporaryDirectory(prefix="amof-handoff-missing-parent-key-") as td:
+            home = Path(td)
+            _write_packet(home)
+            with (
+                patch.dict(os.environ, {"AMOF_HANDOFF_DEFER_FINALIZATION": "1"}),
+                patch("amof.commands.handoff._load_execution_manifest",
+                      return_value={"ecosystem": "demo-repo", "repos": []}),
+                patch("amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope",
+                      return_value=_correlation_envelope()),
+            ):
+                code, _stdout, _stderr = _run_execute(_execute_args(confirm=True), home)
+            self.assertEqual(code, 0)
+            receipt_path = home / "share" / "handoff" / "receipts" / "handoff-test-001.json"
+            original = receipt_path.read_bytes()
+            old_receipt = json.loads(original)
+            old_receipt["evidence"].pop("finalization")
+            receipt_path.write_text(json.dumps(old_receipt))
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                args = SimpleNamespace(handoff_id="handoff-test-001", workspace_root=str(home), base_sha="a" * 40)
+                with redirect_stderr(io.StringIO()):
+                    self.assertEqual(handoff.cmd_handoff_finalize_agent(args), 1)
+            receipt_path.write_bytes(original)
+            policy_path = home / "config" / "trust" / "trust-policy.json"
+            good_policy = policy_path.read_bytes()
+            policy_path.write_text('{"schema":"invalid"}')
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                with redirect_stderr(io.StringIO()):
+                    self.assertEqual(handoff.cmd_handoff_finalize_agent(args), 1)
+            policy_path.write_bytes(good_policy)
+            for key in (home / "config" / "trust" / "keys").glob("*/private.raw"):
+                key.unlink()
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
+                with redirect_stderr(io.StringIO()):
+                    self.assertEqual(handoff.cmd_handoff_finalize_agent(args), 1)
+            from amof.trust_layer import evidence_bundle_dir
+            self.assertFalse(evidence_bundle_dir(home / "share", "handoff-test-001").exists())
+            receipt = json.loads((home / "share" / "handoff" / "receipts" / "handoff-test-001.json").read_text())
+            self.assertFalse(receipt["finalized"])
+
     def _manifest(self, repo: Path) -> dict[str, object]:
         return {
             "ecosystem": "demo-repo",

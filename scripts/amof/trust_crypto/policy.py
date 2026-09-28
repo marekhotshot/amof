@@ -44,7 +44,7 @@ class TrustPolicy:
 
 
 def default_policy_path() -> Path:
-    return trust_authority_root() / POLICY_FILENAME
+    return trust_authority_root(create=False) / POLICY_FILENAME
 
 
 def empty_policy(*, require_signatures: bool = False) -> TrustPolicy:
@@ -122,7 +122,7 @@ def load_trust_policy(path: Path | None = None) -> TrustPolicy:
 
 
 def write_trust_policy(policy: TrustPolicy, path: Path | None = None) -> Path:
-    policy_path = path if path is not None else default_policy_path()
+    policy_path = path if path is not None else trust_authority_root(create=True) / POLICY_FILENAME
     policy_path.parent.mkdir(parents=True, exist_ok=True)
     if policy_path.exists() or policy_path.is_symlink():
         assert_not_symlink(policy_path, what="trust-policy.json")

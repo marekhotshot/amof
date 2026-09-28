@@ -251,6 +251,12 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Prepared handoff identifier to execute from the canonical AMOF outbox",
     )
+    handoff_finalize_agent = handoff_sub.add_parser(
+        "finalize-agent", help="Sign and publish a deferred handoff result in the trusted parent"
+    )
+    handoff_finalize_agent.add_argument("--handoff-id", required=True)
+    handoff_finalize_agent.add_argument("--workspace-root")
+    handoff_finalize_agent.add_argument("--base-sha")
     handoff_execute_agent.add_argument(
         "--preview",
         action="store_true",

@@ -129,6 +129,17 @@ def _sample_bundle(tmp: Path, *, run_id: str = "run-w3-1") -> Path:
 
 
 class TrustLayerWave003SignatureTests(unittest.TestCase):
+    def test_signed_verification_never_mkdir_or_chmod_trust_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = _sample_bundle(Path(tmp))
+            self._sign(bundle)
+            with patch("amof.trust_crypto.filesystem_keys.os.chmod",
+                       side_effect=AssertionError("verification attempted chmod")), \
+                 patch("amof.trust_crypto.filesystem_keys.Path.mkdir",
+                       side_effect=AssertionError("verification attempted mkdir")):
+                verified = verify_bundle_signature(bundle)
+            self.assertTrue(verified["ok"])
+
     def setUp(self) -> None:
         self._home_td = tempfile.TemporaryDirectory()
         self.home = Path(self._home_td.name)

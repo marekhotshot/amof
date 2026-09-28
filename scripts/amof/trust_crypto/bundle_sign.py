@@ -126,7 +126,7 @@ def verify_bundle_signature(
     root = Path(bundle_dir)
     sig_path = root / SIGNATURE_FILENAME
     trust_policy = policy if policy is not None else load_trust_policy()
-    provider = key_provider or FilesystemKeyProvider()
+    provider = key_provider or FilesystemKeyProvider(read_only=True)
 
     if not sig_path.is_file():
         if trust_policy.require_signatures or not trust_policy.allow_unsigned:

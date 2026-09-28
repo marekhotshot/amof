@@ -18,23 +18,28 @@ from .interfaces import PrivateKeyRecord, PublicKeyRecord
 from .path_safety import assert_not_symlink, assert_private_mode, write_bytes_exclusive
 
 
-def trust_authority_root() -> Path:
-    """Keys + policy live under config_root/trust (runtime authority)."""
-    ensure_app_roots()
+def trust_authority_root(*, create: bool = True) -> Path:
+    """Resolve the trust root; readers never modify its permissions."""
+    if create:
+        ensure_app_roots()
     root = get_app_paths().config_root / "trust"
-    root.mkdir(parents=True, exist_ok=True)
-    os.chmod(root, 0o700)
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
+        os.chmod(root, 0o700)
     assert_not_symlink(root, what="trust authority root")
-    assert_private_mode(root, what="trust authority root")
+    if root.exists():
+        assert_private_mode(root, what="trust authority root")
     return root
 
 
-def keys_dir() -> Path:
-    path = trust_authority_root() / "keys"
-    path.mkdir(parents=True, exist_ok=True)
-    os.chmod(path, 0o700)
+def keys_dir(*, create: bool = True) -> Path:
+    path = trust_authority_root(create=create) / "keys"
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
     assert_not_symlink(path, what="trust keys directory")
-    assert_private_mode(path, what="trust keys directory")
+    if path.exists():
+        assert_private_mode(path, what="trust keys directory")
     return path
 
 
@@ -50,12 +55,14 @@ def _assert_key_material(raw: bytes, *, what: str) -> bytes:
 class FilesystemKeyProvider:
     """Local key store: <config>/trust/keys/<key_id>/{public,private}.raw + meta.json."""
 
-    def __init__(self, root: Path | None = None) -> None:
-        self.root = root if root is not None else keys_dir()
-        self.root.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.root, 0o700)
+    def __init__(self, root: Path | None = None, *, read_only: bool = False) -> None:
+        self.root = root if root is not None else keys_dir(create=not read_only)
+        if not read_only:
+            self.root.mkdir(parents=True, exist_ok=True)
+            os.chmod(self.root, 0o700)
         assert_not_symlink(self.root, what="trust keys directory")
-        assert_private_mode(self.root, what="trust keys directory")
+        if self.root.exists():
+            assert_private_mode(self.root, what="trust keys directory")
 
     def _key_dir(self, key_id: str) -> Path:
         kid = str(key_id or "").strip().lower()

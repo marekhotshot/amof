@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -1302,6 +1302,14 @@ def _seal_or_preserve_durable_receipt(
     binding: dict[str, Any] | None = None,
 ) -> HandoffExecutionReceipt:
     """Finalize when possible; never override durable semantic exit on finalize failure."""
+    if os.environ.get("AMOF_HANDOFF_DEFER_FINALIZATION") == "1":
+        deferred = replace(
+            receipt,
+            evidence={**dict(receipt.evidence), "finalization": "PENDING_PARENT_FINALIZATION"},
+            finalized=False,
+        )
+        _write_execution_receipt(deferred)
+        return deferred
     try:
         return _seal_and_finalize_execution(
             handoff_id=handoff_id,
@@ -2541,6 +2549,81 @@ def cmd_handoff_execute_agent(args: Any) -> int:
     return int(receipt.exit_code) if isinstance(receipt.exit_code, int) else 1
 
 
+def cmd_handoff_finalize_agent(args: Any) -> int:
+    """Sign one freshly deferred result in the trusted parent, without execution.
+
+    This command is deliberately ineligible for historical failed finalizations:
+    only a receipt explicitly deferred by the new child/parent contract qualifies.
+    """
+    try:
+        handoff_id = _validate_handoff_id(str(getattr(args, "handoff_id", "")))
+        _packet_path, packet = _load_prepared_packet(handoff_id)
+        state = _load_execution_state(handoff_id)
+        raw_receipt = _load_execution_receipt_payload(handoff_id)
+        result_path = _handoff_results_dir() / f"{handoff_id}.json"
+        receipt_path = _handoff_receipts_dir() / f"{handoff_id}.json"
+        if state is None or raw_receipt is None or not result_path.is_file():
+            raise TrustIntegrityError("deferred result is incomplete", code="missing_result")
+        if (state.status == "finalized" and raw_receipt.get("finalized") is True
+                and raw_receipt.get("handoff_id") == handoff_id):
+            verify_execution_result_integrity(result_path=result_path, receipt=raw_receipt)
+            verify_evidence_seal(_handoff_seal_dir(handoff_id))
+            verify_evidence_consistency(evidence_bundle_dir(get_app_paths().data_root, handoff_id))
+            _emit_json_stdout(raw_receipt)
+            return 0
+        evidence = raw_receipt.get("evidence")
+        if (not isinstance(evidence, dict)
+                or evidence.get("finalization") != "PENDING_PARENT_FINALIZATION"
+                or raw_receipt.get("finalized") is not False
+                or raw_receipt.get("handoff_id") != handoff_id
+                or state.handoff_id != handoff_id
+                or state.status not in {"completed", "failed", "blocked", "timed_out", "cancelled"}
+                or raw_receipt.get("status") != state.status
+                or raw_receipt.get("result_path") != str(result_path)
+                or raw_receipt.get("receipt_path") != str(receipt_path)):
+            raise TrustIntegrityError("result is not eligible for parent finalization", code="invalid_finalization_state")
+        verify_execution_result_integrity(result_path=result_path, receipt=raw_receipt)
+        receipt = HandoffExecutionReceipt(
+            schema_version=int(raw_receipt["schema_version"]),
+            handoff_id=handoff_id,
+            request_id=str(raw_receipt["request_id"]),
+            status=str(raw_receipt["status"]),
+            exit_code=int(raw_receipt["exit_code"]),
+            stop_reason=str(raw_receipt["stop_reason"]),
+            session_id=str(raw_receipt["session_id"]),
+            studio_session_id=raw_receipt.get("studio_session_id"),
+            result_path=str(result_path),
+            result_sha256=str(raw_receipt["result_sha256"]),
+            evidence=dict(evidence),
+            receipt_path=str(receipt_path),
+            started_at=str(raw_receipt["started_at"]),
+            completed_at=str(raw_receipt["completed_at"]),
+        )
+        # Preflight signing authority before creating even a seal. A missing or
+        # revoked key leaves the deferred result intact and unpublished.
+        from ..trust_crypto import FilesystemKeyProvider, load_trust_policy
+        policy = load_trust_policy()
+        preferred = str(policy.preferred_key_id or "").strip().lower()
+        if not preferred:
+            raise TrustIntegrityError("no preferred signing key", code="missing_signing_authority")
+        policy.assert_key_usable(preferred)
+        FilesystemKeyProvider(read_only=True).get_private_key(preferred)
+        workspace_root = str(getattr(args, "workspace_root", None) or "").strip()
+        base_sha = str(getattr(args, "base_sha", None) or "").strip().lower()
+        if bool(workspace_root) != bool(base_sha) or (base_sha and not re.fullmatch(r"[0-9a-f]{40}", base_sha)):
+            raise TrustIntegrityError("invalid workspace/base binding for finalization", code="invalid_binding")
+        finalized = _seal_and_finalize_execution(
+            handoff_id=handoff_id, receipt=receipt, result_path=result_path,
+            receipt_path=receipt_path, state=state, packet=packet,
+            binding={"workspace_root": workspace_root, "base_sha": base_sha} if workspace_root else None,
+        )
+    except (TrustIntegrityError, FileNotFoundError, ValueError, KeyError, TypeError, OSError) as exc:
+        _stderr(f"[handoff] FAIL_CLOSED parent finalization: {exc}")
+        return 1
+    _emit_json_stdout(finalized.to_dict())
+    return 0
+
+
 def cmd_handoff(args: Any) -> int:
     action = str(getattr(args, "handoff_cmd", "") or "").strip()
     if action == "prepare":
@@ -2549,6 +2632,8 @@ def cmd_handoff(args: Any) -> int:
         return cmd_handoff_accept_agent(args)
     if action == "execute-agent":
         return cmd_handoff_execute_agent(args)
+    if action == "finalize-agent":
+        return cmd_handoff_finalize_agent(args)
     if action == "status":
         return cmd_handoff_status(args)
     _stderr("Usage: amof handoff <prepare|accept-agent|execute-agent|status> [options]")
