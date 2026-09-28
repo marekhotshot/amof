@@ -96,6 +96,49 @@ def _run_with_script(
 
 
 class AmofNativeGrantNormalizationTests(unittest.TestCase):
+    def test_exact_document_profile_offers_only_guarded_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs = root / "docs"
+            docs.mkdir()
+            grant = docs / "proof.md"
+            enforcer = amof_native._GrantEnforcer(
+                workspace=root, repo_roots=[root], grant_roots_resolved=[grant], writable=True,
+            )
+            with patch.dict(os.environ, {"AMOF_NATIVE_EXACT_DOCUMENT_PATH": "docs/proof.md"}):
+                tools = amof_native.NativeAgentTools(enforcer)
+                observed = []
+
+                def answer(**kwargs):
+                    observed.append([spec["function"]["name"] for spec in kwargs["tools"]])
+                    return {"model": "fixture", "choices": [{"message": {"content": "done"}}]}
+
+                with patch.object(amof_native, "_chat_completion", side_effect=answer):
+                    amof_native._run_model_loop(
+                        goal="Create docs/proof.md", tools=tools, model="fixture", writable=True,
+                        event_log_path=root / "events.jsonl", deadline=None,
+                    )
+                self.assertEqual(observed, [["write_file"]])
+                for name, args in (("glob", {"pattern": "**/*"}), ("list_dir", {"path": "."}),
+                                   ("read_file", {"path": "README.md"})):
+                    with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "unavailable"):
+                        tools.dispatch_tool(name, args)
+                with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "differs"):
+                    tools.dispatch_tool("write_file", {"path": "docs/sibling.md", "content": "no"})
+                self.assertFalse((docs / "sibling.md").exists())
+
+    def test_exact_document_profile_rejects_nonmatching_grant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            enforcer = amof_native._GrantEnforcer(
+                workspace=root, repo_roots=[root],
+                grant_roots_resolved=[root / "docs"], writable=True,
+            )
+            with patch.dict(os.environ, {"AMOF_NATIVE_EXACT_DOCUMENT_PATH": "docs/proof.md"}):
+                with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "one matching file grant"):
+                    amof_native.NativeAgentTools(enforcer)
+
     def test_relativizes_absolute_grant_under_repo_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"

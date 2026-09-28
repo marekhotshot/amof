@@ -638,6 +638,19 @@ class NativeAgentTools:
         self.enforcer = enforcer
         self.repo_root = enforcer.repo_roots[0]
         self.write_receipts: list[dict[str, Any]] = []
+        self.exact_document_path: str | None = None
+        requested = os.environ.get("AMOF_NATIVE_EXACT_DOCUMENT_PATH", "").strip()
+        if requested:
+            normalized = enforcer._normalize_relative(requested)
+            target = enforcer.resolve_write_path(normalized)
+            if (
+                not normalized.startswith("docs/")
+                or not normalized.endswith(".md")
+                or len(enforcer.grant_roots) != 1
+                or target != enforcer.grant_roots[0]
+            ):
+                raise AmofNativeBackendError("exact-document profile requires one matching file grant")
+            self.exact_document_path = normalized
 
     def read_file(self, path: str) -> str:
         target = self.enforcer.resolve_read_path(path)
@@ -782,6 +795,8 @@ class NativeAgentTools:
 
     def dispatch_tool(self, name: str, arguments: dict[str, Any]) -> str:
         args = arguments if isinstance(arguments, dict) else {}
+        if self.exact_document_path and name != "write_file":
+            raise AmofNativeBackendError(f"{name} is unavailable in exact-document profile")
         if name == "read_file":
             return self.read_file(self._require_tool_path(args, tool=name))
         if name == "list_dir":
@@ -793,6 +808,8 @@ class NativeAgentTools:
             return "\n".join(self.glob(str(args.get("pattern") or "*")))
         if name == "write_file":
             path = self._require_tool_path(args, tool=name)
+            if self.exact_document_path and path != self.exact_document_path:
+                raise AmofNativeBackendError("write_file path differs from exact-document profile")
             self.write_file(path, str(args.get("content") or ""))
             return f"wrote {path}"
         if name == "run_shell":
@@ -1166,6 +1183,8 @@ def _run_model_loop(
         {"role": "user", "content": goal},
     ]
     tool_specs = _TOOL_SPECS if writable else [spec for spec in _TOOL_SPECS if spec["function"]["name"] != "write_file"]
+    if getattr(tools, "exact_document_path", None):
+        tool_specs = [spec for spec in tool_specs if spec["function"]["name"] == "write_file"]
     findings: list[str] = []
     abandoned_attempts: set[str] = set()
     run_key = _safe_id(run_id or "native-run")
@@ -1386,6 +1405,11 @@ def _run_model_loop(
                     grant_paths_digest=_grant_tree_digest(tools),
                     evidence_keys=budget_state.observed_evidence_keys,
                 )
+                if getattr(tools, "exact_document_path", None) and name == "write_file":
+                    # A parent-confirmed exact-file write is the complete bounded
+                    # mutation. Do not let the model loop rewrite the same file.
+                    _publish_budget("exact_document_written")
+                    return "completed", "exact_document_written", "\n".join(findings)
             _loop_budget.note_turn_complete(budget_state, turn_number)
             # Model still wants another turn. Gate on progress-aware budget.
             next_turn = turn_number + 1
