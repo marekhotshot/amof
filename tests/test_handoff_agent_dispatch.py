@@ -371,7 +371,8 @@ class HandoffAgentDispatchTests(unittest.TestCase):
                 with redirect_stderr(io.StringIO()):
                     self.assertEqual(handoff.cmd_handoff_finalize_agent(args), 1)
             policy_path.write_bytes(good_policy)
-            for key in (home / "config" / "trust" / "keys").glob("*/private.raw"):
+            removed_keys = [(key, key.read_bytes()) for key in (home / "config" / "trust" / "keys").glob("*/private.raw")]
+            for key, _bytes in removed_keys:
                 key.unlink()
             with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False):
                 with redirect_stderr(io.StringIO()):
@@ -380,6 +381,40 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             self.assertFalse(evidence_bundle_dir(home / "share", "handoff-test-001").exists())
             receipt = json.loads((home / "share" / "handoff" / "receipts" / "handoff-test-001.json").read_text())
             self.assertFalse(receipt["finalized"])
+            for key, data in removed_keys:
+                key.write_bytes(data)
+                key.chmod(0o600)
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False), redirect_stdout(io.StringIO()):
+                self.assertEqual(handoff.cmd_handoff_finalize_agent(args), 0)
+            self.assertTrue(evidence_bundle_dir(home / "share", "handoff-test-001").is_dir())
+
+    def test_signer_failure_never_publishes_or_rewrites_deferred_result(self) -> None:
+        with TemporaryDirectory(prefix="amof-handoff-sign-error-") as td:
+            home = Path(td)
+            _write_packet(home)
+            with (
+                patch.dict(os.environ, {"AMOF_HANDOFF_DEFER_FINALIZATION": "1"}),
+                patch("amof.commands.handoff._load_execution_manifest",
+                      return_value={"ecosystem": "demo-repo", "repos": []}),
+                patch("amof.commands.handoff.agent_cmd.run_external_agent_plan_execute_envelope",
+                      return_value=_correlation_envelope()),
+            ):
+                code, _stdout, _stderr = _run_execute(_execute_args(confirm=True), home)
+            self.assertEqual(code, 0)
+            receipt_path = home / "share" / "handoff" / "receipts" / "handoff-test-001.json"
+            original = receipt_path.read_bytes()
+            from amof.trust_layer import TrustIntegrityError, evidence_bundle_dir
+            args = SimpleNamespace(handoff_id="handoff-test-001", workspace_root=str(home), base_sha="a" * 40)
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False), \
+                 patch("amof.trust_crypto.sign_evidence_bundle",
+                       side_effect=TrustIntegrityError("fixture signer failed", code="sign_failed")):
+                with redirect_stderr(io.StringIO()):
+                    self.assertEqual(handoff.cmd_handoff_finalize_agent(args), 1)
+            self.assertEqual(receipt_path.read_bytes(), original)
+            self.assertFalse(evidence_bundle_dir(home / "share", "handoff-test-001").exists())
+            # No automatic retry over an untrusted pre-existing seal.
+            with patch.dict(os.environ, {"AMOF_HOME": str(home)}, clear=False), redirect_stderr(io.StringIO()):
+                self.assertEqual(handoff.cmd_handoff_finalize_agent(args), 1)
 
     def _manifest(self, repo: Path) -> dict[str, object]:
         return {
