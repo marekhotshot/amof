@@ -639,6 +639,7 @@ class NativeAgentTools:
         self.repo_root = enforcer.repo_roots[0]
         self.write_receipts: list[dict[str, Any]] = []
         self.exact_document_path: str | None = None
+        self.exact_code_paths: frozenset[str] = frozenset()
         requested = os.environ.get("AMOF_NATIVE_EXACT_DOCUMENT_PATH", "").strip()
         if requested:
             normalized = enforcer._normalize_relative(requested)
@@ -651,10 +652,28 @@ class NativeAgentTools:
             ):
                 raise AmofNativeBackendError("exact-document profile requires one matching file grant")
             self.exact_document_path = normalized
+        code_scope = os.environ.get("AMOF_NATIVE_EXACT_CODE_SCOPE_JSON", "").strip()
+        if code_scope:
+            try:
+                paths = json.loads(code_scope)
+                if not isinstance(paths, list) or not 2 <= len(paths) <= 8:
+                    raise ValueError("expected 2-8 exact paths")
+                normalized_paths = frozenset(enforcer._normalize_relative(path) for path in paths)
+                grant_paths = frozenset(path.relative_to(self.repo_root).as_posix()
+                                        for path in enforcer.grant_roots)
+                if len(normalized_paths) != len(paths) or normalized_paths != grant_paths or self.exact_document_path:
+                    raise ValueError("scope differs from granted exact files")
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                raise AmofNativeBackendError("exact-code profile requires matching exact-file grants") from exc
+            self.exact_code_paths = normalized_paths
 
     def read_file(self, path: str) -> str:
+        if self.exact_code_paths and path not in self.exact_code_paths:
+            raise AmofNativeBackendError("read_file path is outside exact-code profile")
         target = self.enforcer.resolve_read_path(path)
         if not target.is_file():
+            if self.exact_code_paths and path in self.exact_code_paths:
+                return f"NEW_APPROVED_FILE: {path} does not exist. Create it with write_file."
             raise AmofNativeBackendError(f"read_file: not a file: {path}")
         data = target.read_bytes()
         classified = classify_native_artifact(path, data)
@@ -797,6 +816,8 @@ class NativeAgentTools:
         args = arguments if isinstance(arguments, dict) else {}
         if self.exact_document_path and name != "write_file":
             raise AmofNativeBackendError(f"{name} is unavailable in exact-document profile")
+        if self.exact_code_paths and name not in {"read_file", "write_file"}:
+            raise AmofNativeBackendError(f"{name} is unavailable in exact-code profile")
         if name == "read_file":
             return self.read_file(self._require_tool_path(args, tool=name))
         if name == "list_dir":
@@ -913,6 +934,8 @@ _TOOL_SPECS: list[dict[str, Any]] = [
 
 
 def _chat_endpoint_and_headers() -> tuple[str, dict[str, str], str]:
+    if os.environ.get("AMOF_REMOTE_IAL_BASE_URL") and not _remote_ial_configured():
+        raise AmofNativeBackendError("configured Remote IAL is incomplete; external fallback denied")
     if _remote_ial_configured():
         base = str(os.environ.get("AMOF_REMOTE_IAL_BASE_URL") or "").strip().rstrip("/")
         key = str(os.environ.get("AMOF_REMOTE_IAL_API_KEY") or "").strip()
@@ -1185,6 +1208,8 @@ def _run_model_loop(
     tool_specs = _TOOL_SPECS if writable else [spec for spec in _TOOL_SPECS if spec["function"]["name"] != "write_file"]
     if getattr(tools, "exact_document_path", None):
         tool_specs = [spec for spec in tool_specs if spec["function"]["name"] == "write_file"]
+    if getattr(tools, "exact_code_paths", None):
+        tool_specs = [spec for spec in tool_specs if spec["function"]["name"] in {"read_file", "write_file"}]
     findings: list[str] = []
     abandoned_attempts: set[str] = set()
     run_key = _safe_id(run_id or "native-run")
