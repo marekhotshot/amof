@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import tempfile
 import unittest
@@ -30,7 +31,10 @@ class ExactCodeProfileTests(unittest.TestCase):
             paths = ["src/existing.ts", "src/new.ts"]
             with patch.dict(os.environ, {"AMOF_NATIVE_EXACT_CODE_SCOPE_JSON": json.dumps(paths)}):
                 tools = self._tools(root, paths)
-                self.assertEqual(tools.read_file(paths[0]), "export const value = 1;\n")
+                self.assertIn("export const value = 1;\n", tools.read_file(paths[0]))
+                self.assertIn(hashlib.sha256(b"export const value = 1;\n").hexdigest(), tools.read_file(paths[0]))
+                with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "requires replace_text"):
+                    tools.write_file(paths[0], "overwrite")
                 self.assertIn("NEW_APPROVED_FILE", tools.read_file(paths[1]))
                 for name, args in (("list_dir", {"path": "."}), ("glob", {"pattern": "**/*"}),
                                    ("read_file", {"path": "src/other.ts"})):
@@ -86,7 +90,7 @@ class ExactCodeProfileTests(unittest.TestCase):
                     model="fixture", writable=True, event_log_path=root / "events.jsonl", deadline=None,
                 )
             self.assertEqual(status, "completed")
-            self.assertEqual(offered, ["read_file", "write_file"])
+            self.assertEqual(offered, ["replace_text", "read_file", "write_file"])
 
 
 if __name__ == "__main__":

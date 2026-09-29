@@ -676,6 +676,7 @@ class NativeAgentTools:
                 return f"NEW_APPROVED_FILE: {path} does not exist. Create it with write_file."
             raise AmofNativeBackendError(f"read_file: not a file: {path}")
         data = target.read_bytes()
+        file_sha256 = hashlib.sha256(data).hexdigest() if self.exact_code_paths else None
         classified = classify_native_artifact(path, data)
         if classified["is_binary"]:
             return render_binary_artifact_ref(
@@ -692,10 +693,11 @@ class NativeAgentTools:
         if not self.exact_code_paths:
             return content
         if start_line is None and len(content) <= 12_000:
-            return content
+            return f"FILE_SHA256: {file_sha256}\n{content}"
         lines = content.splitlines(keepends=True)
         if start_line is None:
             return (f"LARGE_APPROVED_FILE: {path} has {len(lines)} lines and {len(content)} characters. "
+                    f"FILE_SHA256: {file_sha256}. "
                     "Call read_file again with start_line and line_count (at most 120); "
                     "use the line anchors already supplied in the mission.")
         if not isinstance(start_line, int) or start_line < 1 or start_line > len(lines):
@@ -707,7 +709,7 @@ class NativeAgentTools:
                            enumerate(lines[start_line - 1:start_line - 1 + count], start_line - 1))
         if len(selected) > 12_000:
             selected = selected[:12_000] + "\n[TRUNCATED: request fewer lines]"
-        return selected
+        return f"FILE_SHA256: {file_sha256}\n{selected}"
 
     def list_dir(self, path: str = ".") -> list[str]:
         rel = path if path not in {".", ""} else "."
@@ -734,13 +736,15 @@ class NativeAgentTools:
         import socket
         import uuid
 
+        normalized = _normalize_repository_relative_scope_path(path)
+        if not normalized:
+            raise AmofNativeBackendError("governed write path invalid")
+        if self.exact_code_paths and normalized in self.exact_code_paths and (self.repo_root / normalized).exists():
+            raise AmofNativeBackendError("existing exact-code file requires replace_text with expected hash")
         socket_path = os.environ.get("AMOF_NATIVE_WRITE_SOCKET")
         token = os.environ.get("AMOF_NATIVE_WRITE_TOKEN")
         if not socket_path or not token:
             raise AmofNativeBackendError("governed write boundary unavailable")
-        normalized = _normalize_repository_relative_scope_path(path)
-        if not normalized:
-            raise AmofNativeBackendError("governed write path invalid")
         data = content.encode("utf-8")
         request = {
             "contract": "amof.native_write/v1",
@@ -766,6 +770,42 @@ class NativeAgentTools:
         self.write_receipts.append({"operation_id": request["operation_id"], **response})
         if response.get("status") != "COMPLETED":
             raise AmofNativeBackendError(f"governed write {response.get('status')}: {response.get('reason')}")
+        return normalized
+
+    def replace_text(self, path: str, expected_file_sha256: str,
+                     expected_old: str, replacement: str) -> str:
+        import socket
+        import uuid
+
+        if not self.exact_code_paths:
+            raise AmofNativeBackendError("replace_text requires exact-code profile")
+        normalized = _normalize_repository_relative_scope_path(path)
+        if normalized not in self.exact_code_paths:
+            raise AmofNativeBackendError("replace_text path is outside exact-code profile")
+        socket_path = os.environ.get("AMOF_NATIVE_WRITE_SOCKET")
+        token = os.environ.get("AMOF_NATIVE_WRITE_TOKEN")
+        if not socket_path or not token:
+            raise AmofNativeBackendError("governed edit boundary unavailable")
+        request = {
+            "contract": "amof.native_edit/v1", "token": token,
+            "operation_id": str(uuid.uuid4()), "path": normalized,
+            "expected_file_sha256": expected_file_sha256,
+            "expected_old": expected_old, "replacement": replacement,
+            **{key: os.environ.get(f"AMOF_NATIVE_{key.upper()}", "") for key in (
+                "mission_id", "run_id", "handoff_id", "target_id", "base_sha", "grant_id")},
+        }
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                conn.settimeout(30)
+                conn.connect(socket_path)
+                conn.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
+                with conn.makefile("rb") as handle:
+                    response = json.loads(handle.readline())
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise AmofNativeBackendError(f"governed edit unavailable: {type(exc).__name__}") from exc
+        self.write_receipts.append({"operation_id": request["operation_id"], **response})
+        if response.get("status") != "COMPLETED":
+            raise AmofNativeBackendError(f"governed edit {response.get('status')}: {response.get('reason')}")
         return normalized
 
     def run_shell(self, command: str) -> str:
@@ -835,7 +875,7 @@ class NativeAgentTools:
         args = arguments if isinstance(arguments, dict) else {}
         if self.exact_document_path and name != "write_file":
             raise AmofNativeBackendError(f"{name} is unavailable in exact-document profile")
-        if self.exact_code_paths and name not in {"read_file", "write_file"}:
+        if self.exact_code_paths and name not in {"read_file", "write_file", "replace_text"}:
             raise AmofNativeBackendError(f"{name} is unavailable in exact-code profile")
         if name == "read_file":
             return self.read_file(self._require_tool_path(args, tool=name),
@@ -853,6 +893,11 @@ class NativeAgentTools:
                 raise AmofNativeBackendError("write_file path differs from exact-document profile")
             self.write_file(path, str(args.get("content") or ""))
             return f"wrote {path}"
+        if name == "replace_text":
+            path = self._require_tool_path(args, tool=name)
+            self.replace_text(path, str(args.get("expected_file_sha256") or ""),
+                              str(args.get("expected_old") or ""), str(args.get("replacement") or ""))
+            return f"replaced text in {path}"
         if name == "run_shell":
             return self.run_shell(str(args.get("command") or ""))
         if name == "git_status":
@@ -900,6 +945,17 @@ def _execute_scripted_loop(
 
 
 _TOOL_SPECS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "replace_text",
+            "description": "Replace one unique excerpt in an approved existing file; parent checks whole-file SHA and exact grant before mutation",
+            "parameters": {"type": "object", "properties": {
+                "path": {"type": "string"}, "expected_file_sha256": {"type": "string"},
+                "expected_old": {"type": "string"}, "replacement": {"type": "string"}},
+                "required": ["path", "expected_file_sha256", "expected_old", "replacement"]},
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -1094,6 +1150,10 @@ def _chat_completion(
             "max_tokens": max_tokens,
             "temperature": 0.0,
         }
+        campaign_id = os.environ.get("AMOF_NATIVE_INFERENCE_CAMPAIGN_ID", "").strip()
+        if campaign_id:
+            payload["campaign_id"] = campaign_id
+            payload["mission_id"] = os.environ.get("AMOF_NATIVE_MISSION_ID", "").strip()
     else:
         payload = {
             "model": model,
@@ -1227,11 +1287,11 @@ def _run_model_loop(
         },
         {"role": "user", "content": goal},
     ]
-    tool_specs = _TOOL_SPECS if writable else [spec for spec in _TOOL_SPECS if spec["function"]["name"] != "write_file"]
+    tool_specs = _TOOL_SPECS if writable else [spec for spec in _TOOL_SPECS if spec["function"]["name"] not in {"write_file", "replace_text"}]
     if getattr(tools, "exact_document_path", None):
         tool_specs = [spec for spec in tool_specs if spec["function"]["name"] == "write_file"]
     if getattr(tools, "exact_code_paths", None):
-        tool_specs = [spec for spec in tool_specs if spec["function"]["name"] in {"read_file", "write_file"}]
+        tool_specs = [spec for spec in tool_specs if spec["function"]["name"] in {"read_file", "write_file", "replace_text"}]
     findings: list[str] = []
     abandoned_attempts: set[str] = set()
     run_key = _safe_id(run_id or "native-run")
