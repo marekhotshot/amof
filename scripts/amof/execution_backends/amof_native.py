@@ -667,7 +667,7 @@ class NativeAgentTools:
                 raise AmofNativeBackendError("exact-code profile requires matching exact-file grants") from exc
             self.exact_code_paths = normalized_paths
 
-    def read_file(self, path: str) -> str:
+    def read_file(self, path: str, *, start_line: int | None = None, line_count: int | None = None) -> str:
         if self.exact_code_paths and path not in self.exact_code_paths:
             raise AmofNativeBackendError("read_file path is outside exact-code profile")
         target = self.enforcer.resolve_read_path(path)
@@ -684,11 +684,30 @@ class NativeAgentTools:
                 media_type=str(classified["media_type"]),
             )
         try:
-            return data.decode("utf-8")
+            content = data.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise AmofNativeBackendError(
                 f"read_file: {path} is not valid UTF-8 text: {exc}"
             ) from exc
+        if not self.exact_code_paths:
+            return content
+        if start_line is None and len(content) <= 12_000:
+            return content
+        lines = content.splitlines(keepends=True)
+        if start_line is None:
+            return (f"LARGE_APPROVED_FILE: {path} has {len(lines)} lines and {len(content)} characters. "
+                    "Call read_file again with start_line and line_count (at most 120); "
+                    "use the line anchors already supplied in the mission.")
+        if not isinstance(start_line, int) or start_line < 1 or start_line > len(lines):
+            raise AmofNativeBackendError("read_file start_line is outside the approved file")
+        count = 80 if line_count is None else line_count
+        if not isinstance(count, int) or count < 1 or count > 120:
+            raise AmofNativeBackendError("read_file line_count must be between 1 and 120")
+        selected = "".join(f"{i + 1}: {line}" for i, line in
+                           enumerate(lines[start_line - 1:start_line - 1 + count], start_line - 1))
+        if len(selected) > 12_000:
+            selected = selected[:12_000] + "\n[TRUNCATED: request fewer lines]"
+        return selected
 
     def list_dir(self, path: str = ".") -> list[str]:
         rel = path if path not in {".", ""} else "."
@@ -819,7 +838,8 @@ class NativeAgentTools:
         if self.exact_code_paths and name not in {"read_file", "write_file"}:
             raise AmofNativeBackendError(f"{name} is unavailable in exact-code profile")
         if name == "read_file":
-            return self.read_file(self._require_tool_path(args, tool=name))
+            return self.read_file(self._require_tool_path(args, tool=name),
+                                  start_line=args.get("start_line"), line_count=args.get("line_count"))
         if name == "list_dir":
             # Listing repository root is an explicit read convenience, not a write grant.
             if "path" not in args or args.get("path") in {None, "", ".", "./"}:
@@ -884,10 +904,12 @@ _TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a repository-relative file",
+            "description": "Read a repository-relative file; exact-code large files require a bounded line range",
             "parameters": {
                 "type": "object",
-                "properties": {"path": {"type": "string"}},
+                "properties": {"path": {"type": "string"},
+                               "start_line": {"type": "integer", "minimum": 1},
+                               "line_count": {"type": "integer", "minimum": 1, "maximum": 120}},
                 "required": ["path"],
             },
         },

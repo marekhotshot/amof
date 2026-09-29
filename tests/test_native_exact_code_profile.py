@@ -50,6 +50,25 @@ class ExactCodeProfileTests(unittest.TestCase):
                     with self.assertRaises(amof_native.AmofNativeBackendError):
                         self._tools(root, paths)
 
+    def test_large_exact_file_requires_bounded_line_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src/large.ts").write_text("".join(f"line {i}\n" for i in range(5000)))
+            paths = ["src/large.ts", "src/new.ts"]
+            with patch.dict(os.environ, {"AMOF_NATIVE_EXACT_CODE_SCOPE_JSON": json.dumps(paths)}):
+                tools = self._tools(root, paths)
+                preview = tools.dispatch_tool("read_file", {"path": paths[0]})
+                self.assertIn("LARGE_APPROVED_FILE", preview)
+                self.assertLess(len(preview), 400)
+                window = tools.dispatch_tool("read_file", {"path": paths[0],
+                                                        "start_line": 320, "line_count": 20})
+                self.assertIn("320: line 319", window)
+                self.assertNotIn("5000: line 4999", window)
+                with self.assertRaises(amof_native.AmofNativeBackendError):
+                    tools.dispatch_tool("read_file", {"path": paths[0],
+                                                      "start_line": 1, "line_count": 121})
+
     def test_model_receives_only_exact_code_tools(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
