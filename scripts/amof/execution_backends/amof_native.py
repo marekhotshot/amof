@@ -1325,6 +1325,15 @@ def _run_model_loop(
         tool_specs = [spec for spec in tool_specs if spec["function"]["name"] == "write_file"]
     if getattr(tools, "exact_code_paths", None):
         tool_specs = [spec for spec in tool_specs if spec["function"]["name"] in {"read_file", "write_file", "replace_text"}]
+    first_write_path = None
+    first_write_markers = re.findall(r"(?m)^AMOF_FIRST_WRITE_PATH:\s*(\S+)\s*$", goal)
+    if first_write_markers:
+        if len(first_write_markers) != 1 or not writable or not getattr(tools, "exact_code_paths", None):
+            raise AmofNativeBackendError("first-write marker requires one governed exact-code scope")
+        first_write_path = _normalize_repository_relative_scope_path(first_write_markers[0])
+        if (first_write_path not in tools.exact_code_paths
+                or (tools.repo_root / first_write_path).exists()):
+            raise AmofNativeBackendError("first-write path is not a new approved file")
     findings: list[str] = []
     abandoned_attempts: set[str] = set()
     run_key = _safe_id(run_id or "native-run")
@@ -1373,6 +1382,8 @@ def _run_model_loop(
             call_index = int(assembly_ctx.get("next_call_index") or 1)
             assembly_ctx["next_call_index"] = call_index + 1
         active_tools = tool_specs
+        if first_write_path and turn_number == 1:
+            active_tools = [spec for spec in tool_specs if spec["function"]["name"] == "write_file"]
         if budget_state.synthesis_required:
             active_tools = []
             if not budget_state.synthesis_consumed:
@@ -1482,6 +1493,10 @@ def _run_model_loop(
                     arguments = {}
                 tool_error: str | None = None
                 try:
+                    if first_write_path and turn_number == 1 and (
+                        name != "write_file" or arguments.get("path") != first_write_path
+                    ):
+                        raise AmofNativeBackendError("first-write turn is limited to the declared new file")
                     output = tools.dispatch_tool(name, arguments)
                 except AmofNativeBackendError as exc:
                     # Path/grant tool mistakes must not abort the whole run.

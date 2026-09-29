@@ -92,6 +92,31 @@ class ExactCodeProfileTests(unittest.TestCase):
             self.assertEqual(status, "completed")
             self.assertEqual(offered, ["replace_text", "read_file", "write_file"])
 
+    def test_packet_bound_first_write_offers_only_write_file_on_first_turn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = ["src/new.ts", "src/existing.ts"]
+            (root / "src").mkdir()
+            (root / paths[1]).write_text("export const existing = true;\n")
+            offered = []
+
+            def fake_chat(**kwargs):
+                offered.append([spec["function"]["name"] for spec in kwargs["tools"]])
+                return {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+
+            goal = "Create the store first.\nAMOF_FIRST_WRITE_PATH: src/new.ts\n"
+            with patch.dict(os.environ, {"AMOF_NATIVE_EXACT_CODE_SCOPE_JSON": json.dumps(paths)}), \
+                    patch.object(amof_native, "_chat_completion", side_effect=fake_chat):
+                amof_native._run_model_loop(goal=goal, tools=self._tools(root, paths),
+                    model="fixture", writable=True, event_log_path=root / "events.jsonl", deadline=None)
+            self.assertEqual(offered, [["write_file"]])
+            for bad in ("src/existing.ts", "src/other.ts", "../src/new.ts"):
+                with patch.dict(os.environ, {"AMOF_NATIVE_EXACT_CODE_SCOPE_JSON": json.dumps(paths)}):
+                    with self.assertRaises(amof_native.AmofNativeBackendError):
+                        amof_native._run_model_loop(
+                            goal=f"AMOF_FIRST_WRITE_PATH: {bad}", tools=self._tools(root, paths),
+                            model="fixture", writable=True, event_log_path=root / "events.jsonl", deadline=None)
+
 
 if __name__ == "__main__":
     unittest.main()
