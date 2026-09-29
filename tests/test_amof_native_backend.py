@@ -96,6 +96,55 @@ def _run_with_script(
 
 
 class AmofNativeGrantNormalizationTests(unittest.TestCase):
+    def test_workspace_external_data_scope_does_not_follow_write_grant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "repo"
+            source = workspace / "src"
+            source.mkdir(parents=True)
+            (source / "approved.py").write_text("approved = True\n")
+            (source / "other.py").write_text("private = True\n")
+            enforcer = amof_native._GrantEnforcer(workspace=workspace, repo_roots=[workspace],
+                grant_roots_resolved=[source], writable=True)
+            with patch.dict(os.environ, {"AMOF_NATIVE_WORKSPACE_DIRECTORY": "src",
+                                      "AMOF_NATIVE_INFERENCE_CAMPAIGN_ID": "fixture-campaign",
+                                      "AMOF_NATIVE_EGRESS_PATHS_JSON": ""}):
+                with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "egress scope"):
+                    amof_native.NativeAgentTools(enforcer)
+            with patch.dict(os.environ, {"AMOF_NATIVE_WORKSPACE_DIRECTORY": "src",
+                                      "AMOF_NATIVE_INFERENCE_CAMPAIGN_ID": "fixture-campaign",
+                                      "AMOF_NATIVE_EGRESS_PATHS_JSON": '["src/approved.py"]'}):
+                tools = amof_native.NativeAgentTools(enforcer)
+                self.assertIn("approved = True", tools.read_file("src/approved.py"))
+                with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "external data scope"):
+                    tools.read_file("src/other.py")
+                with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "metadata scope"):
+                    tools.list_dir("src")
+
+    def test_workspace_profile_discovers_bounded_children_without_shell_or_host_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "repo"
+            source = workspace / "src"
+            source.mkdir(parents=True)
+            (source / "first.py").write_text("before\n")
+            (source / ".env").write_text("secret\n")
+            (workspace / "outside.py").write_text("outside\n")
+            enforcer = amof_native._GrantEnforcer(workspace=workspace, repo_roots=[workspace],
+                grant_roots_resolved=[source], writable=True)
+            with patch.dict(os.environ, {"AMOF_NATIVE_WORKSPACE_DIRECTORY": "src",
+                                      "AMOF_NATIVE_EXACT_CODE_SCOPE_JSON": ""}):
+                tools = amof_native.NativeAgentTools(enforcer)
+            self.assertIn("first.py", tools.dispatch_tool("list_dir", {"path": "src"}))
+            self.assertIn("FILE_SHA256:", tools.dispatch_tool("read_file", {"path": "src/first.py"}))
+            for path in ("outside.py", "src/.env", "src/../outside.py"):
+                with self.assertRaises(amof_native.AmofNativeBackendError):
+                    tools.dispatch_tool("read_file", {"path": path})
+            for name, args in (("run_shell", {"command": "touch src/escape"}),
+                               ("glob", {"pattern": "**/*"}), ("git_status", {})):
+                with self.assertRaises(amof_native.AmofNativeBackendError):
+                    tools.dispatch_tool(name, args)
+            self.assertTrue(tools._workspace_path_allowed("src/new.py"))
+            self.assertFalse(tools._workspace_path_allowed("src/secrets/key"))
+
     def test_exact_document_profile_offers_only_guarded_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

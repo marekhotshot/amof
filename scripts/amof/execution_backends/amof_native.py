@@ -158,6 +158,9 @@ def _script_mode_available() -> bool:
 
 
 def _remote_ial_configured() -> bool:
+    if os.environ.get("AMOF_NATIVE_IAL_SOCKET"):
+        return bool(os.environ.get("AMOF_REMOTE_IAL_MODEL") and os.environ.get("AMOF_NATIVE_MISSION_ID")
+                    and os.environ.get("AMOF_NATIVE_IAL_TOKEN"))
     base = str(os.environ.get("AMOF_REMOTE_IAL_BASE_URL") or "").strip()
     key = str(os.environ.get("AMOF_REMOTE_IAL_API_KEY") or "").strip()
     model = str(os.environ.get("AMOF_REMOTE_IAL_MODEL") or "").strip()
@@ -641,6 +644,27 @@ class NativeAgentTools:
         self.write_receipts: list[dict[str, Any]] = []
         self.exact_document_path: str | None = None
         self.exact_code_paths: frozenset[str] = frozenset()
+        self.workspace_directory: str | None = None
+        self.external_egress_paths: frozenset[str] | None = None
+        workspace_directory = os.environ.get("AMOF_NATIVE_WORKSPACE_DIRECTORY", "").strip()
+        if workspace_directory:
+            normalized = enforcer._normalize_relative(workspace_directory)
+            if (len(enforcer.grant_roots) != 1 or
+                    enforcer.grant_roots[0] != (self.repo_root / normalized).resolve(strict=False) or
+                    not enforcer.grant_roots[0].is_dir()):
+                raise AmofNativeBackendError("workspace profile requires one matching directory grant")
+            self.workspace_directory = normalized
+            if os.environ.get("AMOF_NATIVE_INFERENCE_CAMPAIGN_ID"):
+                raw_egress = os.environ.get("AMOF_NATIVE_EGRESS_PATHS_JSON", "")
+                try:
+                    paths = json.loads(raw_egress)
+                    if not isinstance(paths, list) or not paths or any(
+                            not isinstance(item, str) or not self._workspace_path_allowed(item)
+                            for item in paths):
+                        raise ValueError("invalid external egress paths")
+                    self.external_egress_paths = frozenset(paths)
+                except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                    raise AmofNativeBackendError("workspace external egress scope is not attested") from exc
         requested = os.environ.get("AMOF_NATIVE_EXACT_DOCUMENT_PATH", "").strip()
         if requested:
             normalized = enforcer._normalize_relative(requested)
@@ -655,6 +679,8 @@ class NativeAgentTools:
             self.exact_document_path = normalized
         code_scope = os.environ.get("AMOF_NATIVE_EXACT_CODE_SCOPE_JSON", "").strip()
         if code_scope:
+            if self.workspace_directory:
+                raise AmofNativeBackendError("workspace and exact-code profiles cannot be combined")
             try:
                 paths = json.loads(code_scope)
                 if not isinstance(paths, list) or not 2 <= len(paths) <= 8:
@@ -668,7 +694,27 @@ class NativeAgentTools:
                 raise AmofNativeBackendError("exact-code profile requires matching exact-file grants") from exc
             self.exact_code_paths = normalized_paths
 
+    def _workspace_path_allowed(self, path: str) -> bool:
+        if not self.workspace_directory:
+            return False
+        try:
+            normalized = self.enforcer._normalize_relative(path)
+            candidate = (self.repo_root / normalized).resolve(strict=False)
+            root = (self.repo_root / self.workspace_directory).resolve(strict=False)
+            if not candidate.is_relative_to(root):
+                return False
+            protected = {".git", ".env", ".ssh", ".aws", ".config", "node_modules",
+                         "__pycache__", "credentials", "secrets", "state", "ledger"}
+            return not any(part in protected or part.startswith(".env.")
+                           for part in Path(normalized).parts)
+        except (OSError, ValueError, AmofNativeBackendError):
+            return False
+
     def read_file(self, path: str, *, start_line: int | None = None, line_count: int | None = None) -> str:
+        if self.workspace_directory and not self._workspace_path_allowed(path):
+            raise AmofNativeBackendError("read_file path is outside workspace profile")
+        if self.external_egress_paths is not None and path not in self.external_egress_paths:
+            raise AmofNativeBackendError("read_file path is outside external data scope")
         if self.exact_code_paths and path not in self.exact_code_paths:
             raise AmofNativeBackendError("read_file path is outside exact-code profile")
         target = self.enforcer.resolve_read_path(path)
@@ -677,7 +723,7 @@ class NativeAgentTools:
                 return f"NEW_APPROVED_FILE: {path} does not exist. Create it with write_file."
             raise AmofNativeBackendError(f"read_file: not a file: {path}")
         data = target.read_bytes()
-        file_sha256 = hashlib.sha256(data).hexdigest() if self.exact_code_paths else None
+        file_sha256 = hashlib.sha256(data).hexdigest() if self.exact_code_paths or self.workspace_directory else None
         classified = classify_native_artifact(path, data)
         if classified["is_binary"]:
             return render_binary_artifact_ref(
@@ -691,7 +737,7 @@ class NativeAgentTools:
             raise AmofNativeBackendError(
                 f"read_file: {path} is not valid UTF-8 text: {exc}"
             ) from exc
-        if not self.exact_code_paths:
+        if not self.exact_code_paths and not self.workspace_directory:
             return content
         if start_line is None and len(content) <= 12_000:
             return f"FILE_SHA256: {file_sha256}\n{content}"
@@ -713,6 +759,13 @@ class NativeAgentTools:
         return f"FILE_SHA256: {file_sha256}\n{selected}"
 
     def list_dir(self, path: str = ".") -> list[str]:
+        if self.workspace_directory:
+            if self.external_egress_paths is not None:
+                raise AmofNativeBackendError("list_dir requires separate external metadata scope")
+            if path in {".", ""}:
+                path = self.workspace_directory
+            if not self._workspace_path_allowed(path):
+                raise AmofNativeBackendError("list_dir path is outside workspace profile")
         rel = path if path not in {".", ""} else "."
         if rel == ".":
             base = self.repo_root
@@ -723,6 +776,8 @@ class NativeAgentTools:
         return sorted(item.name for item in base.iterdir())
 
     def glob(self, pattern: str) -> list[str]:
+        if self.workspace_directory:
+            raise AmofNativeBackendError("glob is unavailable in workspace profile")
         if not pattern or "\x00" in pattern:
             raise AmofNativeBackendError("glob pattern is invalid")
         matches: list[str] = []
@@ -740,7 +795,9 @@ class NativeAgentTools:
         normalized = _normalize_repository_relative_scope_path(path)
         if not normalized:
             raise AmofNativeBackendError("governed write path invalid")
-        if self.exact_code_paths and normalized in self.exact_code_paths and (self.repo_root / normalized).exists():
+        if self.workspace_directory and not self._workspace_path_allowed(normalized):
+            raise AmofNativeBackendError("write_file path is outside workspace profile")
+        if ((self.exact_code_paths and normalized in self.exact_code_paths) or self.workspace_directory) and (self.repo_root / normalized).exists():
             raise AmofNativeBackendError("existing exact-code file requires replace_text with expected hash")
         socket_path = os.environ.get("AMOF_NATIVE_WRITE_SOCKET")
         token = os.environ.get("AMOF_NATIVE_WRITE_TOKEN")
@@ -778,11 +835,12 @@ class NativeAgentTools:
         import socket
         import uuid
 
-        if not self.exact_code_paths:
-            raise AmofNativeBackendError("replace_text requires exact-code profile")
+        if not self.exact_code_paths and not self.workspace_directory:
+            raise AmofNativeBackendError("replace_text requires a code profile")
         normalized = _normalize_repository_relative_scope_path(path)
-        if normalized not in self.exact_code_paths:
-            raise AmofNativeBackendError("replace_text path is outside exact-code profile")
+        if (self.exact_code_paths and normalized not in self.exact_code_paths) or (
+                self.workspace_directory and not self._workspace_path_allowed(normalized)):
+            raise AmofNativeBackendError("replace_text path is outside approved code profile")
         socket_path = os.environ.get("AMOF_NATIVE_WRITE_SOCKET")
         token = os.environ.get("AMOF_NATIVE_WRITE_TOKEN")
         if not socket_path or not token:
@@ -878,6 +936,8 @@ class NativeAgentTools:
             raise AmofNativeBackendError(f"{name} is unavailable in exact-document profile")
         if self.exact_code_paths and name not in {"read_file", "write_file", "replace_text"}:
             raise AmofNativeBackendError(f"{name} is unavailable in exact-code profile")
+        if self.workspace_directory and name not in {"read_file", "list_dir", "write_file", "replace_text"}:
+            raise AmofNativeBackendError(f"{name} is unavailable in workspace profile")
         if name == "read_file":
             return self.read_file(self._require_tool_path(args, tool=name),
                                   start_line=args.get("start_line"), line_count=args.get("line_count"))
@@ -1013,6 +1073,10 @@ _TOOL_SPECS: list[dict[str, Any]] = [
 
 
 def _chat_endpoint_and_headers() -> tuple[str, dict[str, str], str]:
+    if os.environ.get("AMOF_NATIVE_IAL_SOCKET"):
+        if not _remote_ial_configured():
+            raise AmofNativeBackendError("parent IAL proxy binding incomplete")
+        return "unix:parent-ial", {"Content-Type": "application/json"}, TRANSPORT_REMOTE_IAL
     if os.environ.get("AMOF_REMOTE_IAL_BASE_URL") and not _remote_ial_configured():
         raise AmofNativeBackendError("configured Remote IAL is incomplete; external fallback denied")
     if _remote_ial_configured():
@@ -1196,12 +1260,31 @@ def _chat_completion(
         }
         if tools:
             payload["tools"] = tools
-    request = Request(url, headers=headers, data=json.dumps(payload).encode("utf-8"), method="POST")
+    proxy_socket = os.environ.get("AMOF_NATIVE_IAL_SOCKET", "")
+    if proxy_socket:
+        # The parent proxy binds every request to the durable run mission,
+        # including local profiles that have no campaign identifier.
+        payload["mission_id"] = os.environ["AMOF_NATIVE_MISSION_ID"]
+        payload.setdefault("campaign_id", None)
+        payload["proxy_token"] = os.environ["AMOF_NATIVE_IAL_TOKEN"]
+    request = None if proxy_socket else Request(url, headers=headers, data=json.dumps(payload).encode("utf-8"), method="POST")
     prompt_tokens_reported: int | None = None
     try:
         try:
-            with urlopen(request, timeout=timeout_seconds) as response:
-                body = json.loads(response.read().decode("utf-8") or "{}")
+            if proxy_socket:
+                import socket
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                    conn.settimeout(timeout_seconds)
+                    conn.connect(proxy_socket)
+                    conn.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+                    with conn.makefile("rb") as handle:
+                        envelope = json.loads(handle.readline())
+                if not isinstance(envelope, dict) or "response" not in envelope:
+                    raise AmofNativeBackendError("parent IAL proxy rejected model request")
+                body = envelope["response"]
+            else:
+                with urlopen(request, timeout=timeout_seconds) as response:
+                    body = json.loads(response.read().decode("utf-8") or "{}")
         except HTTPError as exc:
             detail = ""
             try:
