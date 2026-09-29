@@ -55,6 +55,7 @@ TRANSPORT_REMOTE_IAL = "remote_ial"
 DEFAULT_NATIVE_IAL_TIMEOUT_SECONDS = 180.0
 DEFAULT_NATIVE_IAL_MAX_TOKENS = 4096
 STOP_REASON_REMOTE_IAL_TOTAL_TIMEOUT = "remote_ial_total_timeout"
+CAMPAIGN_REQUEST_SOFT_LIMIT_BYTES = 60_000
 
 _SHELL_ESCAPE_RE = re.compile(
     r"(?:\.\./|/\.\.|^/|;\s*cd\s+/\s|>\s*/|`\s*cd\s+/\s)"
@@ -1126,6 +1127,37 @@ def _emit_context_assembly_receipt(
                 pass
 
 
+def _bound_campaign_tool_history(payload: dict[str, Any]) -> None:
+    """Bound only the external campaign copy of old tool outputs.
+
+    The local event log and model loop retain the original outputs. Keep the
+    latest tool result intact so the model can act on current evidence; older
+    results remain identifiable by digest and can be reread deliberately.
+    """
+    def size() -> int:
+        return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+    if size() <= CAMPAIGN_REQUEST_SOFT_LIMIT_BYTES:
+        return
+    results = [result for message in payload["messages"]
+               for result in (message.get("results") or [])
+               if isinstance(result, dict) and isinstance(result.get("content"), str)]
+    for result in results[:-1]:
+        if size() <= CAMPAIGN_REQUEST_SOFT_LIMIT_BYTES:
+            break
+        original = result["content"]
+        if original.startswith("[Earlier tool output omitted from external history;"):
+            continue
+        encoded = original.encode("utf-8")
+        result["content"] = (
+            "[Earlier tool output omitted from external history; "
+            f"bytes={len(encoded)} sha256={hashlib.sha256(encoded).hexdigest()}. "
+            "Use a focused read_file call if this evidence is needed.]"
+        )
+    if size() > CAMPAIGN_REQUEST_SOFT_LIMIT_BYTES:
+        raise AmofNativeBackendError("campaign context remains too large after bounded tool history")
+
+
 def _chat_completion(
     *,
     messages: list[dict[str, Any]],
@@ -1154,6 +1186,7 @@ def _chat_completion(
         if campaign_id:
             payload["campaign_id"] = campaign_id
             payload["mission_id"] = os.environ.get("AMOF_NATIVE_MISSION_ID", "").strip()
+            _bound_campaign_tool_history(payload)
     else:
         payload = {
             "model": model,
