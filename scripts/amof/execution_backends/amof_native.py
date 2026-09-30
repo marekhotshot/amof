@@ -646,6 +646,7 @@ class NativeAgentTools:
         self.exact_code_paths: frozenset[str] = frozenset()
         self.workspace_directory: str | None = None
         self.external_egress_paths: frozenset[str] | None = None
+        self.external_mount_roots: tuple[str, ...] | None = None
         workspace_directory = os.environ.get("AMOF_NATIVE_WORKSPACE_DIRECTORY", "").strip()
         if workspace_directory:
             normalized = enforcer._normalize_relative(workspace_directory)
@@ -654,6 +655,16 @@ class NativeAgentTools:
                     not enforcer.grant_roots[0].is_dir()):
                 raise AmofNativeBackendError("workspace profile requires one matching directory grant")
             self.workspace_directory = normalized
+            if os.environ.get("AMOF_NATIVE_EXTERNAL_MOUNT_SCOPE") == "1":
+                try:
+                    roots = json.loads(os.environ.get("AMOF_NATIVE_EXTERNAL_MOUNT_ROOTS_JSON", ""))
+                    if not isinstance(roots, list) or not roots or any(
+                            not isinstance(root, str) or not root.endswith("/")
+                            for root in roots):
+                        raise ValueError("invalid mount roots")
+                    self.external_mount_roots = tuple(roots)
+                except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                    raise AmofNativeBackendError("external mount scope is incomplete") from exc
             if (os.environ.get("AMOF_NATIVE_INFERENCE_CAMPAIGN_ID") and
                     os.environ.get("AMOF_NATIVE_EXTERNAL_MOUNT_SCOPE") != "1"):
                 raw_egress = os.environ.get("AMOF_NATIVE_EGRESS_PATHS_JSON", "")
@@ -695,17 +706,21 @@ class NativeAgentTools:
                 raise AmofNativeBackendError("exact-code profile requires matching exact-file grants") from exc
             self.exact_code_paths = normalized_paths
 
-    def _workspace_path_allowed(self, path: str) -> bool:
+    def _workspace_path_allowed(self, path: str, *, for_write: bool = False) -> bool:
         if not self.workspace_directory:
             return False
         try:
             normalized = self.enforcer._normalize_relative(path)
             candidate = (self.repo_root / normalized).resolve(strict=False)
-            root = (self.repo_root / self.workspace_directory).resolve(strict=False)
-            if not candidate.is_relative_to(root):
+            roots = (self.workspace_directory,) if for_write or self.external_mount_roots is None \
+                else self.external_mount_roots
+            if not any(candidate.is_relative_to((self.repo_root / root).resolve(strict=False))
+                       for root in roots):
                 return False
-            protected = {".git", ".env", ".ssh", ".aws", ".config", "node_modules",
-                         "__pycache__", "credentials", "secrets", "state", "ledger"}
+            protected = {".git", ".env", ".ssh", ".aws", ".config", ".next",
+                         ".turbo", ".venv", "venv", "node_modules", "__pycache__",
+                         "dist", "build", "coverage", "outputs", "artifacts",
+                         "evidence", "credentials", "secrets", "state", "ledger"}
             return not any(part in protected or part.startswith(".env.")
                            for part in Path(normalized).parts)
         except (OSError, ValueError, AmofNativeBackendError):
@@ -796,7 +811,7 @@ class NativeAgentTools:
         normalized = _normalize_repository_relative_scope_path(path)
         if not normalized:
             raise AmofNativeBackendError("governed write path invalid")
-        if self.workspace_directory and not self._workspace_path_allowed(normalized):
+        if self.workspace_directory and not self._workspace_path_allowed(normalized, for_write=True):
             raise AmofNativeBackendError("write_file path is outside workspace profile")
         if ((self.exact_code_paths and normalized in self.exact_code_paths) or self.workspace_directory) and (self.repo_root / normalized).exists():
             raise AmofNativeBackendError("existing exact-code file requires replace_text with expected hash")
@@ -840,7 +855,7 @@ class NativeAgentTools:
             raise AmofNativeBackendError("replace_text requires a code profile")
         normalized = _normalize_repository_relative_scope_path(path)
         if (self.exact_code_paths and normalized not in self.exact_code_paths) or (
-                self.workspace_directory and not self._workspace_path_allowed(normalized)):
+                self.workspace_directory and not self._workspace_path_allowed(normalized, for_write=True)):
             raise AmofNativeBackendError("replace_text path is outside approved code profile")
         socket_path = os.environ.get("AMOF_NATIVE_WRITE_SOCKET")
         token = os.environ.get("AMOF_NATIVE_WRITE_TOKEN")
