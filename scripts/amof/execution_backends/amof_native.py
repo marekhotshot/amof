@@ -774,7 +774,7 @@ class NativeAgentTools:
             selected = selected[:12_000] + "\n[TRUNCATED: request fewer lines]"
         return f"FILE_SHA256: {file_sha256}\n{selected}"
 
-    def list_dir(self, path: str = ".") -> list[str]:
+    def list_dir(self, path: str = ".", *, start_after: str | None = None) -> list[str]:
         if self.workspace_directory:
             if self.external_egress_paths is not None:
                 raise AmofNativeBackendError("list_dir requires separate external metadata scope")
@@ -789,7 +789,27 @@ class NativeAgentTools:
             base = self.enforcer.resolve_read_path(rel)
         if not base.is_dir():
             raise AmofNativeBackendError(f"list_dir: not a directory: {path}")
-        return sorted(item.name for item in base.iterdir())
+        names = sorted(item.name for item in base.iterdir()
+                       if not self.workspace_directory or
+                       self._workspace_path_allowed(f"{rel.rstrip('/')}/{item.name}"))
+        if not self.workspace_directory:
+            return names
+        if start_after is not None:
+            if start_after not in names:
+                raise AmofNativeBackendError("list_dir cursor is not a visible entry")
+            names = names[names.index(start_after) + 1:]
+        page: list[str] = []
+        total = 0
+        for name in names:
+            size = len(name.encode("utf-8")) + 1
+            if total + size > 7_800:
+                if not page:
+                    raise AmofNativeBackendError("list_dir entry exceeds bounded result")
+                page.append("[MORE: call list_dir with start_after set to the preceding entry]")
+                break
+            page.append(name)
+            total += size
+        return page
 
     def glob(self, pattern: str) -> list[str]:
         if self.workspace_directory:
@@ -960,8 +980,9 @@ class NativeAgentTools:
         if name == "list_dir":
             # Listing repository root is an explicit read convenience, not a write grant.
             if "path" not in args or args.get("path") in {None, "", ".", "./"}:
-                return "\n".join(self.list_dir("."))
-            return "\n".join(self.list_dir(self._require_tool_path(args, tool=name)))
+                return "\n".join(self.list_dir(".", start_after=args.get("start_after")))
+            return "\n".join(self.list_dir(self._require_tool_path(args, tool=name),
+                                           start_after=args.get("start_after")))
         if name == "glob":
             return "\n".join(self.glob(str(args.get("pattern") or "*")))
         if name == "write_file":
@@ -1066,10 +1087,11 @@ _TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_dir",
-            "description": "List a repository-relative directory",
+            "description": "List a repository-relative directory; workspace listings are bounded and may be paged with start_after",
             "parameters": {
                 "type": "object",
-                "properties": {"path": {"type": "string"}},
+                "properties": {"path": {"type": "string"},
+                               "start_after": {"type": "string"}},
             },
         },
     },

@@ -139,6 +139,29 @@ class AmofNativeGrantNormalizationTests(unittest.TestCase):
                 with self.assertRaises(amof_native.AmofNativeBackendError):
                     tools.dispatch_tool("read_file", {"path": path})
 
+    def test_workspace_listing_pages_large_directory_without_external_oversize(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "repo"
+            source = workspace / "src"
+            source.mkdir(parents=True)
+            for index in range(500):
+                (source / f"test-{index:04d}-bounded-context-contract.mjs").write_text("ok\n")
+            (source / ".env.private").write_text("secret\n")
+            enforcer = amof_native._GrantEnforcer(workspace=workspace, repo_roots=[workspace],
+                grant_roots_resolved=[source], writable=True)
+            with patch.dict(os.environ, {"AMOF_NATIVE_WORKSPACE_DIRECTORY": "src",
+                                      "AMOF_NATIVE_EXTERNAL_MOUNT_SCOPE": "1",
+                                      "AMOF_NATIVE_EXTERNAL_MOUNT_ROOTS_JSON": '["src/"]'}):
+                tools = amof_native.NativeAgentTools(enforcer)
+                first = tools.dispatch_tool("list_dir", {"path": "src"})
+                self.assertLessEqual(len(first.encode()), 8_000)
+                self.assertNotIn(".env.private", first)
+                self.assertIn("[MORE:", first)
+                cursor = first.splitlines()[-2]
+                second = tools.dispatch_tool("list_dir", {"path": "src", "start_after": cursor})
+                self.assertLessEqual(len(second.encode()), 8_000)
+                self.assertNotIn(cursor, second.splitlines()[:-1])
+
     def test_first_write_marker_accepts_only_new_file_inside_workspace_grant(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
