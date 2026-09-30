@@ -139,6 +139,42 @@ class AmofNativeGrantNormalizationTests(unittest.TestCase):
                 with self.assertRaises(amof_native.AmofNativeBackendError):
                     tools.dispatch_tool("read_file", {"path": path})
 
+    def test_workspace_mount_scope_lists_only_approved_metadata_ancestors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "services" / "operator-console" / "src"
+            tests = root / "services" / "operator-console" / "tests"
+            source.mkdir(parents=True)
+            tests.mkdir()
+            (source / "intake.ts").write_text("approved\n")
+            (root / "services" / "operator-console" / "package.json").write_text("secret\n")
+            (root / "services" / "other-project").mkdir()
+            enforcer = amof_native._GrantEnforcer(workspace=root, repo_roots=[root],
+                grant_roots_resolved=[root / "services" / "operator-console"], writable=True)
+            with patch.dict(os.environ, {"AMOF_NATIVE_WORKSPACE_DIRECTORY": "services/operator-console",
+                                      "AMOF_NATIVE_EXTERNAL_MOUNT_SCOPE": "1",
+                                      "AMOF_NATIVE_EXTERNAL_MOUNT_ROOTS_JSON":
+                                      '["services/operator-console/src/", "services/operator-console/tests/"]'}):
+                tools = amof_native.NativeAgentTools(enforcer)
+            self.assertEqual(tools.list_dir("."), ["services"])
+            self.assertEqual(tools.list_dir("services"), ["operator-console"])
+            self.assertEqual(tools.list_dir("services/operator-console", start_after=""), ["src", "tests"])
+            self.assertEqual(tools.list_dir("services/operator-console/src"), ["intake.ts"])
+            for path in ("services/other-project", "services/operator-console/src/../package.json"):
+                with self.assertRaises(amof_native.AmofNativeBackendError):
+                    tools.list_dir(path)
+            with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "outside workspace profile"):
+                tools.read_file("services/operator-console/package.json")
+            offered = []
+            def fake_chat(**kwargs):
+                offered.append([spec["function"]["name"] for spec in kwargs["tools"]])
+                return {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+            with patch.object(amof_native, "_chat_completion", side_effect=fake_chat):
+                amof_native._run_model_loop(goal="Inspect approved source", tools=tools,
+                    model="fixture", writable=True, event_log_path=root / "events.jsonl", deadline=None)
+            self.assertEqual([sorted(names) for names in offered],
+                             [["list_dir", "read_file", "replace_text", "write_file"]])
+
     def test_workspace_listing_pages_large_directory_without_external_oversize(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "repo"

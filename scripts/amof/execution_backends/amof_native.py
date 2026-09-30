@@ -775,25 +775,41 @@ class NativeAgentTools:
         return f"FILE_SHA256: {file_sha256}\n{selected}"
 
     def list_dir(self, path: str = ".", *, start_after: str | None = None) -> list[str]:
+        virtual_names: list[str] | None = None
         if self.workspace_directory:
             if self.external_egress_paths is not None:
                 raise AmofNativeBackendError("list_dir requires separate external metadata scope")
-            if path in {".", ""}:
+            if path in {".", ""} and self.external_mount_roots is None:
                 path = self.workspace_directory
             if not self._workspace_path_allowed(path):
-                raise AmofNativeBackendError("list_dir path is outside workspace profile")
+                # Mount-scoped inference can reveal only the path components
+                # leading to an approved read root. No host directory is read.
+                if self.external_mount_roots is None:
+                    raise AmofNativeBackendError("list_dir path is outside workspace profile")
+                try:
+                    rel = "" if path in {".", ""} else self.enforcer._normalize_relative(path)
+                    prefix = f"{rel}/" if rel else ""
+                    virtual_names = sorted({root[len(prefix):].split("/", 1)[0]
+                        for root in self.external_mount_roots if root.startswith(prefix)
+                        and root[len(prefix):].strip("/")})
+                except (OSError, ValueError, AmofNativeBackendError) as exc:
+                    raise AmofNativeBackendError("list_dir path is outside workspace profile") from exc
+                if not virtual_names:
+                    raise AmofNativeBackendError("list_dir path is outside workspace profile")
         rel = path if path not in {".", ""} else "."
-        if rel == ".":
-            base = self.repo_root
+        if virtual_names is not None:
+            names = virtual_names
         else:
-            base = self.enforcer.resolve_read_path(rel)
-        if not base.is_dir():
-            raise AmofNativeBackendError(f"list_dir: not a directory: {path}")
-        names = sorted(item.name for item in base.iterdir()
-                       if not self.workspace_directory or
-                       self._workspace_path_allowed(f"{rel.rstrip('/')}/{item.name}"))
+            base = self.repo_root if rel == "." else self.enforcer.resolve_read_path(rel)
+            if not base.is_dir():
+                raise AmofNativeBackendError(f"list_dir: not a directory: {path}")
+            names = sorted(item.name for item in base.iterdir()
+                           if not self.workspace_directory or
+                           self._workspace_path_allowed(f"{rel.rstrip('/')}/{item.name}"))
         if not self.workspace_directory:
             return names
+        if start_after == "":
+            start_after = None
         if start_after is not None:
             if start_after not in names:
                 raise AmofNativeBackendError("list_dir cursor is not a visible entry")
@@ -1446,6 +1462,9 @@ def _run_model_loop(
         tool_specs = [spec for spec in tool_specs if spec["function"]["name"] == "write_file"]
     if getattr(tools, "exact_code_paths", None):
         tool_specs = [spec for spec in tool_specs if spec["function"]["name"] in {"read_file", "write_file", "replace_text"}]
+    if getattr(tools, "workspace_directory", None):
+        tool_specs = [spec for spec in tool_specs if spec["function"]["name"] in
+                      {"read_file", "list_dir", "write_file", "replace_text"}]
     first_write_path = None
     first_write_markers = re.findall(r"(?m)^AMOF_FIRST_WRITE_PATH:\s*(\S+)\s*$", goal)
     if first_write_markers:
