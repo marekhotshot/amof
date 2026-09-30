@@ -654,7 +654,8 @@ class NativeAgentTools:
                     not enforcer.grant_roots[0].is_dir()):
                 raise AmofNativeBackendError("workspace profile requires one matching directory grant")
             self.workspace_directory = normalized
-            if os.environ.get("AMOF_NATIVE_INFERENCE_CAMPAIGN_ID"):
+            if (os.environ.get("AMOF_NATIVE_INFERENCE_CAMPAIGN_ID") and
+                    os.environ.get("AMOF_NATIVE_EXTERNAL_MOUNT_SCOPE") != "1"):
                 raw_egress = os.environ.get("AMOF_NATIVE_EGRESS_PATHS_JSON", "")
                 try:
                     paths = json.loads(raw_egress)
