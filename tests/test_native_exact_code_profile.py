@@ -148,6 +148,62 @@ class ExactCodeProfileTests(unittest.TestCase):
                             goal=f"AMOF_FIRST_WRITE_PATH: {bad}", tools=self._tools(root, paths),
                             model="fixture", writable=True, event_log_path=root / "events.jsonl", deadline=None)
 
+    def test_packet_bound_first_edit_requires_existing_hash_and_only_offers_replace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            path = "src/existing.ts"
+            (root / path).write_text("export const old = true;\n")
+            digest = hashlib.sha256((root / path).read_bytes()).hexdigest()
+            paths = [path, "src/new.ts"]
+            offered = []
+
+            def fake_chat(**kwargs):
+                offered.append([spec["function"]["name"] for spec in kwargs["tools"]])
+                return {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+
+            goal = f"AMOF_FIRST_EDIT_PATH: {path}\nAMOF_FIRST_EDIT_SHA256: {digest}\n"
+            with patch.dict(os.environ, {"AMOF_NATIVE_EXACT_CODE_SCOPE_JSON": json.dumps(paths)}), \
+                    patch.object(amof_native, "_chat_completion", side_effect=fake_chat):
+                status, reason, _ = amof_native._run_model_loop(goal=goal, tools=self._tools(root, paths),
+                    model="fixture", writable=True, event_log_path=root / "events.jsonl", deadline=None)
+                self.assertEqual(offered, [["replace_text"]])
+                self.assertEqual((status, reason), ("failed", "first_edit_not_requested"))
+                offered.clear()
+                (root / path).write_text("changed concurrently\n")
+                with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "hash changed"):
+                    amof_native._run_model_loop(goal=goal, tools=self._tools(root, paths),
+                        model="fixture", writable=True, event_log_path=root / "events.jsonl", deadline=None)
+                self.assertEqual(offered, [])
+
+    def test_first_edit_rejects_wrong_tool_path_without_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            target = root / "src/existing.ts"
+            target.write_text("const old = true;\n")
+            digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            paths = ["src/existing.ts", "src/other.ts"]
+            calls = []
+
+            def fake_chat(**kwargs):
+                if calls:
+                    return {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+                calls.append(1)
+                return {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "bad", "function": {"name": "replace_text", "arguments": json.dumps({
+                        "path": "src/other.ts", "expected_file_sha256": digest,
+                        "expected_old": "old", "replacement": "new"})}}]}}]}
+
+            goal = f"AMOF_FIRST_EDIT_PATH: src/existing.ts\nAMOF_FIRST_EDIT_SHA256: {digest}\n"
+            with patch.dict(os.environ, {"AMOF_NATIVE_EXACT_CODE_SCOPE_JSON": json.dumps(paths)}), \
+                    patch.object(amof_native, "_chat_completion", side_effect=fake_chat):
+                status, reason, _ = amof_native._run_model_loop(goal=goal,
+                    tools=self._tools(root, paths), model="fixture", writable=True,
+                    event_log_path=root / "events.jsonl", deadline=None)
+            self.assertEqual((status, reason), ("failed", "first_edit_not_completed"))
+            self.assertEqual(target.read_text(), "const old = true;\n")
+
 
 if __name__ == "__main__":
     unittest.main()

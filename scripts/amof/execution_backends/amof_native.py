@@ -1483,7 +1483,29 @@ def _run_model_loop(
                     and not tools._workspace_path_allowed(first_write_path, for_write=True))
                 or (tools.repo_root / first_write_path).exists()):
             raise AmofNativeBackendError("first-write path is not a new approved file")
+    first_edit_path = None
+    first_edit_markers = re.findall(r"(?m)^AMOF_FIRST_EDIT_PATH:\s*(\S+)\s*$", goal)
+    first_edit_hashes = re.findall(r"(?m)^AMOF_FIRST_EDIT_SHA256:\s*([0-9a-f]{64})\s*$", goal)
+    if first_edit_markers or first_edit_hashes:
+        if (first_write_path or len(first_edit_markers) != 1 or len(first_edit_hashes) != 1
+                or not writable or not (getattr(tools, "exact_code_paths", None)
+                                        or getattr(tools, "workspace_directory", None))):
+            raise AmofNativeBackendError("first-edit marker requires one governed existing code file and hash")
+        first_edit_path = _normalize_repository_relative_scope_path(first_edit_markers[0])
+        if ((getattr(tools, "exact_code_paths", None) and first_edit_path not in tools.exact_code_paths)
+                or (getattr(tools, "workspace_directory", None)
+                    and not tools._workspace_path_allowed(first_edit_path, for_write=True))
+                or (getattr(tools, "external_egress_paths", None) is not None
+                    and first_edit_path not in tools.external_egress_paths)
+                or (getattr(tools, "external_mount_roots", None) is not None
+                    and not tools._workspace_path_allowed(first_edit_path))):
+            raise AmofNativeBackendError("first-edit path is outside approved code scope")
+        edit_file = tools.enforcer.resolve_write_path(first_edit_path)
+        if (not edit_file.is_file() or (tools.repo_root / first_edit_path).is_symlink()
+                or hashlib.sha256(edit_file.read_bytes()).hexdigest() != first_edit_hashes[0]):
+            raise AmofNativeBackendError("first-edit file or hash changed before model call")
     findings: list[str] = []
+    first_edit_completed = False
     abandoned_attempts: set[str] = set()
     run_key = _safe_id(run_id or "native-run")
     acc = usage_acc if usage_acc is not None else _runtime_usage.empty_usage_accumulator()
@@ -1533,6 +1555,8 @@ def _run_model_loop(
         active_tools = tool_specs
         if first_write_path and turn_number == 1:
             active_tools = [spec for spec in tool_specs if spec["function"]["name"] == "write_file"]
+        if first_edit_path and turn_number == 1:
+            active_tools = [spec for spec in tool_specs if spec["function"]["name"] == "replace_text"]
         if budget_state.synthesis_required:
             active_tools = []
             if not budget_state.synthesis_consumed:
@@ -1646,6 +1670,11 @@ def _run_model_loop(
                         name != "write_file" or arguments.get("path") != first_write_path
                     ):
                         raise AmofNativeBackendError("first-write turn is limited to the declared new file")
+                    if first_edit_path and turn_number == 1 and (
+                        name != "replace_text" or arguments.get("path") != first_edit_path
+                        or arguments.get("expected_file_sha256") != first_edit_hashes[0]
+                    ):
+                        raise AmofNativeBackendError("first-edit turn is limited to the declared file and hash")
                     output = tools.dispatch_tool(name, arguments)
                 except AmofNativeBackendError as exc:
                     # Path/grant tool mistakes must not abort the whole run.
@@ -1684,6 +1713,8 @@ def _run_model_loop(
                     continue
                 findings.append(output)
                 acc["tool_calls"] = int(acc.get("tool_calls") or 0) + 1
+                if first_edit_path and turn_number == 1 and name == "replace_text":
+                    first_edit_completed = True
                 _shared._append_event(
                     event_log_path,
                     "tool_call",
@@ -1714,6 +1745,9 @@ def _run_model_loop(
                     # mutation. Do not let the model loop rewrite the same file.
                     _publish_budget("exact_document_written")
                     return "completed", "exact_document_written", "\n".join(findings)
+            if first_edit_path and turn_number == 1 and not first_edit_completed:
+                _publish_budget("first_edit_not_completed")
+                return "failed", "first_edit_not_completed", "\n".join(findings)
             _loop_budget.note_turn_complete(budget_state, turn_number)
             # Model still wants another turn. Gate on progress-aware budget.
             next_turn = turn_number + 1
@@ -1777,6 +1811,9 @@ def _run_model_loop(
                     return "failed", stop, "\n".join(findings)
             continue
         content = str(message.get("content") or "").strip()
+        if first_edit_path and turn_number == 1:
+            _publish_budget("first_edit_not_requested")
+            return "failed", "first_edit_not_requested", content or "\n".join(findings)
         if budget_state.synthesis_required and not content:
             stop = _loop_budget.STOP_SYNTHESIS_NOT_COMPLETED
             _shared._append_event(
