@@ -138,6 +138,33 @@ class AmofNativeGrantNormalizationTests(unittest.TestCase):
             for path in ("outside.py", "src/.env", "src/../outside.py"):
                 with self.assertRaises(amof_native.AmofNativeBackendError):
                     tools.dispatch_tool("read_file", {"path": path})
+
+    def test_first_write_marker_accepts_only_new_file_inside_workspace_grant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src/existing.ts").write_text("existing\n")
+            enforcer = amof_native._GrantEnforcer(workspace=root, repo_roots=[root],
+                grant_roots_resolved=[root / "src"], writable=True)
+            with patch.dict(os.environ, {"AMOF_NATIVE_WORKSPACE_DIRECTORY": "src",
+                                      "AMOF_NATIVE_EXACT_CODE_SCOPE_JSON": ""}):
+                tools = amof_native.NativeAgentTools(enforcer)
+                offered = []
+
+                def fake_chat(**kwargs):
+                    offered.append([spec["function"]["name"] for spec in kwargs["tools"]])
+                    return {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+
+                with patch.object(amof_native, "_chat_completion", side_effect=fake_chat):
+                    amof_native._run_model_loop(goal="AMOF_FIRST_WRITE_PATH: src/new.ts\n",
+                        tools=tools, model="fixture", writable=True,
+                        event_log_path=root / "events.jsonl", deadline=None)
+                self.assertEqual(offered, [["write_file"]])
+                for path in ("src/existing.ts", "other.ts", "src/../other.ts"):
+                    with self.assertRaises(amof_native.AmofNativeBackendError):
+                        amof_native._run_model_loop(goal=f"AMOF_FIRST_WRITE_PATH: {path}\n",
+                            tools=tools, model="fixture", writable=True,
+                            event_log_path=root / "events.jsonl", deadline=None)
             for name, args in (("run_shell", {"command": "touch src/escape"}),
                                ("glob", {"pattern": "**/*"}), ("git_status", {})):
                 with self.assertRaises(amof_native.AmofNativeBackendError):

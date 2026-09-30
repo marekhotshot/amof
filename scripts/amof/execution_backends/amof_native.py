@@ -1427,10 +1427,13 @@ def _run_model_loop(
     first_write_path = None
     first_write_markers = re.findall(r"(?m)^AMOF_FIRST_WRITE_PATH:\s*(\S+)\s*$", goal)
     if first_write_markers:
-        if len(first_write_markers) != 1 or not writable or not getattr(tools, "exact_code_paths", None):
-            raise AmofNativeBackendError("first-write marker requires one governed exact-code scope")
+        if len(first_write_markers) != 1 or not writable or not (
+                getattr(tools, "exact_code_paths", None) or getattr(tools, "workspace_directory", None)):
+            raise AmofNativeBackendError("first-write marker requires a governed code scope")
         first_write_path = _normalize_repository_relative_scope_path(first_write_markers[0])
-        if (first_write_path not in tools.exact_code_paths
+        if ((getattr(tools, "exact_code_paths", None) and first_write_path not in tools.exact_code_paths)
+                or (getattr(tools, "workspace_directory", None)
+                    and not tools._workspace_path_allowed(first_write_path, for_write=True))
                 or (tools.repo_root / first_write_path).exists()):
             raise AmofNativeBackendError("first-write path is not a new approved file")
     findings: list[str] = []
