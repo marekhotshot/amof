@@ -44,6 +44,37 @@ class ExactCodeProfileTests(unittest.TestCase):
                 with self.assertRaises(amof_native.AmofNativeBackendError):
                     tools.enforcer.resolve_write_path("src/other.ts")
 
+    def test_edit_tool_returns_parent_outcome_hash_for_next_edit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src/existing.ts").write_text("old\n", encoding="utf-8")
+            path = "src/existing.ts"
+            outcome_hash = hashlib.sha256(b"new\n").hexdigest()
+            paths = [path, "src/new.ts"]
+            with patch.dict(os.environ, {"AMOF_NATIVE_EXACT_CODE_SCOPE_JSON": json.dumps(paths)}):
+                tools = self._tools(root, paths)
+
+                def completed_edit(*_args):
+                    tools.write_receipts.append({"status": "COMPLETED", "actual_sha256": outcome_hash})
+
+                with patch.object(tools, "replace_text", side_effect=completed_edit):
+                    result = tools.dispatch_tool("replace_text", {
+                        "path": path,
+                        "expected_file_sha256": hashlib.sha256(b"old\n").hexdigest(),
+                        "expected_old": "old", "replacement": "new",
+                    })
+                self.assertEqual(result, f"replaced text in {path}\nFILE_SHA256: {outcome_hash}")
+
+                tools.write_receipts.clear()
+                with patch.object(tools, "replace_text", side_effect=lambda *_: tools.write_receipts.append(
+                        {"status": "COMPLETED"})):
+                    with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "without an outcome hash"):
+                        tools.dispatch_tool("replace_text", {
+                            "path": path, "expected_file_sha256": outcome_hash,
+                            "expected_old": "old", "replacement": "new",
+                        })
+
     def test_mismatched_or_broad_profile_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1011,7 +1011,13 @@ class NativeAgentTools:
             path = self._require_tool_path(args, tool=name)
             self.replace_text(path, str(args.get("expected_file_sha256") or ""),
                               str(args.get("expected_old") or ""), str(args.get("replacement") or ""))
-            return f"replaced text in {path}"
+            # The parent actuator owns the post-edit hash. Return its durable
+            # outcome so a following edit can use the correct compare-and-swap
+            # identity instead of guessing from a stale read window.
+            actual_sha256 = self.write_receipts[-1].get("actual_sha256")
+            if not isinstance(actual_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", actual_sha256):
+                raise AmofNativeBackendError("governed edit completed without an outcome hash")
+            return f"replaced text in {path}\nFILE_SHA256: {actual_sha256}"
         if name == "run_shell":
             return self.run_shell(str(args.get("command") or ""))
         if name == "git_status":
