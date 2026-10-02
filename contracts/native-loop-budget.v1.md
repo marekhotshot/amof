@@ -51,6 +51,12 @@ not progress even if `tool_outcome_signature` changes.
 
 At base-budget exhaustion, write-capable missions still require
 `MATERIAL_PROGRESS` for a bounded exploration extension.
+For a workspace profile that exposes no model-side validation tool, a bounded
+extension may instead use `PARTIAL_PROGRESS` only when a fresh successful
+parent-governed write changed the candidate since the last checkpoint.
+`replace_text` counts only with a distinct durable post-edit hash. The base
+limit and absolute ceiling remain unchanged; parent validation still decides
+acceptance after the loop.
 
 Read-only missions do **not** receive that extension. Lifetime evidence versus
 an empty baseline is the authority (not the late turn-11 checkpoint):

@@ -292,6 +292,19 @@ def observe_tool_result(
             f"{fingerprint.shell_exit_fingerprint}:0:{_stable_hash(output[:400])}"
         )
         fingerprint.phase = "validation_ok"
+    elif name == "replace_text" and not error and failure_class == "ok":
+        # The parent actuator returns its durable post-edit hash. A successful
+        # compare-and-swap edit is implementation progress even when the child
+        # has no shell/test tool (validation then runs after the model loop).
+        match = re.search(r"(?m)^FILE_SHA256: ([0-9a-f]{64})$", output or "")
+        old_hash = str((arguments or {}).get("expected_file_sha256") or "")
+        if match and match.group(1) != old_hash:
+            fingerprint.successful_write_count += 1
+            path = str((arguments or {}).get("path") or "")
+            fingerprint.write_digest = _stable_hash(
+                f"{fingerprint.write_digest}:{path}:{match.group(1)}"
+            )
+            fingerprint.phase = "implementation"
     elif name == "write_file" and not error:
         fingerprint.successful_write_count += 1
         content = str((arguments or {}).get("content") or "")
@@ -454,6 +467,28 @@ def evaluate_progress(
         evidence=["no_material_machine_observable_delta"],
         current_digest=current_digest,
         baseline_digest=baseline_digest,
+    )
+
+
+def workspace_write_extension_eligible(
+    state: LoopBudgetState,
+    *,
+    workspace_directory: str | None,
+    exposed_tool_names: set[str],
+) -> bool:
+    """Allow partial progress only for a newly mutated, unvalidated workspace.
+
+    A model with no validation tool cannot produce MATERIAL_PROGRESS inside
+    its loop. The parent still validates the candidate after the loop; this
+    exception only spends the policy's existing bounded extension.
+    """
+    baseline = state.checkpoint_fingerprint
+    return bool(
+        workspace_directory
+        and not exposed_tool_names.intersection({"run_shell", "run_tests"})
+        and baseline is not None
+        and state.fingerprint.successful_write_count > baseline.successful_write_count
+        and state.fingerprint.write_digest != baseline.write_digest
     )
 
 

@@ -1789,7 +1789,19 @@ def _run_model_loop(
                         continue
                     _publish_budget(outcome)
                     return "failed", outcome, "\n".join(findings)
-                decision = _loop_budget.decide_extension(budget_state, at_turn=turn_number)
+                # Workspace code profiles expose no model-side validation tool.
+                # Require a new parent-confirmed write for their small bounded
+                # extension; a grant, reads, or prose alone still cannot earn it.
+                workspace_write_progress = _loop_budget.workspace_write_extension_eligible(
+                    budget_state,
+                    workspace_directory=getattr(tools, "workspace_directory", None),
+                    exposed_tool_names={spec["function"]["name"] for spec in tool_specs},
+                )
+                decision = _loop_budget.decide_extension(
+                    budget_state,
+                    at_turn=turn_number,
+                    require_material=not workspace_write_progress,
+                )
                 _shared._append_event(
                     event_log_path,
                     "loop_budget_extension_decision",

@@ -89,6 +89,30 @@ class ProgressEvaluationTests(unittest.TestCase):
         ev = evaluate_progress(cur, base)
         self.assertEqual(ev.verdict, "PARTIAL_PROGRESS")
 
+    def test_governed_replace_text_outcome_counts_as_write_progress(self) -> None:
+        base = _fp()
+        cur = _fp()
+        old_hash, new_hash = "a" * 64, "b" * 64
+        observe_tool_result(
+            cur, name="replace_text",
+            arguments={"path": "src/item.ts", "expected_file_sha256": old_hash},
+            output=f"replaced text in src/item.ts\nFILE_SHA256: {new_hash}",
+        )
+        self.assertEqual(cur.successful_write_count, 1)
+        self.assertEqual(evaluate_progress(cur, base).verdict, "PARTIAL_PROGRESS")
+        for output, error in (
+            (f"FILE_SHA256: {old_hash}", None),
+            ("replaced text without outcome hash", None),
+            (f"FILE_SHA256: {new_hash}", "governed edit denied"),
+        ):
+            rejected = _fp()
+            observe_tool_result(
+                rejected, name="replace_text",
+                arguments={"path": "src/item.ts", "expected_file_sha256": old_hash},
+                output=output, error=error,
+            )
+            self.assertEqual(rejected.successful_write_count, 0)
+
     def test_oscillation_is_no_progress(self) -> None:
         a = _fp(write_digest="a", successful_write_count=1)
         b = _fp(write_digest="b", successful_write_count=2)
@@ -252,6 +276,42 @@ class ExtensionDecisionTests(unittest.TestCase):
             termination_after_denied_extension(state),
             lb.STOP_BASE_NO_PROGRESS,
         )
+
+    def test_workspace_without_validation_tool_extends_only_after_new_write(self) -> None:
+        state = LoopBudgetState(policy=lb.default_policy())
+        state.checkpoint_fingerprint = _fp(write_digest="w0", successful_write_count=0)
+        state.fingerprint = _fp(write_digest="w1", successful_write_count=1)
+        eligible = lb.workspace_write_extension_eligible(
+            state, workspace_directory="services/operator-console/",
+            exposed_tool_names={"read_file", "write_file", "replace_text"},
+        )
+        self.assertTrue(eligible)
+        decision = decide_extension(state, at_turn=12, require_material=not eligible)
+        self.assertTrue(decision.granted)
+        self.assertEqual(state.effective_turn_limit, 15)
+        # A second extension requires a new post-checkpoint mutation.
+        self.assertFalse(lb.workspace_write_extension_eligible(
+            state, workspace_directory="services/operator-console/",
+            exposed_tool_names={"read_file", "replace_text"},
+        ))
+        self.assertFalse(decide_extension(state, at_turn=15).granted)
+
+    def test_workspace_partial_exception_does_not_cover_other_profiles(self) -> None:
+        state = LoopBudgetState(policy=lb.default_policy())
+        state.checkpoint_fingerprint = _fp(write_digest="w0", successful_write_count=0)
+        state.fingerprint = _fp(write_digest="w1", successful_write_count=1)
+        for directory, tools in (
+            (None, {"read_file", "replace_text"}),
+            ("services/operator-console/", {"read_file", "run_shell", "replace_text"}),
+        ):
+            self.assertFalse(lb.workspace_write_extension_eligible(
+                state, workspace_directory=directory, exposed_tool_names=tools,
+            ))
+        state.fingerprint.write_digest = "w0"
+        self.assertFalse(lb.workspace_write_extension_eligible(
+            state, workspace_directory="services/operator-console/",
+            exposed_tool_names={"read_file", "replace_text"},
+        ))
 
     def test_unknown_does_not_grant(self) -> None:
         state = LoopBudgetState(policy=lb.default_policy())
@@ -546,6 +606,67 @@ class IntegrationMockLoopTests(unittest.TestCase):
         self.assertEqual(stop, lb.STOP_BASE_NO_PROGRESS)
         self.assertEqual(out.get("turns_used"), 12)
         self.assertEqual(out.get("extension_count"), 0)
+
+    def test_workspace_parent_edit_at_base_gets_bounded_completion_turn(self) -> None:
+        from amof.execution_backends import amof_native
+
+        old_hash, new_hash = "a" * 64, "b" * 64
+        responses = [
+            {
+                "choices": [{"message": self._tool_message(
+                    "read_file", {"path": "services/operator-console/src/a.ts"}, f"r{i}",
+                )}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                "model": "openai/gpt-6.1-sol",
+            }
+            for i in range(1, 12)
+        ]
+        responses.append({
+            "choices": [{"message": self._tool_message(
+                "replace_text", {
+                    "path": "services/operator-console/src/a.ts",
+                    "expected_file_sha256": old_hash,
+                    "expected_old": "before", "replacement": "after",
+                }, "edit12",
+            )}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            "model": "openai/gpt-6.1-sol",
+        })
+        responses.append({
+            "choices": [{"message": {"role": "assistant", "content": "done", "tool_calls": None}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            "model": "openai/gpt-6.1-sol",
+        })
+
+        class Tools:
+            workspace_directory = "services/operator-console/"
+            exact_document_path = None
+            exact_code_paths = None
+            enforcer = type("E", (), {"grant_roots": []})()
+            repo_root = Path(".")
+
+            def dispatch_tool(self, name, arguments):  # noqa: ANN001
+                if name == "read_file":
+                    return "source"
+                self_outer.assertEqual(name, "replace_text")
+                return f"replaced text\nFILE_SHA256: {new_hash}"
+
+        self_outer = self
+        event_path = Path("/tmp/amof-loop-workspace-edit-events.jsonl")
+        event_path.write_text("", encoding="utf-8")
+        with patch.object(amof_native, "_chat_completion", side_effect=responses):
+            with patch.object(amof_native, "_grant_tree_digest", return_value="g0"):
+                out: dict = {}
+                status, stop, _text = amof_native._run_model_loop(
+                    goal="finish bounded workspace edit",
+                    tools=Tools(),  # type: ignore[arg-type]
+                    model="openai/gpt-6.1-sol", writable=True,
+                    event_log_path=event_path, deadline=None,
+                    run_id="t-workspace-edit", loop_budget_out=out,
+                )
+        self.assertEqual((status, stop), ("completed", "completed"))
+        self.assertEqual(out.get("extension_count"), 1)
+        self.assertEqual(out.get("turns_used"), 13)
 
     def test_material_progress_grants_extension_then_completes(self) -> None:
         from amof.execution_backends import amof_native
