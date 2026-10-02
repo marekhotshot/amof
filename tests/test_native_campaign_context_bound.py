@@ -54,6 +54,33 @@ class CampaignContextBoundTests(unittest.TestCase):
         self.assertTrue(all(result["tool_call_id"] in calls for message in messages
                             for result in message.get("results", [])))
 
+    def test_compaction_preserves_parent_confirmed_edit_and_current_hash(self):
+        edit_result = (
+            "replaced text in src/mission.ts\n"
+            "FILE_SHA256: 14715489fabb1ed5dc5cbbdf08f8b3ada632d48d60f93b1799e75bdbcf677af1"
+        )
+        messages = [{"role": "user", "content": "Complete the scoped code change"},
+                    {"role": "assistant", "tool_calls": [{"id": "edit-1",
+                     "name": "replace_text", "arguments": {"path": "src/mission.ts"}}]},
+                    {"role": "tool", "results": [{"id": "edit-1",
+                     "tool_call_id": "edit-1", "content": edit_result}]}]
+        for index in range(95):
+            call_id = f"read-{index}"
+            messages.append({"role": "assistant", "content": "Inspect the source. " * 18,
+                             "tool_calls": [{"id": call_id, "name": "read_file",
+                                             "arguments": {"path": "src/mission.ts"}}]})
+            messages.append({"role": "tool", "results": [{"id": call_id,
+                             "tool_call_id": call_id, "content": "source excerpt" * 25}]})
+        payload = {"system": "bounded task", "messages": messages, "tools": [],
+                   "model": "openai/gpt-6.1-sol", "campaign_id": "fixture"}
+        self.assertGreater(len(json.dumps(payload).encode()), 60_000)
+        amof_native._bound_campaign_tool_history(payload)
+        self.assertLessEqual(len(json.dumps(payload, ensure_ascii=False).encode()), 60_000)
+        self.assertEqual(messages[2]["tool_calls"][0]["id"], "edit-1")
+        self.assertEqual(messages[3]["results"][0]["content"], edit_result)
+        self.assertEqual(messages[-2]["tool_calls"][0]["id"], "read-94")
+        self.assertEqual(messages[-1]["results"][0]["tool_call_id"], "read-94")
+
 
 if __name__ == "__main__":
     unittest.main()

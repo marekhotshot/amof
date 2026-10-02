@@ -1263,9 +1263,22 @@ def _bound_campaign_tool_history(payload: dict[str, Any]) -> None:
 
     if size() <= CAMPAIGN_REQUEST_SOFT_LIMIT_BYTES:
         return
+    def mutation_call(call: dict[str, Any]) -> bool:
+        function = call.get("function")
+        name = call.get("name") or (function.get("name") if isinstance(function, dict) else None)
+        return name in {"write_file", "replace_text"}
+
+    mutation_call_ids = {
+        str(call.get("id") or "")
+        for message in payload["messages"]
+        for call in (message.get("tool_calls") or [])
+        if isinstance(call, dict) and mutation_call(call)
+    }
     results = [result for message in payload["messages"]
                for result in (message.get("results") or [])
-               if isinstance(result, dict) and isinstance(result.get("content"), str)]
+               if isinstance(result, dict) and isinstance(result.get("content"), str)
+               and str(result.get("tool_call_id") or result.get("id") or "")
+               not in mutation_call_ids]
     for result in results[:-1]:
         if size() <= CAMPAIGN_REQUEST_SOFT_LIMIT_BYTES:
             break
@@ -1289,8 +1302,8 @@ def _bound_campaign_tool_history(payload: dict[str, Any]) -> None:
             # latest result. Older pairs are removed together so the IAL
             # never sees a dangling tool result or call identifier.
             omitted: list[str] = []
-            while size() > CAMPAIGN_REQUEST_SOFT_LIMIT_BYTES - 350 and len(messages) > 5:
-                first = 1
+            first = 1
+            while size() > CAMPAIGN_REQUEST_SOFT_LIMIT_BYTES - 350 and first < len(messages) - 2:
                 end = first + 1
                 while end < len(messages) and messages[end].get("role") == "tool":
                     end += 1
@@ -1298,6 +1311,14 @@ def _bound_campaign_tool_history(payload: dict[str, Any]) -> None:
                     break
                 if messages[first].get("tool_calls") and end <= first + 1:
                     break
+                # Keep mutation calls and their parent outcomes together even
+                # when older read cycles are removed. Losing an ALLOW or DENY
+                # makes the model repeat an edit with a stale pre-write hash.
+                if any(mutation_call(call)
+                       for call in messages[first].get("tool_calls", [])
+                       if isinstance(call, dict)):
+                    first = end
+                    continue
                 removed = messages[first:end]
                 digest = hashlib.sha256(json.dumps(removed, sort_keys=True,
                     ensure_ascii=False).encode("utf-8")).hexdigest()
