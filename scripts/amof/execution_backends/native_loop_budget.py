@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 SCHEMA = "amof.native_loop_budget/v1"
 POLICY_VERSION = "native-loop-budget-v1.1"
+WORKSPACE_POLICY_VERSION = "native-workspace-code-budget-v1"
 
 # Boundedness: base 12 preserves historical Native default; absolute 18 =
 # base + (extension_increment * max_extension_count). Ceiling stays finite and
@@ -22,6 +23,10 @@ DEFAULT_BASE_TURN_LIMIT = 12
 DEFAULT_EXTENSION_INCREMENT = 3
 DEFAULT_MAX_EXTENSION_COUNT = 2
 DEFAULT_ABSOLUTE_TURN_LIMIT = 18
+WORKSPACE_BASE_TURN_LIMIT = 24
+WORKSPACE_EXTENSION_INCREMENT = 8
+WORKSPACE_MAX_EXTENSION_COUNT = 3
+WORKSPACE_ABSOLUTE_TURN_LIMIT = 48
 
 ProgressVerdict = Literal[
     "MATERIAL_PROGRESS",
@@ -156,6 +161,7 @@ class LoopBudgetState:
     observed_evidence_keys: set[str] = field(default_factory=set)
     synthesis_required: bool = False
     synthesis_consumed: bool = False
+    continuation_request: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         self.policy.validate()
@@ -180,6 +186,7 @@ class LoopBudgetState:
             "synthesis_required": self.synthesis_required,
             "synthesis_consumed": self.synthesis_consumed,
             "successful_evidence_count": self.fingerprint.successful_evidence_count,
+            "continuation_request": self.continuation_request,
         }
 
 
@@ -603,9 +610,9 @@ def note_turn_complete(state: LoopBudgetState, turn_number: int) -> None:
     # Keep a small window for oscillation detection.
     if len(state.recent_state_digests) > 6:
         state.recent_state_digests = state.recent_state_digests[-6:]
-    # Establish baseline for first extension evaluation near base ceiling.
+    # Compare a meaningful recent work window, not only the final turn.
     if state.checkpoint_fingerprint is None and turn_number >= max(
-        1, state.policy.base_turn_limit - 1
+        1, state.policy.base_turn_limit - state.policy.extension_increment
     ):
         state.checkpoint_fingerprint = snapshot_fingerprint(state.fingerprint)
 
@@ -660,3 +667,29 @@ def decide_readonly_synthesis(state: LoopBudgetState, *, at_turn: int) -> str:
 
 def default_policy() -> LoopBudgetPolicy:
     return LoopBudgetPolicy()
+
+
+def workspace_code_policy() -> LoopBudgetPolicy:
+    return LoopBudgetPolicy(
+        policy_version=WORKSPACE_POLICY_VERSION,
+        base_turn_limit=WORKSPACE_BASE_TURN_LIMIT,
+        extension_increment=WORKSPACE_EXTENSION_INCREMENT,
+        max_extension_count=WORKSPACE_MAX_EXTENSION_COUNT,
+        absolute_turn_limit=WORKSPACE_ABSOLUTE_TURN_LIMIT,
+    )
+
+
+def model_budget_notice(state: LoopBudgetState, turn_number: int) -> str:
+    remaining = state.effective_turn_limit - turn_number + 1
+    return (
+        f"Runtime work budget: turn {turn_number} of {state.effective_turn_limit}; "
+        f"{remaining} permitted turns remain in the current block; absolute ceiling "
+        f"{state.policy.absolute_turn_limit}. The host alone may grant up to "
+        f"{state.policy.max_extension_count} extensions of "
+        f"{state.policy.extension_increment} turns on verified useful progress, "
+        "subject to time and monetary limits. To request continuation, include "
+        "AMOF_CONTINUE_REQUEST: completed=<fact>; remaining=<task>; reason=<need> "
+        "in your response. Your request grants nothing. Finish the task early; "
+        "when fewer than three turns remain, complete or give a truthful "
+        "checkpoint with the current candidate and specific remaining blocker."
+    )

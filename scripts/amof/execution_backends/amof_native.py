@@ -1435,6 +1435,32 @@ def _grant_tree_digest(tools: NativeAgentTools) -> str:
     return _loop_budget.digest_grant_tree(paths_to_content)
 
 
+def _host_extension_budget_open(model: str) -> bool:
+    """Ask the parent proxy for a conservative, current campaign budget gate."""
+    campaign_id = os.environ.get("AMOF_NATIVE_INFERENCE_CAMPAIGN_ID", "").strip()
+    if not campaign_id:
+        return True
+    path = os.environ.get("AMOF_NATIVE_IAL_SOCKET", "")
+    if not path:
+        return False
+    try:
+        import socket
+        payload = {
+            "kind": "budget_probe", "proxy_token": os.environ["AMOF_NATIVE_IAL_TOKEN"],
+            "mission_id": os.environ["AMOF_NATIVE_MISSION_ID"],
+            "campaign_id": campaign_id, "model": model,
+        }
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.settimeout(5)
+            conn.connect(path)
+            conn.sendall((json.dumps(payload) + "\n").encode())
+            with conn.makefile("rb") as handle:
+                answer = json.loads(handle.readline())
+        return isinstance(answer, dict) and answer.get("budget_open") is True
+    except (OSError, KeyError, ValueError, json.JSONDecodeError):
+        return False
+
+
 def _run_model_loop(
     *,
     goal: str,
@@ -1450,8 +1476,8 @@ def _run_model_loop(
 ) -> tuple[str, str, str]:
     """Run the Native agent loop under amof.native_loop_budget/v1.
 
-    Base turn limit remains 12. Write-capable missions may receive a small
-    bounded extension only on MATERIAL machine-observable progress. Read-only
+    Workspace code starts at 24 turns; other profiles retain 12. Write-capable
+    missions may receive a bounded extension only on observed progress. Read-only
     missions with useful evidence transition to one SYNTHESIS_REQUIRED turn
     instead of an exploration extension. Absolute hard ceiling is always
     enforced. Model self-report never grants extension.
@@ -1509,7 +1535,10 @@ def _run_model_loop(
     abandoned_attempts: set[str] = set()
     run_key = _safe_id(run_id or "native-run")
     acc = usage_acc if usage_acc is not None else _runtime_usage.empty_usage_accumulator()
-    budget_state = _loop_budget.LoopBudgetState(policy=_loop_budget.default_policy())
+    workspace_code = bool(writable and getattr(tools, "workspace_directory", None))
+    budget_state = _loop_budget.LoopBudgetState(
+        policy=_loop_budget.workspace_code_policy() if workspace_code else _loop_budget.default_policy()
+    )
     absolute = budget_state.policy.absolute_turn_limit
 
     def _publish_budget(stop: str | None = None) -> None:
@@ -1576,7 +1605,8 @@ def _run_model_loop(
                 )
         try:
             response = _chat_completion(
-                messages=messages,
+                messages=[messages[0], {"role": "system", "content":
+                          _loop_budget.model_budget_notice(budget_state, turn_number)}, *messages[1:]],
                 model=model,
                 tools=active_tools,
                 model_turn_id=model_turn_id,
@@ -1640,6 +1670,17 @@ def _run_model_loop(
         message = choices[0].get("message") if isinstance(choices[0], dict) else {}
         if not isinstance(message, dict):
             raise AmofNativeBackendError("chat completion missing message")
+        response_text = str(message.get("content") or "")
+        continuation = re.search(
+            r"AMOF_CONTINUE_REQUEST:\s*completed=([^;\n]+);\s*remaining=([^;\n]+);\s*reason=([^\n]+)",
+            response_text,
+        )
+        if continuation:
+            budget_state.continuation_request = {
+                "completed": continuation.group(1).strip()[:200],
+                "remaining": continuation.group(2).strip()[:200],
+                "reason": continuation.group(3).strip()[:200],
+            }
         tool_calls = message.get("tool_calls")
         if budget_state.synthesis_required and isinstance(tool_calls, list) and tool_calls:
             stop = _loop_budget.STOP_SYNTHESIS_NOT_COMPLETED
@@ -1762,6 +1803,9 @@ def _run_model_loop(
                 _publish_budget(stop)
                 return "failed", stop, "\n".join(findings)
             if next_turn > budget_state.effective_turn_limit:
+                if deadline is not None and time.monotonic() >= deadline:
+                    _publish_budget("timeout")
+                    return "failed", "timeout", "\n".join(findings)
                 if budget_state.synthesis_required:
                     stop = _loop_budget.STOP_SYNTHESIS_NOT_COMPLETED
                     _shared._append_event(
@@ -1789,6 +1833,9 @@ def _run_model_loop(
                         continue
                     _publish_budget(outcome)
                     return "failed", outcome, "\n".join(findings)
+                if not _host_extension_budget_open(model):
+                    _publish_budget("campaign_budget_unavailable_for_extension")
+                    return "failed", "campaign_budget_unavailable_for_extension", "\n".join(findings)
                 # Workspace code profiles expose no model-side validation tool.
                 # Require a new parent-confirmed write for their small bounded
                 # extension; a grant, reads, or prose alone still cannot earn it.
@@ -1815,6 +1862,7 @@ def _run_model_loop(
                         "absolute_limit": decision.absolute_limit,
                         "reason": decision.reason,
                         "effective_turn_limit": budget_state.effective_turn_limit,
+                        "continuation_request": budget_state.continuation_request,
                     },
                 )
                 if not decision.granted:

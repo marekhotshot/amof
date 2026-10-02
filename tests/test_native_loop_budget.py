@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import copy
+import json
+import socket
 import sys
+import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -42,6 +46,100 @@ class NativeLoopBudgetPolicyTests(unittest.TestCase):
         self.assertGreater(policy.absolute_turn_limit, policy.base_turn_limit)
         self.assertEqual(policy.policy_version, "native-loop-budget-v1.1")
         policy.validate()
+
+    def test_workspace_code_profile_is_separate(self) -> None:
+        policy = lb.workspace_code_policy()
+        self.assertEqual((policy.base_turn_limit, policy.extension_increment,
+                          policy.max_extension_count, policy.absolute_turn_limit),
+                         (24, 8, 3, 48))
+        policy.validate()
+        self.assertEqual(lb.default_policy().absolute_turn_limit, 18)
+
+    def test_workspace_recent_window_and_stagnation(self) -> None:
+        state = LoopBudgetState(lb.workspace_code_policy())
+        for turn in range(1, 17):
+            note_turn_complete(state, turn)
+        self.assertIsNotNone(state.checkpoint_fingerprint)
+        state.fingerprint.write_digest = "new-governed-edit"
+        state.fingerprint.successful_write_count = 1
+        note_turn_complete(state, 24)
+        self.assertTrue(decide_extension(state, at_turn=24, require_material=False).granted)
+        self.assertEqual(state.effective_turn_limit, 32)
+        note_turn_complete(state, 32)
+        self.assertFalse(decide_extension(state, at_turn=32, require_material=False).granted)
+
+    def test_workspace_absolute_ceiling_after_three_fresh_extensions(self) -> None:
+        state = LoopBudgetState(lb.workspace_code_policy())
+        for at_turn in (24, 32, 40):
+            state.checkpoint_fingerprint = snapshot_fingerprint(state.fingerprint)
+            state.fingerprint.write_digest = f"approved-edit-{at_turn}"
+            state.fingerprint.successful_write_count += 1
+            self.assertTrue(decide_extension(state, at_turn=at_turn,
+                                             require_material=False).granted)
+        self.assertEqual(state.effective_turn_limit, 48)
+        state.checkpoint_fingerprint = snapshot_fingerprint(state.fingerprint)
+        state.fingerprint.write_digest = "approved-edit-48"
+        state.fingerprint.successful_write_count += 1
+        self.assertFalse(decide_extension(state, at_turn=48,
+                                          require_material=False).granted)
+
+    def test_budget_notice_reaches_real_parent_proxy_request(self) -> None:
+        from amof.execution_backends import amof_native
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "ial.sock")
+            observed = []
+            ready = threading.Event()
+
+            def serve():
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+                    server.bind(path)
+                    server.listen(2)
+                    ready.set()
+                    for turn in (1, 2):
+                        conn, _ = server.accept()
+                        with conn:
+                            with conn.makefile("rb") as stream:
+                                observed.append(json.loads(stream.readline()))
+                            reply = {"text": "checkpoint" if turn == 2 else "",
+                                     "model": "synthetic-model", "request_id": f"synthetic-{turn}"}
+                            if turn == 1:
+                                reply["tool_calls"] = [{"id": "r1", "name": "read_file",
+                                                        "arguments": {"path": "src/a.txt"}}]
+                            conn.sendall((json.dumps({"response": reply}) + "\n").encode())
+
+            thread = threading.Thread(target=serve)
+            thread.start()
+            self.assertTrue(ready.wait(2))
+
+            class Tools:
+                workspace_directory = "src/"
+                exact_document_path = None
+                exact_code_paths = None
+                enforcer = type("E", (), {"grant_roots": []})()
+                repo_root = Path(tmp)
+
+                def dispatch_tool(self, name, arguments):
+                    assert name == "read_file" and arguments == {"path": "src/a.txt"}
+                    return "synthetic allowed context"
+
+            env = {"AMOF_NATIVE_IAL_SOCKET": path, "AMOF_REMOTE_IAL_MODEL": "synthetic-model",
+                   "AMOF_NATIVE_MISSION_ID": "synthetic-mission", "AMOF_NATIVE_IAL_TOKEN": "synthetic-token"}
+            with patch.dict("os.environ", env):
+                out = {}
+                status, _, _ = amof_native._run_model_loop(
+                    goal="synthetic coding task", tools=Tools(), model="synthetic-model",
+                    writable=True, event_log_path=Path(tmp) / "events.jsonl",
+                    deadline=None, loop_budget_out=out)
+            thread.join(timeout=2)
+            self.assertEqual(status, "completed")
+            self.assertEqual(out["base_turn_limit"], 24)
+            self.assertEqual(out["absolute_turn_limit"], 48)
+            self.assertEqual(len(observed), 2)
+            self.assertIn("turn 1 of 24", observed[0]["system"])
+            self.assertIn("turn 2 of 24", observed[1]["system"])
+            self.assertIn("absolute ceiling 48", observed[0]["system"])
+            self.assertIn("AMOF_CONTINUE_REQUEST", observed[0]["system"])
 
     def test_unbounded_absolute_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -619,7 +717,7 @@ class IntegrationMockLoopTests(unittest.TestCase):
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1},
                 "model": "openai/gpt-6.1-sol",
             }
-            for i in range(1, 12)
+            for i in range(1, 24)
         ]
         responses.append({
             "choices": [{"message": self._tool_message(
@@ -627,7 +725,7 @@ class IntegrationMockLoopTests(unittest.TestCase):
                     "path": "services/operator-console/src/a.ts",
                     "expected_file_sha256": old_hash,
                     "expected_old": "before", "replacement": "after",
-                }, "edit12",
+                }, "edit24",
             )}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
             "model": "openai/gpt-6.1-sol",
@@ -666,7 +764,7 @@ class IntegrationMockLoopTests(unittest.TestCase):
                 )
         self.assertEqual((status, stop), ("completed", "completed"))
         self.assertEqual(out.get("extension_count"), 1)
-        self.assertEqual(out.get("turns_used"), 13)
+        self.assertEqual(out.get("turns_used"), 25)
 
     def test_material_progress_grants_extension_then_completes(self) -> None:
         from amof.execution_backends import amof_native
