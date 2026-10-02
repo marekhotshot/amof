@@ -1279,6 +1279,36 @@ def _bound_campaign_tool_history(payload: dict[str, Any]) -> None:
             "Use a focused read_file call if this evidence is needed.]"
         )
     if size() > CAMPAIGN_REQUEST_SOFT_LIMIT_BYTES:
+        messages = payload["messages"]
+        # The durable run log retains the complete exchange. Only compact a
+        # single-user model loop: never discard a later operator instruction.
+        user_positions = [index for index, message in enumerate(messages)
+                          if message.get("role") == "user"]
+        if user_positions == [0]:
+            # Keep complete recent tool-call/result pairs, including the
+            # latest result. Older pairs are removed together so the IAL
+            # never sees a dangling tool result or call identifier.
+            omitted: list[str] = []
+            while size() > CAMPAIGN_REQUEST_SOFT_LIMIT_BYTES - 350 and len(messages) > 5:
+                first = 1
+                end = first + 1
+                while end < len(messages) and messages[end].get("role") == "tool":
+                    end += 1
+                if messages[first].get("role") != "assistant":
+                    break
+                if messages[first].get("tool_calls") and end <= first + 1:
+                    break
+                removed = messages[first:end]
+                digest = hashlib.sha256(json.dumps(removed, sort_keys=True,
+                    ensure_ascii=False).encode("utf-8")).hexdigest()
+                del messages[first:end]
+                omitted.append(digest)
+            if omitted:
+                messages.insert(1, {"role": "user", "content":
+                    "[Earlier model/tool exchanges omitted from external history; "
+                    f"count={len(omitted)} digest={hashlib.sha256(''.join(omitted).encode()).hexdigest()}. "
+                    "Durable local run events retain them. Use focused tools to re-establish needed facts.]"})
+    if size() > CAMPAIGN_REQUEST_SOFT_LIMIT_BYTES:
         raise AmofNativeBackendError("campaign context remains too large after bounded tool history")
 
 

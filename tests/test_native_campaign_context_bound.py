@@ -31,6 +31,29 @@ class CampaignContextBoundTests(unittest.TestCase):
         with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "remains too large"):
             amof_native._bound_campaign_tool_history(payload)
 
+    def test_repeated_tool_cycles_compact_without_dangling_latest_call(self):
+        messages = [{"role": "user", "content": "Bounded source-link task"}]
+        for index in range(95):
+            call_id = f"call-{index}"
+            messages.append({"role": "assistant", "content": "Read the selected source. " * 18,
+                             "tool_calls": [{"id": call_id, "name": "read_file",
+                                             "arguments": {"path": "src/approved.ts", "start_line": index}}]})
+            messages.append({"role": "tool", "results": [{"id": call_id,
+                             "tool_call_id": call_id, "content": "small allowed excerpt"}]})
+        payload = {"system": "bounded task", "messages": messages, "tools": [],
+                   "model": "openai/gpt-6.1-sol", "campaign_id": "fixture"}
+        self.assertGreater(len(json.dumps(payload).encode()), 60_000)
+        amof_native._bound_campaign_tool_history(payload)
+        self.assertLessEqual(len(json.dumps(payload, ensure_ascii=False).encode()), 60_000)
+        self.assertEqual(messages[0]["content"], "Bounded source-link task")
+        self.assertIn("Earlier model/tool exchanges omitted", messages[1]["content"])
+        self.assertEqual(messages[-2]["tool_calls"][0]["id"], "call-94")
+        self.assertEqual(messages[-1]["results"][0]["tool_call_id"], "call-94")
+        self.assertEqual(messages[-1]["results"][0]["content"], "small allowed excerpt")
+        calls = {call["id"] for message in messages for call in message.get("tool_calls", [])}
+        self.assertTrue(all(result["tool_call_id"] in calls for message in messages
+                            for result in message.get("results", [])))
+
 
 if __name__ == "__main__":
     unittest.main()
