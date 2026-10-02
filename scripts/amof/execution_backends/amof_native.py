@@ -1584,9 +1584,16 @@ def _run_model_loop(
     findings: list[str] = []
     first_edit_completed = False
     abandoned_attempts: set[str] = set()
+    # An opt-in workspace task may require a concrete edit after repeatedly
+    # requesting identical source ranges. This is a strategy boundary, not an
+    # authority grant or an increase to the model-call budget.
+    read_counts: dict[str, int] = {}
+    repeated_reads_since_write = 0
+    workspace_code = bool(writable and getattr(tools, "workspace_directory", None))
+    read_stall_gate = workspace_code and "AMOF_READ_STALL_GATE: enabled" in goal
+    write_or_checkpoint_turn = False
     run_key = _safe_id(run_id or "native-run")
     acc = usage_acc if usage_acc is not None else _runtime_usage.empty_usage_accumulator()
-    workspace_code = bool(writable and getattr(tools, "workspace_directory", None))
     budget_state = _loop_budget.LoopBudgetState(
         policy=_loop_budget.workspace_code_policy() if workspace_code else _loop_budget.default_policy()
     )
@@ -1637,6 +1644,12 @@ def _run_model_loop(
             active_tools = [spec for spec in tool_specs if spec["function"]["name"] == "write_file"]
         if first_edit_path and turn_number == 1:
             active_tools = [spec for spec in tool_specs if spec["function"]["name"] == "replace_text"]
+        if read_stall_gate and repeated_reads_since_write >= 6:
+            write_or_checkpoint_turn = True
+            active_tools = [spec for spec in tool_specs if spec["function"]["name"] in {"write_file", "replace_text"}]
+            _shared._append_event(event_log_path, "workspace_read_stall_gate",
+                                  at_turn=turn_number,
+                                  repeated_reads=repeated_reads_since_write)
         if budget_state.synthesis_required:
             active_tools = []
             if not budget_state.synthesis_consumed:
@@ -1655,9 +1668,15 @@ def _run_model_loop(
                     evidence_coverage_digest=budget_state.fingerprint.evidence_coverage_digest,
                 )
         try:
+            stall_notice = (
+                "\nWORKSPACE_READ_STALL: At least six exact repeated source reads occurred "
+                "without a new write. Use the approved write/replace tool for one "
+                "concrete bounded change now, or give a truthful checkpoint stating "
+                "the missing fact. No read tools are available this turn."
+            ) if write_or_checkpoint_turn else ""
             response = _chat_completion(
                 messages=[messages[0], {"role": "system", "content":
-                          _loop_budget.model_budget_notice(budget_state, turn_number)}, *messages[1:]],
+                          _loop_budget.model_budget_notice(budget_state, turn_number) + stall_notice}, *messages[1:]],
                 model=model,
                 tools=active_tools,
                 model_turn_id=model_turn_id,
@@ -1758,6 +1777,8 @@ def _run_model_loop(
                     arguments = {}
                 tool_error: str | None = None
                 try:
+                    if write_or_checkpoint_turn and name not in {"write_file", "replace_text"}:
+                        raise AmofNativeBackendError("workspace read-stall turn requires a write or checkpoint")
                     if first_write_path and turn_number == 1 and (
                         name != "write_file" or arguments.get("path") != first_write_path
                     ):
@@ -1805,6 +1826,16 @@ def _run_model_loop(
                     continue
                 findings.append(output)
                 acc["tool_calls"] = int(acc.get("tool_calls") or 0) + 1
+                if read_stall_gate:
+                    if name in {"write_file", "replace_text"}:
+                        read_counts.clear()
+                        repeated_reads_since_write = 0
+                        write_or_checkpoint_turn = False
+                    elif name in {"read_file", "list_dir"}:
+                        read_key = json.dumps([name, arguments], sort_keys=True)
+                        if read_counts.get(read_key, 0):
+                            repeated_reads_since_write += 1
+                        read_counts[read_key] = read_counts.get(read_key, 0) + 1
                 if first_edit_path and turn_number == 1 and name == "replace_text":
                     first_edit_completed = True
                 _shared._append_event(
@@ -1840,6 +1871,9 @@ def _run_model_loop(
             if first_edit_path and turn_number == 1 and not first_edit_completed:
                 _publish_budget("first_edit_not_completed")
                 return "failed", "first_edit_not_completed", "\n".join(findings)
+            if write_or_checkpoint_turn:
+                _publish_budget("workspace_read_stall_checkpoint")
+                return "failed", "workspace_read_stall_checkpoint", "\n".join(findings)
             _loop_budget.note_turn_complete(budget_state, turn_number)
             # Model still wants another turn. Gate on progress-aware budget.
             next_turn = turn_number + 1
@@ -1922,6 +1956,9 @@ def _run_model_loop(
                     return "failed", stop, "\n".join(findings)
             continue
         content = str(message.get("content") or "").strip()
+        if write_or_checkpoint_turn:
+            _publish_budget("workspace_read_stall_checkpoint")
+            return "failed", "workspace_read_stall_checkpoint", content or "\n".join(findings)
         if first_edit_path and turn_number == 1:
             _publish_budget("first_edit_not_requested")
             return "failed", "first_edit_not_requested", content or "\n".join(findings)
