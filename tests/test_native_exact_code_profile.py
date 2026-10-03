@@ -85,6 +85,23 @@ class ExactCodeProfileTests(unittest.TestCase):
                     with self.assertRaises(amof_native.AmofNativeBackendError):
                         self._tools(root, paths)
 
+    def test_noop_replace_does_not_contact_parent_or_claim_edit_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            path = root / "src/existing.ts"
+            path.write_text("const value = 1;\n")
+            paths = ["src/existing.ts", "src/new.ts"]
+            with patch.dict(os.environ, {"AMOF_NATIVE_EXACT_CODE_SCOPE_JSON": json.dumps(paths),
+                                      "AMOF_NATIVE_WRITE_SOCKET": str(root / "missing.sock"),
+                                      "AMOF_NATIVE_WRITE_TOKEN": "fixture"}):
+                tools = self._tools(root, paths)
+                with self.assertRaisesRegex(amof_native.AmofNativeBackendError, "changed fragment"):
+                    tools.replace_text(paths[0], hashlib.sha256(path.read_bytes()).hexdigest(),
+                                       "const value = 1;", "const value = 1;")
+                self.assertEqual(tools.write_receipts, [])
+                self.assertEqual(path.read_text(), "const value = 1;\n")
+
     def test_large_exact_file_requires_bounded_line_range(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

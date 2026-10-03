@@ -893,6 +893,8 @@ class NativeAgentTools:
         if (self.exact_code_paths and normalized not in self.exact_code_paths) or (
                 self.workspace_directory and not self._workspace_path_allowed(normalized, for_write=True)):
             raise AmofNativeBackendError("replace_text path is outside approved code profile")
+        if expected_old == replacement:
+            raise AmofNativeBackendError("replace_text requires a changed fragment")
         socket_path = os.environ.get("AMOF_NATIVE_WRITE_SOCKET")
         token = os.environ.get("AMOF_NATIVE_WRITE_TOKEN")
         if not socket_path or not token:
