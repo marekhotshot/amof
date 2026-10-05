@@ -721,8 +721,15 @@ class NativeAgentTools:
                          ".turbo", ".venv", "venv", "node_modules", "__pycache__",
                          "dist", "build", "coverage", "outputs", "artifacts",
                          "evidence", "credentials", "secrets", "state", "ledger"}
-            return not any(part in protected or part.startswith(".env.")
-                           for part in Path(normalized).parts)
+            # This is source code, not the host's mutable state store. The
+            # approved operator-console src root contains cockpit/state; a
+            # blanket name check made that code impossible to inspect/edit.
+            source_state = ("services", "operator-console", "src", "cockpit", "state")
+            parts = Path(normalized).parts
+            return not any((part in protected and not (part == "state" and
+                            parts[:5] == source_state and index == 4)) or
+                           part.startswith(".env.")
+                           for index, part in enumerate(parts))
         except (OSError, ValueError, AmofNativeBackendError):
             return False
 

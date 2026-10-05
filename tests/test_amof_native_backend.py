@@ -231,6 +231,28 @@ class AmofNativeGrantNormalizationTests(unittest.TestCase):
             self.assertTrue(tools._workspace_path_allowed("src/new.py"))
             self.assertFalse(tools._workspace_path_allowed("src/secrets/key"))
 
+    def test_approved_cockpit_state_code_is_not_runtime_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code_state = root / "services/operator-console/src/cockpit/state"
+            code_state.mkdir(parents=True)
+            (code_state / "statusBridge.ts").write_text("export const source = true;\n")
+            (root / "services/operator-console/src/other/state").mkdir(parents=True)
+            enforcer = amof_native._GrantEnforcer(workspace=root, repo_roots=[root],
+                grant_roots_resolved=[root / "services/operator-console"], writable=True)
+            with patch.dict(os.environ, {"AMOF_NATIVE_WORKSPACE_DIRECTORY": "services/operator-console",
+                                      "AMOF_NATIVE_EXTERNAL_MOUNT_SCOPE": "1",
+                                      "AMOF_NATIVE_EXTERNAL_MOUNT_ROOTS_JSON":
+                                      '["services/operator-console/src/"]'}):
+                tools = amof_native.NativeAgentTools(enforcer)
+            self.assertTrue(tools._workspace_path_allowed(
+                "services/operator-console/src/cockpit/state/statusBridge.ts"))
+            self.assertFalse(tools._workspace_path_allowed(
+                "services/operator-console/src/other/state/secret.txt"))
+            self.assertFalse(tools._workspace_path_allowed(
+                "services/operator-console/src/cockpit/state/secrets/token"))
+            self.assertFalse(tools._workspace_path_allowed("services/operator-console/state/ledger.json"))
+
     def test_exact_document_profile_offers_only_guarded_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
