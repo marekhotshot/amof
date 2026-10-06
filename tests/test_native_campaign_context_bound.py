@@ -1,11 +1,51 @@
 import hashlib
 import json
+import os
 import unittest
+from unittest.mock import patch
 
 from amof.execution_backends import amof_native
 
 
 class CampaignContextBoundTests(unittest.TestCase):
+    def test_project_route_bounds_actual_remote_request_without_campaign_id(self):
+        messages = [{"role": "user", "content": "Mandal project packet"}]
+        for index in range(9):
+            call_id = f"read-{index}"
+            messages.extend([
+                {"role": "assistant", "tool_calls": [{"id": call_id, "name": "read_file",
+                    "arguments": {"path": "app/page.tsx"}}]},
+                {"role": "tool", "results": [{"id": call_id,
+                    "tool_call_id": call_id, "content": "allowed source" * 750}]},
+            ])
+        seen = []
+
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return None
+            def read(self):
+                return json.dumps({"stop_reason": "stop", "content": [],
+                    "tokens": {"input": 1, "output": 1}}).encode()
+
+        def fake_urlopen(request, timeout=0):
+            seen.append(json.loads(request.data))
+            self.assertLessEqual(len(request.data), amof_native.CAMPAIGN_REQUEST_SOFT_LIMIT_BYTES)
+            return Response()
+
+        with patch.dict(os.environ, {
+            "AMOF_REMOTE_IAL_BASE_URL": "http://ial.example:8787",
+            "AMOF_REMOTE_IAL_API_KEY": "fixture", "AMOF_REMOTE_IAL_MODEL": "x-ai/grok-4.6",
+            "AMOF_NATIVE_INFERENCE_PROJECT_ID": "project-mandal-fixture",
+            "AMOF_NATIVE_INFERENCE_CAMPAIGN_ID": "", "AMOF_NATIVE_SCRIPT": "",
+        }), patch.object(amof_native, "urlopen", side_effect=fake_urlopen):
+            amof_native._chat_completion(messages=messages, model="x-ai/grok-4.6", tools=[])
+        self.assertEqual(len(seen), 1)
+        self.assertNotIn("campaign_id", seen[0])
+        self.assertEqual(seen[0]["messages"][0]["content"], "Mandal project packet")
+        self.assertEqual(messages[-1]["results"][0]["content"], "allowed source" * 750)
+
     def test_repeated_reads_are_bounded_without_changing_latest_result_or_identity(self):
         original = "approved source excerpt\n" * 450
         messages = [{"role": "user", "content": "Implement the scoped change"}]

@@ -1367,9 +1367,11 @@ def _chat_completion(
             "temperature": 0.0,
         }
         campaign_id = os.environ.get("AMOF_NATIVE_INFERENCE_CAMPAIGN_ID", "").strip()
+        project_id = os.environ.get("AMOF_NATIVE_INFERENCE_PROJECT_ID", "").strip()
         if campaign_id:
             payload["campaign_id"] = campaign_id
             payload["mission_id"] = os.environ.get("AMOF_NATIVE_MISSION_ID", "").strip()
+        if campaign_id or project_id:
             _bound_campaign_tool_history(payload)
     else:
         payload = {
