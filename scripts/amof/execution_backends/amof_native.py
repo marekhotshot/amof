@@ -32,6 +32,14 @@ from ..write_scope_proposals import (
 )
 from . import hermes_opensandbox as _shared
 from .backend_identity import runner_backend_type
+from .workspace_state import (
+    _workspace_for,
+    _workspace_repo_roots,
+    _changed_paths,
+    _changed_paths_delta,
+    _read_only_unclean_workspace_message,
+    _restore_read_only_paths,
+)
 from .result_io import _append_event, _write_runtime_log, _write_terminal_result, _attach_studio_run
 from .proposal_contract import (
     WRITE_SCOPE_PROPOSAL_REQUIRED,
@@ -401,7 +409,7 @@ def build_selection(
     )
     if workspace is not None and not workspace.is_dir():
         raise AmofNativeBackendError(f"readable root is not a directory: {readable_root}")
-    repo_roots = _shared._workspace_repo_roots(workspace) if workspace is not None else []
+    repo_roots = _workspace_repo_roots(workspace) if workspace is not None else []
     relative_grants = [
         _coerce_relative_grant(item, workspace=workspace, repo_roots=repo_roots)
         for item in approve_writable_roots
@@ -443,7 +451,7 @@ def _resolve_grants_at_runtime(
     selection: AmofNativeBackendSelection,
     workspace: Path,
 ) -> AmofNativeBackendSelection:
-    repo_roots = _shared._workspace_repo_roots(workspace)
+    repo_roots = _workspace_repo_roots(workspace)
     if not repo_roots:
         repo_roots = [workspace]
     resolved: list[str] = []
@@ -2007,7 +2015,7 @@ def _changed_paths_outside_grants(
 ) -> list[str]:
     if not changed or not selection.writable_roots_relative:
         return list(changed) if changed and not selection.writable_roots_relative else []
-    repo_roots = _shared._workspace_repo_roots(workspace) or [workspace]
+    repo_roots = _workspace_repo_roots(workspace) or [workspace]
     outside: list[str] = []
     grant_rel = set(selection.writable_roots_relative)
     for item in changed:
@@ -2092,7 +2100,7 @@ def run(
     runtime_log_path = run_dir / "runtime.log"
     result_path = run_dir / "result.json"
     started_at = _now_iso()
-    workspace = _shared._workspace_for(selection, manifest)
+    workspace = _workspace_for(selection, manifest)
     requested_model = _requested_model(model)
     effective_provider = _effective_provider(model)
     transport = _inference_transport()
@@ -2169,12 +2177,12 @@ def run(
             reason="target_binding_rejected",
         )
 
-    preexisting_changed_paths = _shared._changed_paths(workspace)
+    preexisting_changed_paths = _changed_paths(workspace)
     if not selection.writable_roots_relative and preexisting_changed_paths:
         return _blocked_result(
             run_id=run_id,
             stop_reason="read_only_workspace_not_clean",
-            final_text=_shared._read_only_unclean_workspace_message(list(preexisting_changed_paths)),
+            final_text=_read_only_unclean_workspace_message(list(preexisting_changed_paths)),
             studio_session_id=studio_session_id,
             event_log_path=event_log_path,
             runtime_log_path=runtime_log_path,
@@ -2188,7 +2196,7 @@ def run(
             extra_evidence={"preexisting_changed_paths": list(preexisting_changed_paths)},
         )
 
-    repo_roots = _shared._workspace_repo_roots(workspace) or [workspace]
+    repo_roots = _workspace_repo_roots(workspace) or [workspace]
     grant_paths = [Path(item) for item in selection.writable_roots_resolved]
     enforcer = _GrantEnforcer(
         workspace=workspace,
@@ -2318,8 +2326,8 @@ def run(
             else None
         )
 
-        changed = _shared._changed_paths_delta(
-            preexisting_changed_paths, _shared._changed_paths(workspace)
+        changed = _changed_paths_delta(
+            preexisting_changed_paths, _changed_paths(workspace)
         )
         outside = _changed_paths_outside_grants(changed, selection, workspace)
         if outside and status == "completed":
@@ -2336,7 +2344,7 @@ def run(
             break
 
         if status == "completed" and not selection.writable_roots and changed:
-            restored_paths = _shared._restore_read_only_paths(workspace, changed)
+            restored_paths = _restore_read_only_paths(workspace, changed)
             if read_only_replan_used:
                 status = "failed"
                 stop_reason = "read_only_mutation_detected"
