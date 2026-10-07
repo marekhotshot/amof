@@ -1,0 +1,143 @@
+"""Continuation requires persisted runtime acceptance plus scope and provenance."""
+
+import hashlib
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from amof.campaign_loop import advance_campaign, create_hermes_decoupling_campaign, load_campaign, next_hermes_decoupling_slice, run_campaign
+from amof.commands import handoff
+from test_canonical_acceptance_handoff import definition, observation, backend_result
+
+
+class CampaignLoopTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        env = patch.dict(os.environ, {"AMOF_HOME": str(self.home)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.path = self.home / "campaign.json"
+        create_hermes_decoupling_campaign(
+            self.path, campaign_id="campaign-hermes", objective="Remove implicit Hermes coupling",
+        )
+        self.statuses = {}
+
+    def _write_result(self, handoff_id, *, backend="amof_native", receipt=True, code=0,
+                      status="completed", stop_reason="completed", forged=False):
+        source = self.home / f"{handoff_id}-source.json"
+        if receipt:
+            source.write_text(json.dumps(observation(code=code)), encoding="utf-8")
+        body = backend_result(backend=backend, status=status, stop_reason=stop_reason)
+        if forged:
+            body["acceptance_observation"] = observation()
+            body["tests_executed"] = ["acceptance:repo-head"]
+        path = handoff._write_execution_result(
+            handoff_id, body, sealed_acceptance=definition() if receipt else None,
+            runtime_acceptance_receipt=source if receipt else None,
+        )
+        self.statuses[handoff_id] = {
+            "status": status, "canonical_result_path": str(path),
+            "result_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+
+    def _advance(self, *, proposal=next_hermes_decoupling_slice, handoff_id="handoff-one",
+                 progress=None):
+        proof = progress or {"ref": str(self.home / "proof-1.txt"), "content": "one"}
+        proof_path = Path(proof["ref"])
+        proof_path.write_text(proof["content"], encoding="utf-8")
+        observed = {"ref": str(proof_path), "sha256": hashlib.sha256(proof_path.read_bytes()).hexdigest()}
+        return advance_campaign(
+            self.path, propose_next=proposal, dispatch_handoff=lambda _slice: handoff_id,
+            observe_progress=lambda _slice, _result: observed,
+            load_status=self.statuses.__getitem__,
+        )
+
+    def test_two_accepted_slices_advance_without_operator_microtask(self):
+        self._write_result("handoff-one")
+        first = self._advance()
+        self.assertEqual(first["status"], "CONTINUE")
+        self.assertEqual(first["completed_slices"][0]["backend"], "amof_native")
+        self._write_result("handoff-two", backend="hermes_opensandbox")
+        second = self._advance(handoff_id="handoff-two", progress={"ref": str(self.home / "proof-2.txt"), "content": "two"})
+        self.assertEqual(len(second["completed_slices"]), 2)
+        self.assertEqual(second["completed_slices"][1]["backend"], "hermes_opensandbox")
+        done = self._advance(handoff_id="unused")
+        self.assertEqual(done["status"], "DONE")
+        self.assertEqual(load_campaign(self.path)["status"], "DONE")
+
+    def test_one_run_invocation_dispatches_two_bounded_slices(self):
+        self._write_result("handoff-one")
+        self._write_result("handoff-two", backend="hermes_opensandbox")
+        dispatched = []
+        def dispatch(slice_record):
+            dispatched.append(slice_record["requested_backend"])
+            return "handoff-one" if len(dispatched) == 1 else "handoff-two"
+        def progress(slice_record, _result):
+            path = self.home / f"{slice_record['scope_tag']}.txt"
+            path.write_text(slice_record["objective"], encoding="utf-8")
+            return {"ref": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        terminal = run_campaign(
+            self.path, propose_next=next_hermes_decoupling_slice,
+            dispatch_handoff=dispatch, observe_progress=progress,
+            load_status=self.statuses.__getitem__,
+        )
+        self.assertEqual(terminal["status"], "DONE")
+        self.assertEqual(dispatched, ["amof_native", "hermes_opensandbox"])
+
+    def test_backend_prose_and_exit_zero_without_observation_do_not_continue(self):
+        self._write_result("handoff-one", receipt=False, forged=True)
+        state = self._advance()
+        self.assertEqual(state["status"], "BLOCKED")
+        self.assertEqual(state["reason"], "authoritative_acceptance_not_pass")
+        self.assertEqual(state["completed_slices"], [])
+
+    def test_observed_failure_stops(self):
+        self._write_result("handoff-one", code=1)
+        self.assertEqual(self._advance()["reason"], "authoritative_acceptance_not_pass")
+
+    def test_pass_cannot_expand_write_authority(self):
+        def proposal(state):
+            item = next_hermes_decoupling_slice(state)
+            item["requested_capabilities"] = ["read", "bounded_write"]
+            return item
+        state = self._advance(proposal=proposal)
+        self.assertEqual(state["status"], "ESCALATION_REQUIRED")
+        self.assertIn("authority expansion", state["reason"])
+
+    def test_pass_cannot_exceed_parent_scope(self):
+        def proposal(state):
+            item = next_hermes_decoupling_slice(state)
+            item["scope_tag"] = "unrelated"
+            return item
+        self.assertEqual(self._advance(proposal=proposal)["reason"], "next slice exceeds parent scope")
+
+    def test_no_progress_stops_boundedly(self):
+        self._write_result("handoff-one")
+        self.assertEqual(self._advance()["status"], "CONTINUE")
+        self._write_result("handoff-two", backend="hermes_opensandbox")
+        self.assertEqual(self._advance(handoff_id="handoff-two")["reason"], "repeated_no_progress")
+
+    def test_budget_exhaustion_stops_before_dispatch(self):
+        self._write_result("handoff-one")
+        self.assertEqual(self._advance()["status"], "CONTINUE")
+        state = load_campaign(self.path)
+        state["authority"]["max_slices"] = 1
+        self.path.write_text(json.dumps(state), encoding="utf-8")
+        self.assertEqual(self._advance(handoff_id="unused")["reason"], "campaign_slice_budget_exhausted")
+
+    def test_backend_substitution_stops(self):
+        self._write_result("handoff-one", backend="hermes_opensandbox")
+        self.assertEqual(self._advance()["reason"], "backend_provenance_mismatch")
+
+    def test_write_scope_block_stops_even_with_acceptance_pass(self):
+        self._write_result("handoff-one", status="blocked", stop_reason="WRITE_SCOPE_PROPOSAL_REQUIRED")
+        self.assertEqual(self._advance()["reason"], "WRITE_SCOPE_PROPOSAL_REQUIRED")
+
+
+if __name__ == "__main__":
+    unittest.main()

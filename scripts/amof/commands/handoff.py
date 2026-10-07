@@ -1858,6 +1858,8 @@ def _handoff_status_payload(
         or (loaded_state.completed_at if loaded_state is not None else None),
         "result_path": _optional_text((result or {}).get("result_path"))
         or (loaded_state.result_path if loaded_state is not None else None),
+        "canonical_result_path": str(_handoff_results_dir() / f"{handoff_id}.json") if result is not None else None,
+        "result_sha256": _optional_text((receipt or {}).get("result_sha256")),
         "receipt_path": _optional_text((receipt or {}).get("receipt_path"))
         or (loaded_state.receipt_path if loaded_state is not None else None),
         "event_log_path": _optional_text((result or {}).get("event_log_path"))
