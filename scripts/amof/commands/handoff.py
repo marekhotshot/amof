@@ -2224,7 +2224,10 @@ def _execute_agent_from_handoff(
                     backend_module=hermes_opensandbox,
                 )
                 result_payload.setdefault("runner_id", effective_runner)
-                result_payload["backend"] = "amof_builtin_code"
+                # This governed builtin discovery path currently executes via
+                # Hermes. Preserve the actual adapter identity in the result.
+                result_payload["backend"] = hermes_opensandbox.BACKEND_TYPE
+                result_payload["requested_backend"] = "amof_builtin_code"
             else:
                 response = agent_cmd.run_external_agent_plan_execute_envelope(
                     manifest,

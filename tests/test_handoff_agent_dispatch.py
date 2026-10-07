@@ -690,7 +690,8 @@ class HandoffAgentDispatchTests(unittest.TestCase):
             self.assertEqual(receipt["status"], "completed")
             self.assertEqual(captured["runner_id"], "amof-built-in-code")
             self.assertEqual(result["runner_id"], "amof-built-in-code")
-            self.assertEqual(result["backend"], "amof_builtin_code")
+            self.assertEqual(result["backend"], "hermes_opensandbox")
+            self.assertEqual(result["requested_backend"], "amof_builtin_code")
             self.assertEqual(
                 result["write_scope_proposal"]["allowed_roots"],
                 ["docs/product/backlogs/amof.md"],
