@@ -29,6 +29,7 @@ from ..write_scope_proposals import (
 )
 from .validation_closure import build_validation_summary, derive_validation_closure
 from .backend_identity import runner_backend_type
+from .backend_selection import BackendSelection as HermesBackendSelection, build_selection as _build_governed_selection
 from .runtime_utils import safe_run_id, infer_validation_status as _infer_validation_status
 from .runtime_governance import (
     FUTURE_ISOLATION_MODELS,
@@ -109,22 +110,6 @@ class RemoteIALConfig:
     api_key: str
     model: str
     timeout_seconds: float
-
-
-@dataclass(frozen=True)
-class HermesBackendSelection:
-    runner_id: str
-    capabilities: list[str]
-    writable_roots: list[str]
-    timeout_seconds: int
-    readable_root: str | None
-    write_scope_binding_id: str | None = None
-
-
-
-
-
-
 
 
 def _safe_id(value: str) -> str:
@@ -392,94 +377,20 @@ def _run_dir(run_id: str) -> Path:
 
 
 
-def _resolve_roots(values: list[str], *, readable_root: str | None) -> list[Path]:
-    """Resolve approved writable roots against the readable workspace.
-
-    Repository-relative grants (the Autopilot / Job contract) must be joined to
-    ``readable_root`` before absolutizing. Execution Jobs often start with
-    CWD=/, so ``Path(rel).resolve()`` would otherwise escape the workspace and
-    false-fail Cursor/Claude/Hermes bounded-write dispatch.
-    """
-    roots: list[Path] = []
-    workspace = (
-        Path(readable_root).expanduser().resolve(strict=True)
-        if readable_root
-        else None
-    )
-    if workspace is not None and not workspace.is_dir():
-        raise HermesBackendError(f"readable root is not a directory: {readable_root}")
-    for raw in values:
-        text = str(raw or "").strip()
-        if not text:
-            continue
-        candidate = Path(text).expanduser()
-        if candidate.is_absolute():
-            path = candidate.resolve(strict=False)
-        else:
-            if workspace is None:
-                raise HermesBackendError(
-                    f"relative writable root requires readable workspace: {text}"
-                )
-            path = (workspace / candidate).resolve(strict=False)
-        if workspace is not None and not path.is_relative_to(workspace):
-            raise HermesBackendError(
-                f"approved writable root is outside the readable workspace: {text}"
-            )
-        if path.exists() and not (path.is_dir() or path.is_file()):
-            raise HermesBackendError(f"approved writable root is not a file or directory: {text}")
-        roots.append(path)
-    return roots
-
-
 def _assert_no_dangerous_caps(capabilities: list[str]) -> None:
     assert_no_dangerous_caps(capabilities, backend_name="Hermes", error_type=HermesBackendError)
 
 
 def build_selection(
-    *,
-    runner_id: str,
-    requested_capabilities: list[str],
-    approve_writable_roots: list[str],
-    timeout_seconds: int,
-    readable_root: str | None,
-    write_scope_binding_id: str | None = None,
+    *, runner_id: str, requested_capabilities: list[str], approve_writable_roots: list[str],
+    timeout_seconds: int, readable_root: str | None, write_scope_binding_id: str | None = None,
 ) -> HermesBackendSelection:
-    normalized_caps = [str(item).strip() for item in requested_capabilities if str(item).strip()]
-    _assert_no_dangerous_caps(normalized_caps)
-    writable_roots = [
-        str(path)
-        for path in _resolve_roots(
-            approve_writable_roots,
-            readable_root=readable_root,
-        )
-    ]
-    effective_caps = ["read"]
-    if writable_roots:
-        if "bounded_write" not in normalized_caps:
-            raise HermesBackendError("bounded_write capability approval is required when writable roots are approved")
-        effective_caps.extend(["bounded_write", "shell_limited", "focused_tests"])
-    elif any(cap in {"bounded_write", "shell_limited", "focused_tests"} for cap in normalized_caps):
-        raise HermesBackendError("bounded write/test capabilities require at least one explicit writable root")
-    return HermesBackendSelection(
-        runner_id=runner_id,
-        capabilities=effective_caps,
-        writable_roots=writable_roots,
-        timeout_seconds=timeout_seconds,
-        readable_root=readable_root,
-        write_scope_binding_id=(
-            str(write_scope_binding_id).strip() or None
-            if write_scope_binding_id is not None
-            else None
-        ),
+    return _build_governed_selection(
+        runner_id=runner_id, requested_capabilities=requested_capabilities,
+        approve_writable_roots=approve_writable_roots, timeout_seconds=timeout_seconds,
+        readable_root=readable_root, write_scope_binding_id=write_scope_binding_id,
+        backend_name="Hermes", error_type=HermesBackendError,
     )
-
-
-
-
-
-
-
-
 
 
 class _RemoteIALOpenAIAdapter:
