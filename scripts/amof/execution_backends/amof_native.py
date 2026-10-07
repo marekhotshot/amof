@@ -31,9 +31,11 @@ from ..write_scope_proposals import (
     classify_repository_relative_scope_path,
 )
 from . import hermes_opensandbox as _shared
-from .hermes_opensandbox import (
+from .proposal_contract import (
     WRITE_SCOPE_PROPOSAL_REQUIRED,
     _manifest_repo_targets,
+    _extract_write_scope_proposal_outputs,
+    _proposal_missing_reason,
 )
 from . import context_assembly_receipt as _context_receipt
 from . import native_loop_budget as _loop_budget
@@ -2304,12 +2306,12 @@ def run(
             raw_task_findings = str(exc)
             _shared._append_event(event_log_path, "grant_enforcement_failed", error=str(exc))
 
-        write_scope_proposals, task_findings = _shared._extract_write_scope_proposal_outputs(
+        write_scope_proposals, task_findings = _extract_write_scope_proposal_outputs(
             raw_task_findings or "",
             expected_allowed_roots=expected_proposal_paths,
         )
         proposal_missing_reason = (
-            _shared._proposal_missing_reason(task_findings, "")
+            _proposal_missing_reason(task_findings, "")
             if proposal_required and not write_scope_proposals
             else None
         )

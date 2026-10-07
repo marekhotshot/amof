@@ -28,6 +28,17 @@ from ..write_scope_proposals import (
     persist_write_scope_proposals_from_result,
 )
 from .validation_closure import build_validation_summary, derive_validation_closure
+from .proposal_contract import (
+    WRITE_SCOPE_PROPOSAL_START,
+    WRITE_SCOPE_PROPOSAL_END,
+    WRITE_SCOPE_PROPOSAL_REQUIRED,
+    WRITE_SCOPE_PROPOSAL_FIELDS,
+    _manifest_repo_targets,
+    _normalize_write_scope_proposal,
+    _extract_write_scope_proposal_outputs,
+    _extract_write_scope_proposal_output,
+    _proposal_missing_reason,
+)
 
 BACKEND_TYPE = "hermes_opensandbox"
 BACKEND_CONTRACT_VERSION = "hermes-cli-remote-ial-v1"
@@ -58,19 +69,6 @@ DANGEROUS_CAPABILITIES = {
     "tags",
     "releases",
 }
-WRITE_SCOPE_PROPOSAL_START = "AMOF_WRITE_SCOPE_PROPOSAL_JSON_START"
-WRITE_SCOPE_PROPOSAL_END = "AMOF_WRITE_SCOPE_PROPOSAL_JSON_END"
-WRITE_SCOPE_PROPOSAL_REQUIRED = "WRITE_SCOPE_PROPOSAL_REQUIRED"
-WRITE_SCOPE_PROPOSAL_FIELDS = (
-    "target_id",
-    "base_sha",
-    "allowed_roots",
-    "denied_roots",
-    "reason",
-    "expected_checks",
-    "docs_only",
-    "source_mutation",
-)
 SECRET_LIKE_TEXT_RE = re.compile(
     r"(?i)(bearer\s+[A-Za-z0-9._-]+|"
     r"(?:token|secret|password|authorization|api[_-]?key)\s*[:=]\s*['\"]?[^\s,'\"]+|"
@@ -474,15 +472,6 @@ def _build_evidence_previews(
             )
         )
     return previews
-
-
-def _proposal_missing_reason(task_findings: str, runtime_detail: str) -> str:
-    detail = task_findings or runtime_detail
-    for line in detail.splitlines():
-        text = line.strip()
-        if text:
-            return text[:500]
-    return "structured write_scope_proposal was requested but the runner did not emit one"
 
 
 def _write_terminal_result(
@@ -913,158 +902,11 @@ def _explicit_required_proposal_paths(goal: str) -> list[str]:
     return paths
 
 
-def _manifest_repo_targets(manifest: dict[str, Any]) -> list[dict[str, str]]:
-    """Every manifest repo as canonical proposal target context, in order."""
-    repos = manifest.get("repos")
-    if not isinstance(repos, list):
-        return []
-    targets: list[dict[str, str]] = []
-    for repo in repos:
-        if not isinstance(repo, dict):
-            continue
-        base_sha = str(repo.get("sha") or repo.get("branch") or "").strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{40}", base_sha):
-            base_sha = ""
-        targets.append(
-            {
-                "target_id": str(repo.get("target_id") or "").strip(),
-                "base_sha": base_sha,
-                "repository_url": str(repo.get("url") or "").strip(),
-                "workspace_path": str(repo.get("path") or "").strip(),
-                "name": str(repo.get("name") or "").strip(),
-            }
-        )
-    return targets
-
-
 def _primary_manifest_target(manifest: dict[str, Any]) -> dict[str, str]:
     targets = _manifest_repo_targets(manifest)
     return targets[0] if targets else {}
 
 
-def _normalize_write_scope_proposal(
-    value: Any,
-    *,
-    expected_allowed_roots: list[str] | None = None,
-) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    proposal = dict(value)
-    required = set(WRITE_SCOPE_PROPOSAL_FIELDS)
-    if not required.issubset(proposal):
-        return None
-    target_id = str(proposal.get("target_id") or "").strip()
-    base_sha = str(proposal.get("base_sha") or "").strip().lower()
-    reason = str(proposal.get("reason") or "").strip()
-    if not target_id or not re.fullmatch(r"[0-9a-f]{40}", base_sha) or not reason:
-        return None
-
-    def _string_list(name: str) -> list[str] | None:
-        raw = proposal.get(name)
-        if not isinstance(raw, list):
-            return None
-        if any(not isinstance(item, str) for item in raw):
-            return None
-        values = [item.strip() for item in raw]
-        if any(not item for item in values):
-            return None
-        return values
-
-    raw_allowed_roots = _string_list("allowed_roots")
-    raw_denied_roots = _string_list("denied_roots")
-    expected_checks = _string_list("expected_checks")
-    allowed_roots = (
-        [_normalize_repository_relative_scope_path(item) for item in raw_allowed_roots]
-        if raw_allowed_roots is not None
-        else None
-    )
-    denied_roots = (
-        [_normalize_repository_relative_scope_path(item) for item in raw_denied_roots]
-        if raw_denied_roots is not None
-        else None
-    )
-    docs_only = proposal.get("docs_only")
-    source_mutation = proposal.get("source_mutation")
-    if (
-        allowed_roots is None
-        or not allowed_roots
-        or any(item is None for item in allowed_roots)
-        or denied_roots is None
-        or any(item is None for item in denied_roots)
-        or expected_checks is None
-        or not isinstance(docs_only, bool)
-        or not isinstance(source_mutation, bool)
-    ):
-        return None
-    normalized_allowed_roots = [str(item) for item in allowed_roots]
-    normalized_denied_roots = [str(item) for item in denied_roots]
-    if expected_allowed_roots and not set(normalized_allowed_roots).issubset(
-        set(expected_allowed_roots)
-    ):
-        # Multi-target missions partition the explicitly required paths across
-        # per-repository proposals, so each block may carry a subset. Any root
-        # outside the mission's explicit requirement still fails closed.
-        return None
-    proposal["target_id"] = target_id
-    proposal["base_sha"] = base_sha
-    proposal["reason"] = reason
-    proposal["allowed_roots"] = normalized_allowed_roots
-    proposal["denied_roots"] = normalized_denied_roots
-    proposal["expected_checks"] = expected_checks
-    proposal["docs_only"] = docs_only
-    proposal["source_mutation"] = source_mutation
-    return proposal
-
-
-def _extract_write_scope_proposal_outputs(
-    text: str,
-    *,
-    expected_allowed_roots: list[str] | None = None,
-) -> tuple[list[dict[str, Any]], str]:
-    """Extract every valid proposal block (multi-target missions emit one
-    block per target repository). Duplicate target_ids keep the first block.
-    Returns (proposals, prose summary with the blocks removed)."""
-    pattern = re.compile(
-        rf"{WRITE_SCOPE_PROPOSAL_START}\s*(\{{.*?\}})\s*{WRITE_SCOPE_PROPOSAL_END}",
-        re.DOTALL,
-    )
-    proposals: list[dict[str, Any]] = []
-    seen_target_ids: set[str] = set()
-    summary_parts: list[str] = []
-    cursor = 0
-    for match in pattern.finditer(text):
-        summary_parts.append(text[cursor : match.start()])
-        cursor = match.end()
-        try:
-            parsed = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            parsed = None
-        proposal = _normalize_write_scope_proposal(
-            parsed,
-            expected_allowed_roots=expected_allowed_roots,
-        )
-        if proposal is None:
-            continue
-        target_id = str(proposal.get("target_id") or "")
-        if target_id in seen_target_ids:
-            continue
-        seen_target_ids.add(target_id)
-        proposals.append(proposal)
-    summary_parts.append(text[cursor:])
-    summary = "".join(summary_parts).strip()
-    return proposals, summary
-
-
-def _extract_write_scope_proposal_output(
-    text: str,
-    *,
-    expected_allowed_roots: list[str] | None = None,
-) -> tuple[dict[str, Any] | None, str]:
-    proposals, summary = _extract_write_scope_proposal_outputs(
-        text,
-        expected_allowed_roots=expected_allowed_roots,
-    )
-    return (proposals[0] if proposals else None), summary
 def _build_prompt(
     goal: str,
     selection: HermesBackendSelection,
