@@ -1,7 +1,7 @@
 """AMOF Native Agent Runtime — first-party governed execution backend.
 
-Own agent loop, tools, write enforcement, and model adapter. Reuses shared
-Hermes helpers only for result envelope writing and changed_paths accounting.
+Own agent loop, tools, write enforcement, and model adapter. AMOF-owned
+contracts and runtime helpers are shared without importing another adapter.
 """
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ from ..write_scope_proposals import (
     _normalize_repository_relative_scope_path,
     classify_repository_relative_scope_path,
 )
-from . import hermes_opensandbox as _shared
 from .backend_identity import runner_backend_type
+from .runtime_utils import safe_run_id, infer_validation_status
 from .runtime_governance import (
     FUTURE_ISOLATION_MODELS,
     SUPPORTED_CAPABILITIES,
@@ -172,7 +172,7 @@ def _now_iso() -> str:
 
 
 def _safe_id(value: str) -> str:
-    return _shared._safe_id(value)
+    return safe_run_id(value, fallback="native-run")
 
 
 def is_amof_native_runner(record: dict[str, Any]) -> bool:
@@ -2397,7 +2397,7 @@ def run(
             )
             continue
 
-        validation_status = _shared._infer_validation_status(task_findings)
+        validation_status = infer_validation_status(task_findings)
         if status == "completed" and validation_status == "failed":
             status = "failed"
             stop_reason = "validation_failed"

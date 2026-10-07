@@ -29,6 +29,7 @@ from ..write_scope_proposals import (
 )
 from .validation_closure import build_validation_summary, derive_validation_closure
 from .backend_identity import runner_backend_type
+from .runtime_utils import safe_run_id, infer_validation_status as _infer_validation_status
 from .runtime_governance import (
     FUTURE_ISOLATION_MODELS,
     SUPPORTED_CAPABILITIES,
@@ -127,8 +128,7 @@ class HermesBackendSelection:
 
 
 def _safe_id(value: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
-    return normalized[:96] or "hermes-run"
+    return safe_run_id(value, fallback="hermes-run")
 
 
 def _runtime_root_from_env(name: str, default: Path) -> Path:
@@ -1256,21 +1256,3 @@ def _runtime_summary_text(
     )
 
 
-def _infer_validation_status(final_text: str) -> str:
-    lowered = final_text.lower()
-    failure_markers = (
-        "failed (failures=",
-        "failed (errors=",
-        "traceback (most recent call last)",
-        "assertionerror",
-        "\nfail:",
-        "\nerror:",
-        "the test ran, but it did not",
-        "resulting in a failure",
-    )
-    if any(marker in lowered for marker in failure_markers):
-        return "failed"
-    success_markers = ("ran 1 test", "\nok", "validation_ok")
-    if any(marker in lowered for marker in success_markers):
-        return "passed"
-    return "not_run"
