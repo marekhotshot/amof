@@ -15,6 +15,7 @@ from typing import Any, Optional
 from ..app_paths import ensure_app_roots, get_app_paths
 from ..commands import agent_cmd
 from ..execution_backends import amof_native, claude_code, cursor_agent, hermes_opensandbox
+from ..execution_backends.backend_identity import runner_backend_type
 from ..manifest import list_available_ecosystems, load_manifest
 from ..state import get_state
 from ..utils import get_ecosystem_from_branch, get_ecosystem_from_path, get_git_toplevel
@@ -2240,7 +2241,7 @@ def _execute_agent_from_handoff(
                     result_payload.setdefault("backend", "amof_builtin_code")
         else:
             runner_record = _load_runner_record(runner_id)
-            backend = hermes_opensandbox.runner_backend_type(runner_record)
+            backend = runner_backend_type(runner_record)
             dispatch_backends = {
                 hermes_opensandbox.BACKEND_TYPE: hermes_opensandbox,
                 claude_code.BACKEND_TYPE: claude_code,
