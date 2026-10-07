@@ -88,5 +88,3 @@ def _finish_reason(stop_reason: Any, tool_calls: list[dict[str, Any]]) -> str:
     if normalized in {"max_tokens", "length"}:
         return "length"
     return "stop"
-
-

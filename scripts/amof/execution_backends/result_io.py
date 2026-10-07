@@ -206,5 +206,3 @@ def _attach_studio_run(
         session_path=str(run_dir),
         output_path=str(result_path),
     )
-
-

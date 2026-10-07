@@ -1165,5 +1165,3 @@ def _runtime_summary_text(
         f"stop_reason={stop_reason}; {findings_state}. "
         "Authoritative runtime metadata is recorded in this AgentRunResult envelope."
     )
-
-

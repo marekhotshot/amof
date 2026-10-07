@@ -131,5 +131,3 @@ def _restore_read_only_paths(workspace: Path, paths: list[str]) -> list[str]:
                 shutil.rmtree(target, ignore_errors=True)
                 restored.append(rel_path)
     return sorted(dict.fromkeys(restored))
-
-

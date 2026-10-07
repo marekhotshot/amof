@@ -293,5 +293,3 @@ def _manifest_targets_for_prompt(
         )
         annotated.append(item)
     return annotated
-
-
