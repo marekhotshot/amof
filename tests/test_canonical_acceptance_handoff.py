@@ -35,7 +35,7 @@ def observation(*, code=0, stdout=SHA + "\n"):
 def backend_result(**extra):
     return {"result_kind": "agent_run_result", "contract_version": "agent-run-v1",
             "schema_version": 1, "status": "completed", "session_id": "run-1", "exit_code": 0,
-            "stop_reason": "completed", "backend": "hermes_opensandbox",
+            "stop_reason": "completed", "backend": "hermes_opensandbox", "fallback_used": False,
             "final_text": "tests passed", "validation_summary": {"acceptance_state": "PASS"},
             **extra}
 

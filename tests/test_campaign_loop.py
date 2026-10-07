@@ -134,6 +134,15 @@ class CampaignLoopTests(unittest.TestCase):
         self._write_result("handoff-one", backend="hermes_opensandbox")
         self.assertEqual(self._advance()["reason"], "backend_provenance_mismatch")
 
+    def test_missing_fallback_provenance_stops(self):
+        self._write_result("handoff-one")
+        path = Path(self.statuses["handoff-one"]["canonical_result_path"])
+        body = json.loads(path.read_text())
+        body.pop("fallback_used")
+        path.write_text(json.dumps(body))
+        self.statuses["handoff-one"]["result_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.assertEqual(self._advance()["reason"], "backend_provenance_mismatch")
+
     def test_write_scope_block_stops_even_with_acceptance_pass(self):
         self._write_result("handoff-one", status="blocked", stop_reason="WRITE_SCOPE_PROPOSAL_REQUIRED")
         self.assertEqual(self._advance()["reason"], "WRITE_SCOPE_PROPOSAL_REQUIRED")

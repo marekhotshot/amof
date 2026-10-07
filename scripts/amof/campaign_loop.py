@@ -168,7 +168,7 @@ def _advance_campaign_unlocked(
         state.update(status="BLOCKED", reason=f"handoff_result_unavailable: {exc}")
         _save(path, state)
         return state
-    if result.get("backend") != current["requested_backend"] or result.get("fallback_used") is True:
+    if result.get("backend") != current["requested_backend"] or result.get("fallback_used") is not False:
         state.update(status="BLOCKED", reason="backend_provenance_mismatch")
     elif status.get("status") not in {"completed", "finalized"} or result.get("status") != "completed" or result.get("stop_reason") != "completed":
         state.update(status="BLOCKED", reason=str(result.get("stop_reason") or status.get("status") or "slice_incomplete"))
