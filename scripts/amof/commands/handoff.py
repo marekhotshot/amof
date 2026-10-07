@@ -16,6 +16,7 @@ from ..app_paths import ensure_app_roots, get_app_paths
 from ..commands import agent_cmd
 from ..execution_backends import amof_native, claude_code, cursor_agent, hermes_opensandbox
 from ..execution_backends.backend_identity import runner_backend_type
+from ..canonical_acceptance import project_runtime_acceptance, authoritative_acceptance_state
 from ..manifest import list_available_ecosystems, load_manifest
 from ..state import get_state
 from ..utils import get_ecosystem_from_branch, get_ecosystem_from_path, get_git_toplevel
@@ -1172,10 +1173,40 @@ def _write_execution_state(state: HandoffExecutionState) -> Path:
     )
 
 
-def _write_execution_result(handoff_id: str, result: dict[str, Any]) -> Path:
+def _acceptance_evidence_dir(handoff_id: str) -> Path:
+    return _handoff_root_dir() / "evidence" / handoff_id
+
+
+def _write_execution_result(
+    handoff_id: str, result: dict[str, Any], *,
+    sealed_acceptance: dict[str, Any] | None = None,
+    runtime_acceptance_receipt: Path | None = None,
+) -> Path:
+    body = dict(result)
+    # Backend JSON is never an acceptance authority. The trusted parent must
+    # supply the sealed definition and receipt separately from this payload.
+    for field in ("acceptance_observation", "tests_executed"):
+        body.pop(field, None)
+    if sealed_acceptance is not None:
+        durable_receipt: Path | None = None
+        if runtime_acceptance_receipt is not None and runtime_acceptance_receipt.is_file():
+            durable_dir = _ensure_operator_only_dir(_acceptance_evidence_dir(handoff_id))
+            durable_receipt = durable_dir / "acceptance-observation.json"
+            raw = runtime_acceptance_receipt.read_bytes()
+            fd = os.open(durable_receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(raw)
+        body = project_runtime_acceptance(
+            body, sealed_definition=sealed_acceptance, receipt_path=durable_receipt,
+        )
+    elif isinstance(body.get("validation_summary"), dict) and body["validation_summary"].get("acceptance_state") == "PASS":
+        body["validation_summary"] = {
+            "status": "not_run", "acceptance_state": "UNVERIFIED",
+            "reason": "runtime-owned acceptance observation is absent",
+        }
     return _write_operator_only_json(
         _handoff_results_dir() / f"{handoff_id}.json",
-        result,
+        body,
     )
 
 
@@ -1842,6 +1873,13 @@ def _handoff_status_payload(
         "approved_capabilities": list((result or {}).get("approved_capabilities") or []),
         "effective_capabilities": list((result or {}).get("effective_capabilities") or []),
         "changed_paths": list((result or {}).get("changed_paths") or []),
+        "acceptance_state": authoritative_acceptance_state(
+            result or {}, evidence_root=_acceptance_evidence_dir(handoff_id),
+        ),
+        "tests_executed": list((result or {}).get("tests_executed") or []),
+        "acceptance_evidence_ref": _optional_text(
+            ((result or {}).get("acceptance_observation") or {}).get("evidence_ref")
+        ),
         "latest_event": run_info.get("latest_event"),
         "recovery_boundary": (
             "result_missing"
