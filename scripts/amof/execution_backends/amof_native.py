@@ -32,6 +32,7 @@ from ..write_scope_proposals import (
 )
 from . import hermes_opensandbox as _shared
 from .backend_identity import runner_backend_type
+from .result_io import _append_event, _write_runtime_log, _write_terminal_result, _attach_studio_run
 from .proposal_contract import (
     WRITE_SCOPE_PROPOSAL_REQUIRED,
     _manifest_repo_targets,
@@ -1061,7 +1062,7 @@ def _execute_scripted_loop(
             arguments = step.get("arguments") if isinstance(step.get("arguments"), dict) else {}
             output = tools.dispatch_tool(name, arguments)
             findings.append(output)
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "tool_call",
                 name=name,
@@ -1244,7 +1245,7 @@ def _emit_context_assembly_receipt(
             prompt_tokens_reported=prompt_tokens_reported,
         )
         if event_log_path is not None:
-            _shared._append_event(
+            _append_event(
                 Path(event_log_path),
                 "context_assembly_receipt_written",
                 call_index=int(call_index),
@@ -1253,7 +1254,7 @@ def _emit_context_assembly_receipt(
     except Exception as exc:
         if event_log_path is not None:
             try:
-                _shared._append_event(
+                _append_event(
                     Path(event_log_path),
                     "context_assembly_receipt_failed",
                     call_index=int(call_index),
@@ -1634,7 +1635,7 @@ def _run_model_loop(
         model_turn_id = f"{run_key}:turn:{turn_number}"
         # Native does not auto-retry timed-out model calls; attempt is always 1 per turn.
         attempt_id = f"{model_turn_id}:attempt:1"
-        _shared._append_event(
+        _append_event(
             event_log_path,
             "model_turn",
             model_turn_id=model_turn_id,
@@ -1661,7 +1662,7 @@ def _run_model_loop(
         if read_stall_gate and repeated_reads_since_write >= 6:
             write_or_checkpoint_turn = True
             active_tools = [spec for spec in tool_specs if spec["function"]["name"] in {"write_file", "replace_text"}]
-            _shared._append_event(event_log_path, "workspace_read_stall_gate",
+            _append_event(event_log_path, "workspace_read_stall_gate",
                                   at_turn=turn_number,
                                   repeated_reads=repeated_reads_since_write)
         if budget_state.synthesis_required:
@@ -1674,7 +1675,7 @@ def _run_model_loop(
                     }
                 )
                 budget_state.synthesis_consumed = True
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "loop_budget_synthesis_required",
                     at_turn=turn_number,
@@ -1700,7 +1701,7 @@ def _run_model_loop(
                 call_index=call_index,
             )
         except AmofNativeTimeoutError as exc:
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "model_turn_timeout",
                 model_turn_id=exc.model_turn_id or model_turn_id,
@@ -1737,7 +1738,7 @@ def _run_model_loop(
             "provider_receipt_ref": call_usage.get("provider_receipt_ref"),
         }
         acc.setdefault("calls", []).append(call_record)
-        _shared._append_event(
+        _append_event(
             event_log_path,
             "model_call_usage",
             model_turn_id=model_turn_id,
@@ -1768,7 +1769,7 @@ def _run_model_loop(
         tool_calls = message.get("tool_calls")
         if budget_state.synthesis_required and isinstance(tool_calls, list) and tool_calls:
             stop = _loop_budget.STOP_SYNTHESIS_NOT_COMPLETED
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "loop_budget_synthesis_not_completed",
                 at_turn=turn_number,
@@ -1811,7 +1812,7 @@ def _run_model_loop(
                     output = f"ERROR: {exc}"
                     findings.append(output)
                     acc["tool_calls"] = int(acc.get("tool_calls") or 0) + 1
-                    _shared._append_event(
+                    _append_event(
                         event_log_path,
                         "tool_call",
                         name=name,
@@ -1852,7 +1853,7 @@ def _run_model_loop(
                         read_counts[read_key] = read_counts.get(read_key, 0) + 1
                 if first_edit_path and turn_number == 1 and name == "replace_text":
                     first_edit_completed = True
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "tool_call",
                     name=name,
@@ -1893,7 +1894,7 @@ def _run_model_loop(
             next_turn = turn_number + 1
             if next_turn > absolute:
                 stop = _loop_budget.STOP_ABSOLUTE_TURN_LIMIT
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "loop_budget_absolute_stop",
                     at_turn=turn_number,
@@ -1907,7 +1908,7 @@ def _run_model_loop(
                     return "failed", "timeout", "\n".join(findings)
                 if budget_state.synthesis_required:
                     stop = _loop_budget.STOP_SYNTHESIS_NOT_COMPLETED
-                    _shared._append_event(
+                    _append_event(
                         event_log_path,
                         "loop_budget_synthesis_not_completed",
                         at_turn=turn_number,
@@ -1919,7 +1920,7 @@ def _run_model_loop(
                     outcome = _loop_budget.decide_readonly_synthesis(
                         budget_state, at_turn=turn_number
                     )
-                    _shared._append_event(
+                    _append_event(
                         event_log_path,
                         "loop_budget_readonly_synthesis_decision",
                         at_turn=turn_number,
@@ -1948,7 +1949,7 @@ def _run_model_loop(
                     at_turn=turn_number,
                     require_material=not workspace_write_progress,
                 )
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "loop_budget_extension_decision",
                     **{
@@ -1978,7 +1979,7 @@ def _run_model_loop(
             return "failed", "first_edit_not_requested", content or "\n".join(findings)
         if budget_state.synthesis_required and not content:
             stop = _loop_budget.STOP_SYNTHESIS_NOT_COMPLETED
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "loop_budget_synthesis_not_completed",
                 at_turn=turn_number,
@@ -2056,8 +2057,8 @@ def _blocked_result(
     )
     if extra_evidence:
         result["evidence_refs"].update(extra_evidence)
-    _shared._append_event(event_log_path, "run_blocked", reason=reason)
-    return _shared._write_terminal_result(
+    _append_event(event_log_path, "run_blocked", reason=reason)
+    return _write_terminal_result(
         result_path=result_path,
         event_log_path=event_log_path,
         runtime_log_path=runtime_log_path,
@@ -2096,7 +2097,7 @@ def run(
     effective_provider = _effective_provider(model)
     transport = _inference_transport()
 
-    _shared._append_event(
+    _append_event(
         event_log_path,
         "run_created",
         run_id=run_id,
@@ -2105,7 +2106,7 @@ def run(
         backend=BACKEND_TYPE,
         studio_session_id=studio_session_id,
     )
-    _shared._attach_studio_run(
+    _attach_studio_run(
         studio_session_id=studio_session_id,
         run_id=run_id,
         event_log_path=event_log_path,
@@ -2291,7 +2292,7 @@ def run(
             stop_reason = STOP_REASON_REMOTE_IAL_TOTAL_TIMEOUT
             exit_code = 124
             raw_task_findings = str(exc)
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 STOP_REASON_REMOTE_IAL_TOTAL_TIMEOUT,
                 error=str(exc),
@@ -2305,7 +2306,7 @@ def run(
             stop_reason = "grant_enforcement_failed"
             exit_code = 1
             raw_task_findings = str(exc)
-            _shared._append_event(event_log_path, "grant_enforcement_failed", error=str(exc))
+            _append_event(event_log_path, "grant_enforcement_failed", error=str(exc))
 
         write_scope_proposals, task_findings = _extract_write_scope_proposal_outputs(
             raw_task_findings or "",
@@ -2326,7 +2327,7 @@ def run(
             stop_reason = "write_outside_grant"
             exit_code = 1
             task_findings = f"Modified paths outside grant: {', '.join(outside)}"
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "write_outside_grant",
                 changed_paths=list(changed),
@@ -2340,7 +2341,7 @@ def run(
                 status = "failed"
                 stop_reason = "read_only_mutation_detected"
                 exit_code = 1
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "read_only_mutation_blocked",
                     changed_paths=list(changed),
@@ -2348,7 +2349,7 @@ def run(
                 )
                 changed = []
                 break
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "read_only_mutation_replan",
                 changed_paths=list(changed),
@@ -2375,7 +2376,7 @@ def run(
 
         if status == "completed" and proposal_required and not write_scope_proposals:
             if not proposal_replan_used:
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "proposal_contract_replan",
                     reason=proposal_missing_reason or "structured proposal missing",
@@ -2403,7 +2404,7 @@ def run(
         run_id=run_id,
         task_findings_available=bool(task_findings),
     )
-    _shared._write_runtime_log(runtime_log_path, task_findings or final_text)
+    _write_runtime_log(runtime_log_path, task_findings or final_text)
 
     result = _result_payload(
         run_id=run_id,
@@ -2438,7 +2439,7 @@ def run(
     )
     stop_reason = str(result.get("stop_reason") or stop_reason)
     status = str(result.get("status") or status)
-    _shared._write_terminal_result(
+    _write_terminal_result(
         result_path=result_path,
         event_log_path=event_log_path,
         runtime_log_path=runtime_log_path,
@@ -2446,7 +2447,7 @@ def run(
         reason=stop_reason,
         started_at=started_at,
     )
-    _shared._attach_studio_run(
+    _attach_studio_run(
         studio_session_id=studio_session_id,
         run_id=run_id,
         event_log_path=event_log_path,
