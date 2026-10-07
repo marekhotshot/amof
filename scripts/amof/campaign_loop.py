@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import fcntl
 from pathlib import Path
 from typing import Any, Callable
 
@@ -115,7 +116,7 @@ def _candidate(state: dict[str, Any], proposal: dict[str, Any]) -> dict[str, Any
     return normalized
 
 
-def advance_campaign(
+def _advance_campaign_unlocked(
     path: Path, *, propose_next: Callable[[dict[str, Any]], dict[str, Any] | None],
     dispatch_handoff: Callable[[dict[str, Any]], str],
     observe_progress: Callable[[dict[str, Any], dict[str, Any]], dict[str, str]],
@@ -203,6 +204,23 @@ def advance_campaign(
                     state.update(status="CONTINUE", reason="accepted_slice_progress", current_slice=None)
     _save(path, state)
     return state
+
+
+def advance_campaign(
+    path: Path, *, propose_next: Callable[[dict[str, Any]], dict[str, Any] | None],
+    dispatch_handoff: Callable[[dict[str, Any]], str],
+    observe_progress: Callable[[dict[str, Any], dict[str, Any]], dict[str, str]],
+    load_status: Callable[[str], dict[str, Any]] = handoff._handoff_status_payload,
+) -> dict[str, Any]:
+    """Serialize advance calls so one campaign cannot dispatch twice at once."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path.with_suffix(".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(fd, "r+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        return _advance_campaign_unlocked(
+            path, propose_next=propose_next, dispatch_handoff=dispatch_handoff,
+            observe_progress=observe_progress, load_status=load_status,
+        )
 
 
 def run_campaign(
