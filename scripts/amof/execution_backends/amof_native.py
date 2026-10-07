@@ -32,6 +32,12 @@ from ..write_scope_proposals import (
 )
 from . import hermes_opensandbox as _shared
 from .backend_identity import runner_backend_type
+from .runtime_governance import (
+    FUTURE_ISOLATION_MODELS,
+    SUPPORTED_CAPABILITIES,
+    assert_no_dangerous_caps,
+    apply_write_scope_enforcement_if_bound,
+)
 from .prompt_contract import (
     _goal_requests_write_scope_proposal,
     _explicit_required_proposal_paths,
@@ -72,8 +78,8 @@ BACKEND_TYPE = "amof_native"
 BACKEND_CONTRACT_VERSION = "amof-native-agent-runtime-v1"
 RUNTIME_CONTRACT = "AMOF Native Agent Runtime (first-party) + model adapter"
 ISOLATION_MODEL = "runtime_owner_workspace"
-FUTURE_ISOLATION_MODELS = tuple(_shared.FUTURE_ISOLATION_MODELS)
-SUPPORTED_CAPABILITIES = tuple(_shared.SUPPORTED_CAPABILITIES)
+FUTURE_ISOLATION_MODELS = tuple(FUTURE_ISOLATION_MODELS)
+SUPPORTED_CAPABILITIES = tuple(SUPPORTED_CAPABILITIES)
 DEFAULT_MODEL = "gpt-4o-mini"
 AGENT_LABEL = "AMOF Native Agent"
 SCRIPT_PROVIDER = "amof_native_script"
@@ -417,7 +423,7 @@ def build_selection(
     target_id: str | None = None,
 ) -> AmofNativeBackendSelection:
     normalized_caps = [str(item).strip() for item in requested_capabilities if str(item).strip()]
-    _shared._assert_no_dangerous_caps(normalized_caps)
+    assert_no_dangerous_caps(normalized_caps, backend_name="AMOF Native", error_type=AmofNativeBackendError)
     workspace = (
         Path(readable_root).expanduser().resolve(strict=False)
         if readable_root
@@ -2455,7 +2461,7 @@ def run(
         loop_budget=loop_budget_telemetry or None,
         native_write_receipts=tools.write_receipts,
     )
-    result = _shared._apply_write_scope_enforcement_if_bound(
+    result = apply_write_scope_enforcement_if_bound(
         result,
         selection=selection,
         run_id=run_id,

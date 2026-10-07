@@ -29,6 +29,13 @@ from ..write_scope_proposals import (
 )
 from .validation_closure import build_validation_summary, derive_validation_closure
 from .backend_identity import runner_backend_type
+from .runtime_governance import (
+    FUTURE_ISOLATION_MODELS,
+    SUPPORTED_CAPABILITIES,
+    DANGEROUS_CAPABILITIES,
+    assert_no_dangerous_caps,
+    apply_write_scope_enforcement_if_bound as _apply_write_scope_enforcement_if_bound,
+)
 from .prompt_contract import (
     _goal_requests_write_scope_proposal,
     _explicit_required_proposal_paths,
@@ -82,9 +89,7 @@ BACKEND_TYPE = "hermes_opensandbox"
 BACKEND_CONTRACT_VERSION = "hermes-cli-remote-ial-v1"
 RUNTIME_CONTRACT = "Hermes CLI + Remote IAL"
 ISOLATION_MODEL = "runtime_owner_workspace"
-FUTURE_ISOLATION_MODELS = ("session_execution_environment", "run_execution_environment")
 REMOTE_IAL_PROVIDER = "remote-ial"
-SUPPORTED_CAPABILITIES = ("read", "bounded_write", "shell_limited", "focused_tests")
 DIRECT_PROVIDER_ENV_NAMES = (
     "OPENROUTER_API_KEY",
     "OPENROUTER_BASE_URL",
@@ -93,21 +98,6 @@ DIRECT_PROVIDER_ENV_NAMES = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_TOKEN",
 )
-DANGEROUS_CAPABILITIES = {
-    "kubernetes_mutation",
-    "deployment",
-    "deploy",
-    "secrets",
-    "secret_access",
-    "network_unrestricted",
-    "unrestricted_network",
-    "push",
-    "promotion",
-    "promote",
-    "tags",
-    "releases",
-}
-
 class HermesBackendError(RuntimeError):
     """Raised when the Hermes compatibility backend cannot be dispatched truthfully."""
 
@@ -442,9 +432,7 @@ def _resolve_roots(values: list[str], *, readable_root: str | None) -> list[Path
 
 
 def _assert_no_dangerous_caps(capabilities: list[str]) -> None:
-    dangerous = sorted({cap for cap in capabilities if cap in DANGEROUS_CAPABILITIES})
-    if dangerous:
-        raise HermesBackendError(f"dangerous capabilities are not available for Hermes backend: {', '.join(dangerous)}")
+    assert_no_dangerous_caps(capabilities, backend_name="Hermes", error_type=HermesBackendError)
 
 
 def build_selection(
@@ -1118,36 +1106,6 @@ def run(
         status=status,
     )
     return result
-
-
-def _apply_write_scope_enforcement_if_bound(
-    result: dict[str, Any],
-    *,
-    selection: HermesBackendSelection,
-    run_id: str,
-    workspace: Path,
-) -> dict[str, Any]:
-    """Wave 4: when a Binding is active for this run, enforce + attach MutationReceipt."""
-    from ..write_scope_bindings import list_bindings, load_binding
-    from ..write_scope_enforcement import apply_enforcement_to_result
-
-    binding = None
-    binding_id = getattr(selection, "write_scope_binding_id", None)
-    if binding_id:
-        try:
-            binding = load_binding(str(binding_id))
-        except Exception:
-            binding = None
-    if binding is None:
-        active = list_bindings(run_id=run_id, status="active")
-        binding = active[0] if active else None
-    if binding is None:
-        return result
-    return apply_enforcement_to_result(
-        result,
-        binding=binding,
-        workspace_root=workspace,
-    )
 
 
 def _result_payload(
