@@ -32,6 +32,16 @@ from ..write_scope_proposals import (
 )
 from . import hermes_opensandbox as _shared
 from .backend_identity import runner_backend_type
+from .prompt_contract import (
+    _goal_requests_write_scope_proposal,
+    _explicit_required_proposal_paths,
+    _primary_manifest_target,
+    _build_prompt,
+    _safe_tool_root_segment,
+    _relative_under_workspace,
+    _tool_visible_relative_root,
+    _manifest_targets_for_prompt,
+)
 from .remote_ial_mapping import (
     _finite_number,
     _extract_remote_ial_messages,
@@ -2220,15 +2230,15 @@ def run(
             deadline = time.monotonic() + float(selection.timeout_seconds)
 
     proposal_required = (
-        _shared._goal_requests_write_scope_proposal(goal)
+        _goal_requests_write_scope_proposal(goal)
         and not selection.writable_roots
     )
-    expected_proposal_paths = _shared._explicit_required_proposal_paths(goal)
+    expected_proposal_paths = _explicit_required_proposal_paths(goal)
     write_scope_proposals: list[dict[str, Any]] = []
     proposal_missing_reason: str | None = None
     proposal_replan_used = False
     read_only_replan_used = False
-    prompt = _shared._build_prompt(
+    prompt = _build_prompt(
         goal,
         selection,
         workspace,
@@ -2370,7 +2380,7 @@ def run(
                 restored_paths=list(restored_paths),
             )
             read_only_replan_used = True
-            prompt = _shared._build_prompt(
+            prompt = _build_prompt(
                 goal,
                 selection,
                 workspace,
@@ -2396,7 +2406,7 @@ def run(
                     reason=proposal_missing_reason or "structured proposal missing",
                 )
                 proposal_replan_used = True
-                prompt = _shared._build_prompt(
+                prompt = _build_prompt(
                     goal,
                     selection,
                     workspace,
