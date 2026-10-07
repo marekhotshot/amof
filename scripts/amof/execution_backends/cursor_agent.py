@@ -26,6 +26,7 @@ from typing import Any, Sequence
 
 from ..app_paths import runs_dir
 from . import hermes_opensandbox as _shared
+from .backend_identity import runner_backend_type
 from .hermes_opensandbox import (
     HermesBackendSelection,
     WRITE_SCOPE_PROPOSAL_REQUIRED,
@@ -94,7 +95,7 @@ def _setting_sources() -> tuple[str, ...]:
 
 
 def is_cursor_agent_runner(record: dict[str, Any]) -> bool:
-    return _shared.runner_backend_type(record) == BACKEND_TYPE
+    return runner_backend_type(record) == BACKEND_TYPE
 
 
 def _probe_sdk_import() -> dict[str, Any]:
@@ -175,7 +176,7 @@ def doctor_record(record: dict[str, Any]) -> dict[str, Any]:
     ]
     return {
         "runner_id": str(record.get("runner_id") or ""),
-        "backend_type": _shared.runner_backend_type(record),
+        "backend_type": runner_backend_type(record),
         "backend_contract_version": health.get("backend_contract_version"),
         "runtime_contract": health.get("runtime_contract"),
         "isolation_model": health.get("isolation_model"),

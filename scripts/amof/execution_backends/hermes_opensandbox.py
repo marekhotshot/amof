@@ -28,6 +28,7 @@ from ..write_scope_proposals import (
     persist_write_scope_proposals_from_result,
 )
 from .validation_closure import build_validation_summary, derive_validation_closure
+from .backend_identity import runner_backend_type
 from .proposal_contract import (
     WRITE_SCOPE_PROPOSAL_START,
     WRITE_SCOPE_PROPOSAL_END,
@@ -204,15 +205,6 @@ def _remote_ial_health(config: RemoteIALConfig) -> dict[str, Any]:
         "selected_model": body.get("selected_model"),
         "provider_configured": bool(body.get("provider_configured")),
     }
-
-
-def runner_backend_type(record: dict[str, Any]) -> str:
-    explicit = str(record.get("backend") or record.get("backend_type") or "").strip()
-    if explicit:
-        return explicit
-    if str(record.get("driver") or "").strip().lower() == "hermes":
-        return BACKEND_TYPE
-    return "planning_only"
 
 
 def is_hermes_runner(record: dict[str, Any]) -> bool:
