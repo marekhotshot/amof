@@ -32,6 +32,12 @@ from ..write_scope_proposals import (
 )
 from . import hermes_opensandbox as _shared
 from .backend_identity import runner_backend_type
+from .remote_ial_mapping import (
+    _finite_number,
+    _extract_remote_ial_messages,
+    _remote_ial_tool_to_openai,
+    _finish_reason,
+)
 from .workspace_state import (
     _workspace_for,
     _workspace_repo_roots,
@@ -1185,7 +1191,7 @@ def _chat_endpoint_and_headers() -> tuple[str, dict[str, str], str]:
 def _openai_compatible_from_remote_ial(remote: dict[str, Any], *, model: str) -> dict[str, Any]:
     """Normalize Remote IAL /v1/ial/chat into an OpenAI-like chat.completion object."""
     tool_calls = [
-        _shared._remote_ial_tool_to_openai(item, index)
+        _remote_ial_tool_to_openai(item, index)
         for index, item in enumerate(remote.get("tool_calls") or [], start=1)
         if isinstance(item, dict)
     ]
@@ -1197,7 +1203,7 @@ def _openai_compatible_from_remote_ial(remote: dict[str, Any], *, model: str) ->
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
     }
-    estimated_cost = _shared._finite_number(remote.get("estimated_cost"))
+    estimated_cost = _finite_number(remote.get("estimated_cost"))
     if estimated_cost is not None:
         usage["estimated_cost"] = estimated_cost
     if remote.get("cost_status") is not None:
@@ -1212,7 +1218,7 @@ def _openai_compatible_from_remote_ial(remote: dict[str, Any], *, model: str) ->
             {
                 "index": 0,
                 "message": message,
-                "finish_reason": _shared._finish_reason(remote.get("stop_reason"), tool_calls),
+                "finish_reason": _finish_reason(remote.get("stop_reason"), tool_calls),
             }
         ],
         "usage": usage,
@@ -1369,7 +1375,7 @@ def _chat_completion(
     timeout_seconds = native_ial_timeout_seconds()
     max_tokens = native_ial_max_tokens()
     if transport == TRANSPORT_REMOTE_IAL:
-        system, remote_messages = _shared._extract_remote_ial_messages(list(messages))
+        system, remote_messages = _extract_remote_ial_messages(list(messages))
         payload = {
             "system": system,
             "messages": remote_messages,
@@ -1727,9 +1733,9 @@ def _run_model_loop(
         _runtime_usage.add_token_field(acc, "completion_tokens", completion_tokens)
         acc["model_calls"] = int(acc.get("model_calls") or 0) + 1
         actual_model = str(response.get("model") or model)
-        cost = _shared._finite_number(call_usage.get("estimated_cost"))
+        cost = _finite_number(call_usage.get("estimated_cost"))
         if cost is not None:
-            prior = _shared._finite_number(acc.get("estimated_cost_usd"))
+            prior = _finite_number(acc.get("estimated_cost_usd"))
             acc["estimated_cost_usd"] = (prior or 0.0) + float(cost)
         if call_usage.get("cost_status") is not None:
             acc["cost_status"] = call_usage.get("cost_status")
@@ -2594,7 +2600,7 @@ def _result_payload(
         ],
         raw_usage_refs=["evidence_refs.remote_ial_usage"],
     )
-    spent = _shared._finite_number(acc.get("estimated_cost_usd")) or 0.0
+    spent = _finite_number(acc.get("estimated_cost_usd")) or 0.0
     return {
         "result_kind": "agent_run_result",
         "contract_version": "agent-run-v1",
