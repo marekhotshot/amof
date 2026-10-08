@@ -86,6 +86,30 @@ def create_hermes_decoupling_campaign(path: Path, *, campaign_id: str, objective
     )
 
 
+def create_cloud_hermes_continuation_campaign(path: Path, *, campaign_id: str) -> dict[str, Any]:
+    """Fixed read-only cloud proof; distinct from Native/Hermes decoupling."""
+    objectives = (
+        ("pinned-checkout", "Verify execution occurs against the pinned repository checkout."),
+        ("stable-head", "Verify the repository remains on the same pinned HEAD after the first governed slice."),
+    )
+    plan = [{
+        "slice_id": f"{campaign_id}-slice-{index}",
+        "parent_campaign_id": campaign_id,
+        "scope_tag": scope,
+        "requested_backend": "hermes_opensandbox",
+        "requested_capabilities": ["read"],
+        "objective": goal,
+        "expected_validation": "repo-head",
+    } for index, (scope, goal) in enumerate(objectives, start=1)]
+    return create_campaign(
+        path, campaign_id=campaign_id,
+        objective="Prove two governed read-only cloud slices continue on authoritative runtime acceptance.",
+        allowed_backends=["hermes_opensandbox"],
+        allowed_scope_tags=[scope for scope, _ in objectives],
+        slice_plan=plan, max_slices=2,
+    )
+
+
 def load_campaign(path: Path) -> dict[str, Any]:
     state = json.loads(path.read_text(encoding="utf-8"))
     if state.get("schema") != SCHEMA:
@@ -194,11 +218,23 @@ def _advance_campaign_unlocked(
                 if state["no_progress_count"] > state["authority"]["max_no_progress"]:
                     state.update(status="BLOCKED", reason="repeated_no_progress")
                 else:
+                    remaining = len(state["completed_slices"]) + 1 < len(state["slice_plan"])
                     state["completed_slices"].append({
                         **current, "handoff_id": handoff_id, "run_id": result.get("session_id"),
                         "backend": result["backend"], "result_path": str(result_path),
                         "result_sha256": result_sha256, "acceptance_state": "PASS",
                         "progress_evidence": progress,
+                        "continuation_decision": {
+                            "decision": "CONTINUE" if remaining else "DONE",
+                            "reasons": {
+                                "authoritative_acceptance": "PASS",
+                                "backend_provenance": "valid",
+                                "scope": "within_campaign",
+                                "authority_expansion": False,
+                                "progress": "observed",
+                                "budget_remaining": remaining,
+                            },
+                        },
                     })
                     state["evidence_refs"].extend([str(result_path), progress["ref"]])
                     state.update(status="CONTINUE", reason="accepted_slice_progress", current_slice=None)

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from amof.campaign_loop import advance_campaign, create_hermes_decoupling_campaign, load_campaign, next_hermes_decoupling_slice, run_campaign
+from amof.campaign_loop import advance_campaign, create_cloud_hermes_continuation_campaign, create_hermes_decoupling_campaign, load_campaign, next_hermes_decoupling_slice, run_campaign
 from amof.commands import handoff
 from test_canonical_acceptance_handoff import definition, observation, backend_result
 
@@ -88,6 +88,43 @@ class CampaignLoopTests(unittest.TestCase):
         )
         self.assertEqual(terminal["status"], "DONE")
         self.assertEqual(dispatched, ["amof_native", "hermes_opensandbox"])
+
+    def test_cloud_hermes_plan_continues_with_persisted_decision(self):
+        self.path.unlink()
+        create_cloud_hermes_continuation_campaign(self.path, campaign_id="campaign-cloud")
+        self._write_result("handoff-one", backend="hermes_opensandbox")
+        self._write_result("handoff-two", backend="hermes_opensandbox")
+        dispatched = []
+        def dispatch(item):
+            dispatched.append(item["slice_id"])
+            return "handoff-one" if len(dispatched) == 1 else "handoff-two"
+        def progress(item, _result):
+            path = self.home / f"{item['scope_tag']}.txt"
+            path.write_text(item["objective"])
+            return {"ref": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        terminal = run_campaign(self.path, propose_next=next_hermes_decoupling_slice,
+                                dispatch_handoff=dispatch, observe_progress=progress,
+                                load_status=self.statuses.__getitem__)
+        self.assertEqual(terminal["status"], "DONE")
+        self.assertEqual(len(dispatched), 2)
+        self.assertEqual([item["requested_backend"] for item in terminal["completed_slices"]],
+                         ["hermes_opensandbox", "hermes_opensandbox"])
+        decision = terminal["completed_slices"][0]["continuation_decision"]
+        self.assertEqual(decision["decision"], "CONTINUE")
+        self.assertEqual(decision["reasons"]["authoritative_acceptance"], "PASS")
+        self.assertFalse(decision["reasons"]["authority_expansion"])
+        self.assertTrue(decision["reasons"]["budget_remaining"])
+
+    def test_cloud_hermes_missing_receipt_does_not_dispatch_second_slice(self):
+        self.path.unlink()
+        create_cloud_hermes_continuation_campaign(self.path, campaign_id="campaign-cloud")
+        self._write_result("handoff-one", backend="hermes_opensandbox", receipt=False, forged=True)
+        dispatched = []
+        terminal = run_campaign(self.path, propose_next=next_hermes_decoupling_slice,
+                                dispatch_handoff=lambda item: dispatched.append(item["slice_id"]) or "handoff-one",
+                                observe_progress=lambda *_: {}, load_status=self.statuses.__getitem__)
+        self.assertEqual(terminal["reason"], "authoritative_acceptance_not_pass")
+        self.assertEqual(dispatched, ["campaign-cloud-slice-1"])
 
     def test_backend_prose_and_exit_zero_without_observation_do_not_continue(self):
         self._write_result("handoff-one", receipt=False, forged=True)
