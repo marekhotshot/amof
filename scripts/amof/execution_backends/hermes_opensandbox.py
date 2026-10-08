@@ -28,14 +28,70 @@ from ..write_scope_proposals import (
     persist_write_scope_proposals_from_result,
 )
 from .validation_closure import build_validation_summary, derive_validation_closure
+from .backend_identity import runner_backend_type
+from .backend_selection import BackendSelection as HermesBackendSelection, build_selection as _build_governed_selection
+from .runtime_utils import safe_run_id, infer_validation_status as _infer_validation_status
+from .runtime_governance import (
+    FUTURE_ISOLATION_MODELS,
+    SUPPORTED_CAPABILITIES,
+    DANGEROUS_CAPABILITIES,
+    assert_no_dangerous_caps,
+    apply_write_scope_enforcement_if_bound as _apply_write_scope_enforcement_if_bound,
+)
+from .prompt_contract import (
+    _goal_requests_write_scope_proposal,
+    _explicit_required_proposal_paths,
+    _primary_manifest_target,
+    _build_prompt,
+    _safe_tool_root_segment,
+    _relative_under_workspace,
+    _tool_visible_relative_root,
+    _manifest_targets_for_prompt,
+)
+from .remote_ial_mapping import (
+    _finite_number,
+    _extract_remote_ial_messages,
+    _remote_ial_tool_to_openai,
+    _finish_reason,
+)
+from .workspace_state import (
+    _workspace_for,
+    _workspace_repo_roots,
+    _changed_paths,
+    _changed_paths_delta,
+    _read_only_unclean_workspace_message,
+    _restore_read_only_paths,
+)
+from .result_io import (
+    _now_iso,
+    _duration_ms_from_timestamps,
+    _append_event,
+    _write_runtime_log,
+    _redact_secret_like_text,
+    _preview_kind,
+    _truncate_preview,
+    _preview_payload,
+    _build_evidence_previews,
+    _write_terminal_result,
+    _attach_studio_run,
+)
+from .proposal_contract import (
+    WRITE_SCOPE_PROPOSAL_START,
+    WRITE_SCOPE_PROPOSAL_END,
+    WRITE_SCOPE_PROPOSAL_REQUIRED,
+    WRITE_SCOPE_PROPOSAL_FIELDS,
+    _manifest_repo_targets,
+    _normalize_write_scope_proposal,
+    _extract_write_scope_proposal_outputs,
+    _extract_write_scope_proposal_output,
+    _proposal_missing_reason,
+)
 
 BACKEND_TYPE = "hermes_opensandbox"
 BACKEND_CONTRACT_VERSION = "hermes-cli-remote-ial-v1"
 RUNTIME_CONTRACT = "Hermes CLI + Remote IAL"
 ISOLATION_MODEL = "runtime_owner_workspace"
-FUTURE_ISOLATION_MODELS = ("session_execution_environment", "run_execution_environment")
 REMOTE_IAL_PROVIDER = "remote-ial"
-SUPPORTED_CAPABILITIES = ("read", "bounded_write", "shell_limited", "focused_tests")
 DIRECT_PROVIDER_ENV_NAMES = (
     "OPENROUTER_API_KEY",
     "OPENROUTER_BASE_URL",
@@ -44,40 +100,6 @@ DIRECT_PROVIDER_ENV_NAMES = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_TOKEN",
 )
-DANGEROUS_CAPABILITIES = {
-    "kubernetes_mutation",
-    "deployment",
-    "deploy",
-    "secrets",
-    "secret_access",
-    "network_unrestricted",
-    "unrestricted_network",
-    "push",
-    "promotion",
-    "promote",
-    "tags",
-    "releases",
-}
-WRITE_SCOPE_PROPOSAL_START = "AMOF_WRITE_SCOPE_PROPOSAL_JSON_START"
-WRITE_SCOPE_PROPOSAL_END = "AMOF_WRITE_SCOPE_PROPOSAL_JSON_END"
-WRITE_SCOPE_PROPOSAL_REQUIRED = "WRITE_SCOPE_PROPOSAL_REQUIRED"
-WRITE_SCOPE_PROPOSAL_FIELDS = (
-    "target_id",
-    "base_sha",
-    "allowed_roots",
-    "denied_roots",
-    "reason",
-    "expected_checks",
-    "docs_only",
-    "source_mutation",
-)
-SECRET_LIKE_TEXT_RE = re.compile(
-    r"(?i)(bearer\s+[A-Za-z0-9._-]+|"
-    r"(?:token|secret|password|authorization|api[_-]?key)\s*[:=]\s*['\"]?[^\s,'\"]+|"
-    r"(?:ghp|github_pat|sk|xoxb|xoxp|xoxs|xoxa)-[A-Za-z0-9._-]+)"
-)
-
-
 class HermesBackendError(RuntimeError):
     """Raised when the Hermes compatibility backend cannot be dispatched truthfully."""
 
@@ -90,44 +112,8 @@ class RemoteIALConfig:
     timeout_seconds: float
 
 
-@dataclass(frozen=True)
-class HermesBackendSelection:
-    runner_id: str
-    capabilities: list[str]
-    writable_roots: list[str]
-    timeout_seconds: int
-    readable_root: str | None
-    write_scope_binding_id: str | None = None
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _finite_number(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
-
-
-def _duration_ms_from_timestamps(started_at: Any, completed_at: Any) -> int | None:
-    if not isinstance(started_at, str) or not isinstance(completed_at, str):
-        return None
-    try:
-        duration_ms = int(
-            (datetime.fromisoformat(completed_at) - datetime.fromisoformat(started_at)).total_seconds()
-            * 1000
-        )
-    except ValueError:
-        return None
-    return duration_ms if duration_ms >= 0 else None
-
-
 def _safe_id(value: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
-    return normalized[:96] or "hermes-run"
+    return safe_run_id(value, fallback="hermes-run")
 
 
 def _runtime_root_from_env(name: str, default: Path) -> Path:
@@ -206,15 +192,6 @@ def _remote_ial_health(config: RemoteIALConfig) -> dict[str, Any]:
         "selected_model": body.get("selected_model"),
         "provider_configured": bool(body.get("provider_configured")),
     }
-
-
-def runner_backend_type(record: dict[str, Any]) -> str:
-    explicit = str(record.get("backend") or record.get("backend_type") or "").strip()
-    if explicit:
-        return explicit
-    if str(record.get("driver") or "").strip().lower() == "hermes":
-        return BACKEND_TYPE
-    return "planning_only"
 
 
 def is_hermes_runner(record: dict[str, Any]) -> bool:
@@ -382,368 +359,38 @@ def _run_dir(run_id: str) -> Path:
     return path
 
 
-def _append_event(path: Path, event: str, **payload: Any) -> None:
-    record = {"timestamp": _now_iso(), "event": event, "event_type": event, **payload}
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
-def _write_runtime_log(path: Path, message: str) -> None:
-    path.write_text(message if message.endswith("\n") else f"{message}\n", encoding="utf-8")
 
 
-def _redact_secret_like_text(text: str) -> str:
-    return SECRET_LIKE_TEXT_RE.sub("[redacted]", text)
 
 
-def _preview_kind(path: str, text: str) -> str:
-    lowered = path.lower()
-    if lowered.endswith(".json"):
-        return "json"
-    if lowered.endswith(".jsonl"):
-        return "jsonl"
-    if lowered.endswith(".log"):
-        return "log"
-    if re.search(r"^\s*#{1,6}\s+", text, re.MULTILINE) or re.search(
-        r"^\s*[-*+]\s+", text, re.MULTILINE
-    ):
-        return "markdown"
-    return "text"
 
 
-def _truncate_preview(text: str, limit: int = 16000) -> str:
-    if len(text) <= limit:
-        return text
-    return f"{text[:limit]}\n[truncated {len(text) - limit} chars]"
 
 
-def _preview_payload(*, path: str, raw: str, load_error: str | None = None) -> dict[str, Any]:
-    sanitized = _truncate_preview(_redact_secret_like_text(raw))
-    kind = _preview_kind(path, sanitized)
-    preview_text = sanitized
-    if kind == "json":
-        try:
-            preview_text = json.dumps(json.loads(sanitized), indent=2)
-        except json.JSONDecodeError:
-            preview_text = sanitized
-    elif kind == "jsonl":
-        lines: list[str] = []
-        for line in sanitized.splitlines():
-            if not line.strip():
-                continue
-            try:
-                lines.append(json.dumps(json.loads(line), indent=2))
-            except json.JSONDecodeError:
-                lines.append(line)
-            if len(lines) >= 80:
-                break
-        preview_text = "\n\n".join(lines)
-    return {
-        "path": path,
-        "title": Path(path).stem,
-        "kind": kind,
-        "preview_text": preview_text,
-        "raw_text": sanitized,
-        "load_error": load_error,
-    }
 
 
-def _build_evidence_previews(
-    *,
-    result: dict[str, Any],
-    result_path: Path,
-    event_log_path: Path,
-    runtime_log_path: Path,
-) -> list[dict[str, Any]]:
-    previews: list[dict[str, Any]] = []
-    result_snapshot = dict(result)
-    result_snapshot.pop("evidence_previews", None)
-    previews.append(
-        _preview_payload(
-            path=str(result_path),
-            raw=json.dumps(result_snapshot, indent=2) + "\n",
-        )
-    )
-    for artifact_path in (event_log_path, runtime_log_path):
-        if not artifact_path.exists():
-            continue
-        previews.append(
-            _preview_payload(
-                path=str(artifact_path),
-                raw=artifact_path.read_text(encoding="utf-8"),
-            )
-        )
-    return previews
 
 
-def _proposal_missing_reason(task_findings: str, runtime_detail: str) -> str:
-    detail = task_findings or runtime_detail
-    for line in detail.splitlines():
-        text = line.strip()
-        if text:
-            return text[:500]
-    return "structured write_scope_proposal was requested but the runner did not emit one"
 
 
-def _write_terminal_result(
-    *,
-    result_path: Path,
-    event_log_path: Path,
-    runtime_log_path: Path,
-    result: dict[str, Any],
-    reason: str,
-    started_at: str | None = None,
-) -> dict[str, Any]:
-    if started_at is not None:
-        result.setdefault("started_at", started_at)
-    result.setdefault("completed_at", _now_iso())
-    duration_ms = _duration_ms_from_timestamps(
-        result.get("started_at"),
-        result.get("completed_at"),
-    )
-    if duration_ms is not None:
-        result.setdefault("duration_ms", duration_ms)
-    result.setdefault("result_path", str(result_path))
-    result.setdefault("runtime_log_unavailable_reason", None)
-    result.setdefault("failure_classification", reason if result.get("status") != "completed" else None)
-    if not runtime_log_path.exists():
-        _write_runtime_log(
-            runtime_log_path,
-            result.get("final_text") or result.get("stop_reason") or "terminal result written",
-        )
-    result["evidence_previews"] = _build_evidence_previews(
-        result=result,
-        result_path=result_path,
-        event_log_path=event_log_path,
-        runtime_log_path=runtime_log_path,
-    )
-    result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    # Wave 1: persist validated proposal evidence only. Never creates authority.
-    # Backends may emit write_scope_proposals[]; singular write_scope_proposal
-    # remains for compatibility. Prose-only / hostile approval claims are rejected.
-    # Intentionally does not mutate AgentRunResult fields (additionalProperties=false).
-    persist_write_scope_proposals_from_result(result)
-    _append_event(
-        event_log_path,
-        "run_finished",
-        run_id=str(result.get("session_id") or ""),
-        session_id=str(result.get("session_id") or ""),
-        studio_session_id=result.get("studio_session_id"),
-        status=str(result.get("status") or "failed"),
-        exit_code=result.get("exit_code"),
-        stop_reason=str(result.get("stop_reason") or reason),
-        failure_classification=reason,
-        result_path=str(result_path),
-        runtime_log_path=str(runtime_log_path),
-    )
-    return result
-
-
-def _attach_studio_run(
-    *,
-    studio_session_id: str | None,
-    run_id: str,
-    event_log_path: Path,
-    run_dir: Path,
-    result_path: Path,
-    status: str,
-) -> None:
-    if studio_session_id is None:
-        return
-    require_active_studio_session(studio_session_id)
-    attach_run_reference(
-        studio_session_id=studio_session_id,
-        run_id=run_id,
-        session_id=run_id,
-        surface="agent",
-        mode="execute",
-        status=status,
-        events_path=str(event_log_path),
-        session_path=str(run_dir),
-        output_path=str(result_path),
-    )
-
-
-def _resolve_roots(values: list[str], *, readable_root: str | None) -> list[Path]:
-    """Resolve approved writable roots against the readable workspace.
-
-    Repository-relative grants (the Autopilot / Job contract) must be joined to
-    ``readable_root`` before absolutizing. Execution Jobs often start with
-    CWD=/, so ``Path(rel).resolve()`` would otherwise escape the workspace and
-    false-fail Cursor/Claude/Hermes bounded-write dispatch.
-    """
-    roots: list[Path] = []
-    workspace = (
-        Path(readable_root).expanduser().resolve(strict=True)
-        if readable_root
-        else None
-    )
-    if workspace is not None and not workspace.is_dir():
-        raise HermesBackendError(f"readable root is not a directory: {readable_root}")
-    for raw in values:
-        text = str(raw or "").strip()
-        if not text:
-            continue
-        candidate = Path(text).expanduser()
-        if candidate.is_absolute():
-            path = candidate.resolve(strict=False)
-        else:
-            if workspace is None:
-                raise HermesBackendError(
-                    f"relative writable root requires readable workspace: {text}"
-                )
-            path = (workspace / candidate).resolve(strict=False)
-        if workspace is not None and not path.is_relative_to(workspace):
-            raise HermesBackendError(
-                f"approved writable root is outside the readable workspace: {text}"
-            )
-        if path.exists() and not (path.is_dir() or path.is_file()):
-            raise HermesBackendError(f"approved writable root is not a file or directory: {text}")
-        roots.append(path)
-    return roots
 
 
 def _assert_no_dangerous_caps(capabilities: list[str]) -> None:
-    dangerous = sorted({cap for cap in capabilities if cap in DANGEROUS_CAPABILITIES})
-    if dangerous:
-        raise HermesBackendError(f"dangerous capabilities are not available for Hermes backend: {', '.join(dangerous)}")
+    assert_no_dangerous_caps(capabilities, backend_name="Hermes", error_type=HermesBackendError)
 
 
 def build_selection(
-    *,
-    runner_id: str,
-    requested_capabilities: list[str],
-    approve_writable_roots: list[str],
-    timeout_seconds: int,
-    readable_root: str | None,
-    write_scope_binding_id: str | None = None,
+    *, runner_id: str, requested_capabilities: list[str], approve_writable_roots: list[str],
+    timeout_seconds: int, readable_root: str | None, write_scope_binding_id: str | None = None,
 ) -> HermesBackendSelection:
-    normalized_caps = [str(item).strip() for item in requested_capabilities if str(item).strip()]
-    _assert_no_dangerous_caps(normalized_caps)
-    writable_roots = [
-        str(path)
-        for path in _resolve_roots(
-            approve_writable_roots,
-            readable_root=readable_root,
-        )
-    ]
-    effective_caps = ["read"]
-    if writable_roots:
-        if "bounded_write" not in normalized_caps:
-            raise HermesBackendError("bounded_write capability approval is required when writable roots are approved")
-        effective_caps.extend(["bounded_write", "shell_limited", "focused_tests"])
-    elif any(cap in {"bounded_write", "shell_limited", "focused_tests"} for cap in normalized_caps):
-        raise HermesBackendError("bounded write/test capabilities require at least one explicit writable root")
-    return HermesBackendSelection(
-        runner_id=runner_id,
-        capabilities=effective_caps,
-        writable_roots=writable_roots,
-        timeout_seconds=timeout_seconds,
-        readable_root=readable_root,
-        write_scope_binding_id=(
-            str(write_scope_binding_id).strip() or None
-            if write_scope_binding_id is not None
-            else None
-        ),
+    return _build_governed_selection(
+        runner_id=runner_id, requested_capabilities=requested_capabilities,
+        approve_writable_roots=approve_writable_roots, timeout_seconds=timeout_seconds,
+        readable_root=readable_root, write_scope_binding_id=write_scope_binding_id,
+        backend_name="Hermes", error_type=HermesBackendError,
     )
-
-
-def _workspace_for(selection: HermesBackendSelection, manifest: dict[str, Any]) -> Path:
-    if selection.readable_root:
-        path = Path(selection.readable_root).expanduser().resolve(strict=False)
-        if path.is_dir():
-            return path
-    if selection.writable_roots:
-        first_scope = Path(selection.writable_roots[0]).resolve(strict=False)
-        if first_scope.is_dir():
-            return first_scope
-        for parent in first_scope.parents:
-            if parent.is_dir():
-                return parent
-    repos = manifest.get("repos")
-    if isinstance(repos, list):
-        for item in repos:
-            if isinstance(item, dict):
-                path = Path(str(item.get("path") or "")).expanduser().resolve(strict=False)
-                if path.is_dir():
-                    return path
-    return Path.cwd().resolve(strict=False)
-
-
-def _extract_remote_ial_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    system_parts: list[str] = []
-    remote_messages: list[dict[str, Any]] = []
-    for item in messages:
-        if not isinstance(item, dict):
-            continue
-        role = str(item.get("role") or "").strip()
-        if role == "system":
-            content = item.get("content")
-            if content:
-                system_parts.append(str(content))
-            continue
-        if role == "assistant":
-            message: dict[str, Any] = {"role": "assistant", "content": item.get("content")}
-            tool_calls = []
-            for tool_call in item.get("tool_calls") or []:
-                if not isinstance(tool_call, dict):
-                    continue
-                function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
-                name = str(function.get("name") or "").strip()
-                raw_args = function.get("arguments")
-                try:
-                    arguments = json.loads(raw_args) if isinstance(raw_args, str) else {}
-                except json.JSONDecodeError:
-                    arguments = {}
-                if name:
-                    tool_calls.append(
-                        {
-                            "id": str(tool_call.get("id") or ""),
-                            "name": name,
-                            "arguments": arguments if isinstance(arguments, dict) else {},
-                        }
-                    )
-            if tool_calls:
-                message["tool_calls"] = tool_calls
-            remote_messages.append(message)
-            continue
-        if role == "tool":
-            remote_messages.append(
-                {
-                    "role": "tool",
-                    "results": [
-                        {
-                            "id": str(item.get("tool_call_id") or ""),
-                            "tool_call_id": str(item.get("tool_call_id") or ""),
-                            "content": item.get("content"),
-                        }
-                    ],
-                }
-            )
-            continue
-        remote_messages.append({"role": role or "user", "content": item.get("content")})
-    return "\n\n".join(system_parts), remote_messages
-
-
-def _remote_ial_tool_to_openai(item: dict[str, Any], index: int) -> dict[str, Any]:
-    arguments = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
-    return {
-        "id": str(item.get("id") or f"remote-tool-{index}"),
-        "type": "function",
-        "function": {
-            "name": str(item.get("name") or ""),
-            "arguments": json.dumps(arguments, sort_keys=True),
-        },
-    }
-
-
-def _finish_reason(stop_reason: Any, tool_calls: list[dict[str, Any]]) -> str:
-    if tool_calls:
-        return "tool_calls"
-    normalized = str(stop_reason or "").strip().lower()
-    if normalized in {"max_tokens", "length"}:
-        return "length"
-    return "stop"
 
 
 class _RemoteIALOpenAIAdapter:
@@ -894,543 +541,34 @@ class _RemoteIALOpenAIAdapter:
             self.thread.join(timeout=2)
 
 
-def _goal_requests_write_scope_proposal(goal: str) -> bool:
-    lowered = goal.lower()
-    return "write_scope_proposal" in lowered or "write scope proposal" in lowered
 
 
 # Path classification/normalization authority lives in write_scope_proposals
 # (classify_repository_relative_scope_path). Re-exported above for backends.
 
 
-def _explicit_required_proposal_paths(goal: str) -> list[str]:
-    paths: list[str] = []
-    for match in re.finditer(r"\bexactly\s*:?\s*`?([^\s,;`]+)", goal, re.IGNORECASE):
-        candidate = match.group(1).rstrip(".'\"),:")
-        normalized = _normalize_repository_relative_scope_path(candidate)
-        if normalized and "/" in normalized and normalized not in paths:
-            paths.append(normalized)
-    return paths
 
 
-def _manifest_repo_targets(manifest: dict[str, Any]) -> list[dict[str, str]]:
-    """Every manifest repo as canonical proposal target context, in order."""
-    repos = manifest.get("repos")
-    if not isinstance(repos, list):
-        return []
-    targets: list[dict[str, str]] = []
-    for repo in repos:
-        if not isinstance(repo, dict):
-            continue
-        base_sha = str(repo.get("sha") or repo.get("branch") or "").strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{40}", base_sha):
-            base_sha = ""
-        targets.append(
-            {
-                "target_id": str(repo.get("target_id") or "").strip(),
-                "base_sha": base_sha,
-                "repository_url": str(repo.get("url") or "").strip(),
-                "workspace_path": str(repo.get("path") or "").strip(),
-                "name": str(repo.get("name") or "").strip(),
-            }
-        )
-    return targets
 
 
-def _primary_manifest_target(manifest: dict[str, Any]) -> dict[str, str]:
-    targets = _manifest_repo_targets(manifest)
-    return targets[0] if targets else {}
 
 
-def _normalize_write_scope_proposal(
-    value: Any,
-    *,
-    expected_allowed_roots: list[str] | None = None,
-) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    proposal = dict(value)
-    required = set(WRITE_SCOPE_PROPOSAL_FIELDS)
-    if not required.issubset(proposal):
-        return None
-    target_id = str(proposal.get("target_id") or "").strip()
-    base_sha = str(proposal.get("base_sha") or "").strip().lower()
-    reason = str(proposal.get("reason") or "").strip()
-    if not target_id or not re.fullmatch(r"[0-9a-f]{40}", base_sha) or not reason:
-        return None
-
-    def _string_list(name: str) -> list[str] | None:
-        raw = proposal.get(name)
-        if not isinstance(raw, list):
-            return None
-        if any(not isinstance(item, str) for item in raw):
-            return None
-        values = [item.strip() for item in raw]
-        if any(not item for item in values):
-            return None
-        return values
-
-    raw_allowed_roots = _string_list("allowed_roots")
-    raw_denied_roots = _string_list("denied_roots")
-    expected_checks = _string_list("expected_checks")
-    allowed_roots = (
-        [_normalize_repository_relative_scope_path(item) for item in raw_allowed_roots]
-        if raw_allowed_roots is not None
-        else None
-    )
-    denied_roots = (
-        [_normalize_repository_relative_scope_path(item) for item in raw_denied_roots]
-        if raw_denied_roots is not None
-        else None
-    )
-    docs_only = proposal.get("docs_only")
-    source_mutation = proposal.get("source_mutation")
-    if (
-        allowed_roots is None
-        or not allowed_roots
-        or any(item is None for item in allowed_roots)
-        or denied_roots is None
-        or any(item is None for item in denied_roots)
-        or expected_checks is None
-        or not isinstance(docs_only, bool)
-        or not isinstance(source_mutation, bool)
-    ):
-        return None
-    normalized_allowed_roots = [str(item) for item in allowed_roots]
-    normalized_denied_roots = [str(item) for item in denied_roots]
-    if expected_allowed_roots and not set(normalized_allowed_roots).issubset(
-        set(expected_allowed_roots)
-    ):
-        # Multi-target missions partition the explicitly required paths across
-        # per-repository proposals, so each block may carry a subset. Any root
-        # outside the mission's explicit requirement still fails closed.
-        return None
-    proposal["target_id"] = target_id
-    proposal["base_sha"] = base_sha
-    proposal["reason"] = reason
-    proposal["allowed_roots"] = normalized_allowed_roots
-    proposal["denied_roots"] = normalized_denied_roots
-    proposal["expected_checks"] = expected_checks
-    proposal["docs_only"] = docs_only
-    proposal["source_mutation"] = source_mutation
-    return proposal
 
 
-def _extract_write_scope_proposal_outputs(
-    text: str,
-    *,
-    expected_allowed_roots: list[str] | None = None,
-) -> tuple[list[dict[str, Any]], str]:
-    """Extract every valid proposal block (multi-target missions emit one
-    block per target repository). Duplicate target_ids keep the first block.
-    Returns (proposals, prose summary with the blocks removed)."""
-    pattern = re.compile(
-        rf"{WRITE_SCOPE_PROPOSAL_START}\s*(\{{.*?\}})\s*{WRITE_SCOPE_PROPOSAL_END}",
-        re.DOTALL,
-    )
-    proposals: list[dict[str, Any]] = []
-    seen_target_ids: set[str] = set()
-    summary_parts: list[str] = []
-    cursor = 0
-    for match in pattern.finditer(text):
-        summary_parts.append(text[cursor : match.start()])
-        cursor = match.end()
-        try:
-            parsed = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            parsed = None
-        proposal = _normalize_write_scope_proposal(
-            parsed,
-            expected_allowed_roots=expected_allowed_roots,
-        )
-        if proposal is None:
-            continue
-        target_id = str(proposal.get("target_id") or "")
-        if target_id in seen_target_ids:
-            continue
-        seen_target_ids.add(target_id)
-        proposals.append(proposal)
-    summary_parts.append(text[cursor:])
-    summary = "".join(summary_parts).strip()
-    return proposals, summary
 
 
-def _extract_write_scope_proposal_output(
-    text: str,
-    *,
-    expected_allowed_roots: list[str] | None = None,
-) -> tuple[dict[str, Any] | None, str]:
-    proposals, summary = _extract_write_scope_proposal_outputs(
-        text,
-        expected_allowed_roots=expected_allowed_roots,
-    )
-    return (proposals[0] if proposals else None), summary
-def _build_prompt(
-    goal: str,
-    selection: HermesBackendSelection,
-    workspace: Path,
-    manifest: dict[str, Any] | None = None,
-    *,
-    read_only_replan: bool = False,
-    proposal_replan: bool = False,
-    agent_label: str = "Hermes",
-    backend_name: str = BACKEND_TYPE,
-) -> str:
-    proposal_requested = (
-        _goal_requests_write_scope_proposal(goal) and not selection.writable_roots
-    )
-    prompt_targets = _manifest_targets_for_prompt(manifest or {}, workspace)
-    lines = [
-        f"You are executing as {agent_label} under AMOF authority.",
-        f"AMOF runner_id: {selection.runner_id}",
-        f"AMOF backend: {backend_name}",
-        f"Workspace root: {workspace}",
-        f"Approved capabilities: {', '.join(selection.capabilities)}",
-        "Denied: Kubernetes mutation, deployment, secrets, unrestricted network, push, promotion, tags, releases.",
-        "Tool paths must be repository-relative (example: 00-amof/README.md or README.md).",
-        "Do not pass absolute sandbox or host paths to tools; they are rejected.",
-    ]
-    if len(prompt_targets) > 1:
-        lines.extend(
-            [
-                "",
-                f"Target repositories ({len(prompt_targets)}): the workspace root contains one materialized checkout per target. Inspect EVERY target repository relevant to the mission, not only the first.",
-                "Use the tool_root value below as the repository-relative prefix for list_dir/read_file/glob.",
-            ]
-        )
-        for index, target in enumerate(prompt_targets, start=1):
-            lines.append(
-                f"- target {index}: {target.get('name') or target.get('target_id') or 'unknown'}"
-                f" tool_root={target.get('tool_root') or 'unknown'}"
-                f" (target_id: {target.get('target_id') or 'unknown'}, base_sha: {target.get('base_sha') or 'unknown'})"
-            )
-    elif prompt_targets:
-        lines.append(
-            f"Tool root: {prompt_targets[0].get('tool_root') or '.'} (repository-relative; do not pass the workspace absolute path to tools)."
-        )
-    lines.extend(
-        [
-            "",
-            "Truth domains:",
-            "- Agent-observed task findings: report only facts you inspect in the workspace through approved commands/tools.",
-            "- AMOF runtime envelope: handoff ID, run ID, Studio Session ID, runner/backend, provider/model/transport, fallback, capabilities, changed paths, status, stop reason, and evidence paths are supplied by AMOF outside your answer.",
-            "Do not search the repository for AMOF runtime-envelope field names such as runner_id, backend, transport, studio_session_id, result_path, runtime_log_path, or event_log_path.",
-            "If asked for AMOF runtime-envelope fields, state that AMOF will provide them in the runtime envelope; do not treat absent metadata files as blockers.",
-            "Use explicit commands when the mission asks for command-derived repository facts, and include command exit codes in your task findings.",
-        ]
-    )
-    if selection.writable_roots:
-        roots = ", ".join(selection.writable_roots)
-        lines.append(f"Writable roots: {roots}")
-        lines.append("Modify files only inside the listed writable roots. Do not commit, push, promote, deploy, tag, or release.")
-    else:
-        lines.extend(
-            [
-                "Read-only run: this repository is already materialized and must be inspected in place.",
-                f"Read-only workspace boundary (exact path): {workspace}",
-                "Do not run git clone, git init, git worktree, or create nested repositories.",
-                "Do not create, modify, or delete files anywhere in this workspace.",
-            ]
-        )
-        if read_only_replan:
-            lines.append(
-                "Read-only mutation was detected once; this constrained replan must remain read-only within the same workspace boundary."
-            )
-    if proposal_requested:
-        target = prompt_targets[0] if prompt_targets else _primary_manifest_target(manifest or {})
-        multi_target = len(prompt_targets) > 1
-        expected_allowed_roots = _explicit_required_proposal_paths(goal)
-        docs_only = bool(expected_allowed_roots) and all(
-            root == "docs" or root.startswith("docs/")
-            for root in expected_allowed_roots
-        )
-        proposal_example = {
-            "target_id": target.get("target_id") or "",
-            "base_sha": target.get("base_sha") or "",
-            "allowed_roots": expected_allowed_roots
-            or ["<repository-relative-path-your-evidence-justifies>"],
-            "denied_roots": [],
-            "reason": (
-                "bounded write proof artifact"
-                if expected_allowed_roots == ["docs/amof-bounded-write-proof.md"]
-                else "bounded follow-up justified by inspected evidence"
-            ),
-            "expected_checks": ["git diff --check"],
-            "docs_only": docs_only,
-            "source_mutation": not docs_only,
-        }
-        lines.extend(
-            [
-                "",
-                "Required structured write-scope contract:",
-                "This mission requires machine-readable structured write_scope_proposal output. A prose-only answer is a contract failure.",
-                (
-                    "You MUST emit one non-empty JSON object between these markers for EACH target repository your evidence justifies changing (repeat the marker pair per target), before any human-readable summary."
-                    if multi_target
-                    else "You MUST emit exactly one non-empty JSON object between these markers before any human-readable summary."
-                ),
-                WRITE_SCOPE_PROPOSAL_START,
-                json.dumps(proposal_example, separators=(",", ":")),
-                WRITE_SCOPE_PROPOSAL_END,
-                "Use exactly those JSON field names. Do not wrap them in another object.",
-                "Populate target_id and base_sha from the canonical target context. Empty or partial proposal objects are invalid.",
-                "allowed_roots must list the exact repository-relative file or directory paths your inspected evidence justifies changing; an empty allowed_roots array is invalid.",
-                "Keep allowed_roots and denied_roots repository-relative.",
-                "Wildcard roots and additional unrequested roots are forbidden.",
-                "The proposal may describe a future create_or_update operation; do not perform that operation now and do not include approved_write_scope or any approval claim.",
-                "After the JSON block, emit a Markdown summary for humans. Do not restate the JSON block in prose.",
-            ]
-        )
-        if multi_target:
-            lines.extend(
-                [
-                    "Each proposal block covers exactly one target repository: use that target's target_id and base_sha from the target list above, and keep allowed_roots relative to that repository's own root (never prefix them with the checkout directory name).",
-                    "Do not emit a proposal block for a target that needs no changes; explain why in the summary instead.",
-                ]
-            )
-        if expected_allowed_roots:
-            lines.append(
-                (
-                    "Required allowed_roots across ALL proposal blocks combined (no additional paths; each block lists only the paths that belong to its own repository): "
-                    if multi_target
-                    else "Required allowed_roots (exact; no additional paths): "
-                )
-                + json.dumps(expected_allowed_roots)
-            )
-        if multi_target:
-            lines.append("Canonical proposal target context (one entry per target):")
-            for entry in prompt_targets:
-                lines.append(
-                    f"- target_id: {entry.get('target_id') or 'unknown'} | base_sha: {entry.get('base_sha') or 'unknown'}"
-                    f" | repository_url: {entry.get('repository_url') or 'unknown'} | tool_root: {entry.get('tool_root') or 'unknown'}"
-                )
-        elif target:
-            lines.extend(
-                [
-                    "Canonical proposal target context:",
-                    f"- target_id: {target.get('target_id') or 'unknown'}",
-                    f"- base_sha: {target.get('base_sha') or 'unknown'}",
-                    f"- repository_url: {target.get('repository_url') or 'unknown'}",
-                    f"- tool_root: {target.get('tool_root') or '.'}",
-                ]
-            )
-    lines.extend(["", "Mission:", goal])
-    if proposal_requested:
-        lines.extend(
-            [
-                "",
-                "CURRENT PHASE OVERRIDE — PROPOSAL ONLY:",
-                "Any mission instruction to create, update, or output a file is conditional on later operator approval and MUST NOT be executed in this run.",
-                "Inspect read-only. Do not create, modify, rename, or delete any file.",
-                f"Your final answer MUST begin with {WRITE_SCOPE_PROPOSAL_START}, followed by the required non-empty JSON object and {WRITE_SCOPE_PROPOSAL_END}.",
-                "Prose-only output is invalid.",
-            ]
-        )
-        if read_only_replan:
-            lines.append(
-                "A prior mutation attempt was restored. Do not repeat it; return only the required proposal block and human-readable findings."
-            )
-        if proposal_replan:
-            lines.append(
-                "CONTRACT RETRY: your previous answer omitted the required JSON block or its fields were invalid (for example an empty allowed_roots array). "
-                "Re-run the inspection conclusion and emit the JSON block again with every required field populated and allowed_roots listing the exact repository-relative paths your evidence justifies."
-            )
-    elif selection.writable_roots:
-        lines.extend(
-            [
-                "",
-                "CURRENT PHASE OVERRIDE — APPROVED BOUNDED WRITE:",
-                "AMOF has already validated explicit operator approval for the listed writable roots.",
-                "Execute the mission's requested create_or_update operation now. Create missing parent directories when required.",
-                "Do not ask for another confirmation and do not emit a write-scope proposal.",
-                "The approval remains bounded: do not modify any path outside Writable roots.",
-            ]
-        )
-    return "\n".join(lines)
 
 
-def _safe_tool_root_segment(value: str) -> str | None:
-    """One path segment safe to give tools. Never absolute, never traversal."""
-    text = str(value or "").strip().replace("\\", "/")
-    if not text:
-        return None
-    name = Path(text).name
-    if not name or name in {".", ".."}:
-        return None
-    if name.startswith("/") or "/" in name or "\\" in name:
-        return None
-    return name
 
 
-def _relative_under_workspace(workspace: Path, candidate: Path) -> str | None:
-    try:
-        ws = workspace.expanduser().resolve(strict=False)
-        resolved = candidate.expanduser().resolve(strict=False)
-    except OSError:
-        return None
-    if resolved == ws:
-        return "."
-    try:
-        rel = resolved.relative_to(ws).as_posix()
-    except ValueError:
-        return None
-    if not rel or rel.startswith("..") or Path(rel).is_absolute():
-        return None
-    return rel
 
 
-def _tool_visible_relative_root(
-    *,
-    workspace: Path,
-    repo_path: str,
-    index: int,
-    repo_roots: list[Path],
-) -> str:
-    """Map a Target Set repo to a repository-relative tool root.
-
-    Manifest ``repos[].path`` may be an execution-Job sandbox absolute
-    (``/run-work/files``). Native tools reject absolute paths. Prefer live
-    workspace git children in manifest order; never return an absolute path.
-    """
-    if index < len(repo_roots):
-        rel = _relative_under_workspace(workspace, repo_roots[index])
-        if rel:
-            return rel
-        name = _safe_tool_root_segment(repo_roots[index].name)
-        if name:
-            return name
-    raw = str(repo_path or "").strip()
-    if raw:
-        rel = _relative_under_workspace(workspace, Path(raw))
-        if rel:
-            return rel
-        name = _safe_tool_root_segment(raw)
-        if name:
-            return name
-    return f"target-{index + 1}"
 
 
-def _manifest_targets_for_prompt(
-    manifest: dict[str, Any],
-    workspace: Path,
-) -> list[dict[str, str]]:
-    targets = _manifest_repo_targets(manifest)
-    repo_roots = _workspace_repo_roots(workspace)
-    annotated: list[dict[str, str]] = []
-    for index, target in enumerate(targets):
-        item = dict(target)
-        item["tool_root"] = _tool_visible_relative_root(
-            workspace=workspace,
-            repo_path=str(target.get("workspace_path") or ""),
-            index=index,
-            repo_roots=repo_roots,
-        )
-        annotated.append(item)
-    return annotated
 
 
-def _workspace_repo_roots(workspace: Path) -> list[Path]:
-    """Git roots governed by a workspace: the workspace itself when it is a
-    repository, else its direct child repositories (multi-target dispatch
-    workspaces materialize one pinned checkout per target)."""
-    if (workspace / ".git").exists():
-        return [workspace]
-    if not workspace.is_dir():
-        return []
-    return sorted(
-        child for child in workspace.iterdir() if (child / ".git").exists()
-    )
 
 
-def _changed_paths(workspace: Path) -> list[str]:
-    paths: list[str] = []
-    for repo_root in _workspace_repo_roots(workspace):
-        completed = subprocess.run(
-            ["git", "status", "--short", "--untracked-files=all"],
-            cwd=str(repo_root),
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=10,
-        )
-        if completed.returncode != 0:
-            continue
-        for line in completed.stdout.splitlines():
-            item = line[3:].strip()
-            if item:
-                paths.append(item)
-    return list(dict.fromkeys(paths))
-
-
-def _changed_paths_delta(before: list[str], after: list[str]) -> list[str]:
-    before_set = {item for item in before if item}
-    after_set = {item for item in after if item}
-    return sorted(after_set - before_set)
-
-
-def _read_only_unclean_workspace_message(preexisting_changed_paths: list[str]) -> str:
-    """Describe the unclean workspace without claiming tracked-only when untracked may be present.
-
-    `_changed_paths` uses `git status --short --untracked-files=all`, so the sample
-    may include modified tracked files and/or untracked paths.
-    """
-    paths = [str(item).strip() for item in preexisting_changed_paths if str(item).strip()]
-    if not paths:
-        return (
-            "Read-only run blocked before execution because the workspace is not clean."
-        )
-    sample = ", ".join(paths[:5])
-    more = f" (+{len(paths) - 5} more)" if len(paths) > 5 else ""
-    return (
-        "Read-only run blocked before execution because the workspace has pre-existing "
-        f"changes (modified and/or untracked): {sample}{more}."
-    )
-
-
-def _restore_read_only_paths(workspace: Path, paths: list[str]) -> list[str]:
-    restored: list[str] = []
-    if not paths:
-        return restored
-    for repo_root in _workspace_repo_roots(workspace):
-        for rel_path in sorted({item for item in paths if item}):
-            target = repo_root / rel_path
-            tracked = subprocess.run(
-                ["git", "ls-files", "--error-unmatch", "--", rel_path],
-                cwd=str(repo_root),
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=10,
-            ).returncode == 0
-            if tracked:
-                dirty = subprocess.run(
-                    ["git", "status", "--short", "--untracked-files=all", "--", rel_path],
-                    cwd=str(repo_root),
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                    timeout=10,
-                ).stdout.strip()
-                if not dirty:
-                    continue
-                subprocess.run(
-                    ["git", "restore", "--staged", "--worktree", "--", rel_path],
-                    cwd=str(repo_root),
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                    timeout=10,
-                )
-                restored.append(rel_path)
-                continue
-            if target.is_symlink() or target.is_file():
-                target.unlink(missing_ok=True)
-                restored.append(rel_path)
-                continue
-            if target.is_dir():
-                shutil.rmtree(target, ignore_errors=True)
-                restored.append(rel_path)
-    return sorted(dict.fromkeys(restored))
 
 
 def _write_run_hermes_config(run_dir: Path, adapter: _RemoteIALOpenAIAdapter, model: str) -> Path:
@@ -1881,36 +1019,6 @@ def run(
     return result
 
 
-def _apply_write_scope_enforcement_if_bound(
-    result: dict[str, Any],
-    *,
-    selection: HermesBackendSelection,
-    run_id: str,
-    workspace: Path,
-) -> dict[str, Any]:
-    """Wave 4: when a Binding is active for this run, enforce + attach MutationReceipt."""
-    from ..write_scope_bindings import list_bindings, load_binding
-    from ..write_scope_enforcement import apply_enforcement_to_result
-
-    binding = None
-    binding_id = getattr(selection, "write_scope_binding_id", None)
-    if binding_id:
-        try:
-            binding = load_binding(str(binding_id))
-        except Exception:
-            binding = None
-    if binding is None:
-        active = list_bindings(run_id=run_id, status="active")
-        binding = active[0] if active else None
-    if binding is None:
-        return result
-    return apply_enforcement_to_result(
-        result,
-        binding=binding,
-        workspace_root=workspace,
-    )
-
-
 def _result_payload(
     *,
     run_id: str,
@@ -2057,23 +1165,3 @@ def _runtime_summary_text(
         f"stop_reason={stop_reason}; {findings_state}. "
         "Authoritative runtime metadata is recorded in this AgentRunResult envelope."
     )
-
-
-def _infer_validation_status(final_text: str) -> str:
-    lowered = final_text.lower()
-    failure_markers = (
-        "failed (failures=",
-        "failed (errors=",
-        "traceback (most recent call last)",
-        "assertionerror",
-        "\nfail:",
-        "\nerror:",
-        "the test ran, but it did not",
-        "resulting in a failure",
-    )
-    if any(marker in lowered for marker in failure_markers):
-        return "failed"
-    success_markers = ("ran 1 test", "\nok", "validation_ok")
-    if any(marker in lowered for marker in success_markers):
-        return "passed"
-    return "not_run"
