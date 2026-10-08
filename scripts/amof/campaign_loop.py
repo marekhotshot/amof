@@ -171,7 +171,7 @@ def load_campaign(path: Path) -> dict[str, Any]:
 def _scope_path(value: Any) -> str | None:
     """Conservative repository-relative path for campaign bounds."""
     if (not isinstance(value, str) or not value or value.startswith("/") or
-            "\\" in value or "\x00" in value or any(char in value for char in "*?[]")):
+            "\\" in value or "\x00" in value or any(char in value for char in "*?")):
         return None
     parts = value.split("/")
     if any(part in {"", ".", ".."} for part in parts):

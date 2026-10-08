@@ -21,6 +21,28 @@ from test_canonical_acceptance_handoff import SHA, TARGET, definition, observati
 
 
 class CampaignLoopTests(unittest.TestCase):
+    def test_literal_next_route_file_can_be_exact_bounded_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = "commerce/app/[locale]/page.tsx"
+            target = f"github_app:example/igor:{SHA}"
+            path = Path(td) / "route-campaign.json"
+            create_campaign(
+                path, campaign_id="route-campaign", objective="Bound one route file",
+                allowed_backends=["hermes_opensandbox"], allowed_scope_tags=["hero"],
+                allowed_capabilities=["read", "bounded_write"],
+                allowed_target_id=target, allowed_write_roots=[root],
+                slice_plan=[{"slice_id": "route-campaign-slice-1",
+                             "parent_campaign_id": "route-campaign", "scope_tag": "hero",
+                             "requested_backend": "hermes_opensandbox",
+                             "requested_capabilities": ["read", "bounded_write"],
+                             "objective": "Edit exact route", "expected_validation": "hero",
+                             "write_authority_ref": "wsa-existing",
+                             "requested_write_scope": {"target_id": target,
+                                                       "base_sha": SHA, "roots": [root]}}],
+                max_slices=1,
+            )
+            self.assertEqual(load_campaign(path)["authority"]["allowed_write_roots"], [root])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
