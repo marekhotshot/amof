@@ -23,20 +23,23 @@ from pathlib import Path
 from typing import Any
 
 from ..app_paths import runs_dir
-from . import hermes_opensandbox as _shared
-from .hermes_opensandbox import (
-    HermesBackendSelection,
-    WRITE_SCOPE_PROPOSAL_REQUIRED,
-)
+from .backend_identity import runner_backend_type
+from .backend_selection import BackendSelection, build_selection as _build_governed_selection
+from .proposal_contract import WRITE_SCOPE_PROPOSAL_REQUIRED, _extract_write_scope_proposal_outputs, _proposal_missing_reason
+from .runtime_governance import FUTURE_ISOLATION_MODELS, SUPPORTED_CAPABILITIES, apply_write_scope_enforcement_if_bound
+from .result_io import _now_iso, _append_event, _attach_studio_run, _write_runtime_log, _write_terminal_result
+from .prompt_contract import _build_prompt, _explicit_required_proposal_paths, _goal_requests_write_scope_proposal
+from .workspace_state import _workspace_for, _changed_paths, _changed_paths_delta, _read_only_unclean_workspace_message, _restore_read_only_paths
+from .runtime_utils import safe_run_id, infer_validation_status
 
 BACKEND_TYPE = "claude_code"
 BACKEND_CONTRACT_VERSION = "claude-code-cli-v1"
 RUNTIME_CONTRACT = "Claude Code CLI (headless print mode) + Anthropic API"
 ISOLATION_MODEL = "runtime_owner_workspace"
-FUTURE_ISOLATION_MODELS = tuple(_shared.FUTURE_ISOLATION_MODELS)
+FUTURE_ISOLATION_MODELS = tuple(FUTURE_ISOLATION_MODELS)
 PROVIDER = "anthropic"
 TRANSPORT = "anthropic_api"
-SUPPORTED_CAPABILITIES = tuple(_shared.SUPPORTED_CAPABILITIES)
+SUPPORTED_CAPABILITIES = tuple(SUPPORTED_CAPABILITIES)
 DEFAULT_MODEL = "claude-sonnet-4-5"
 AGENT_LABEL = "Claude Code"
 
@@ -110,7 +113,7 @@ def _api_key() -> str:
 
 
 def is_claude_code_runner(record: dict[str, Any]) -> bool:
-    return _shared.runner_backend_type(record) == BACKEND_TYPE
+    return runner_backend_type(record) == BACKEND_TYPE
 
 
 def claude_dispatch_command(*, model: str, writable: bool) -> list[str]:
@@ -222,7 +225,7 @@ def doctor_record(record: dict[str, Any]) -> dict[str, Any]:
     ]
     return {
         "runner_id": str(record.get("runner_id") or ""),
-        "backend_type": _shared.runner_backend_type(record),
+        "backend_type": runner_backend_type(record),
         "backend_contract_version": health.get("backend_contract_version"),
         "runtime_contract": health.get("runtime_contract"),
         "isolation_model": health.get("isolation_model"),
@@ -258,16 +261,17 @@ def build_selection(
     timeout_seconds: int,
     readable_root: str | None,
     write_scope_binding_id: str | None = None,
-) -> HermesBackendSelection:
+) -> BackendSelection:
     # Selection semantics (capability gating, writable-root containment) are
     # backend-independent; reuse the shared governed builder.
-    return _shared.build_selection(
+    return _build_governed_selection(
         runner_id=runner_id,
         requested_capabilities=requested_capabilities,
         approve_writable_roots=approve_writable_roots,
         timeout_seconds=timeout_seconds,
         readable_root=readable_root,
         write_scope_binding_id=write_scope_binding_id,
+        backend_name="Claude Code", error_type=ClaudeCodeBackendError,
     )
 
 
@@ -315,7 +319,7 @@ def _blocked_result(
     event_log_path: Path,
     runtime_log_path: Path,
     result_path: Path,
-    selection: HermesBackendSelection,
+    selection: BackendSelection,
     health: dict[str, Any],
     dispatch_probe: dict[str, Any],
     requested_model: str,
@@ -341,8 +345,8 @@ def _blocked_result(
     )
     if extra_evidence:
         result["evidence_refs"].update(extra_evidence)
-    _shared._append_event(event_log_path, "run_blocked", reason=reason)
-    return _shared._write_terminal_result(
+    _append_event(event_log_path, "run_blocked", reason=reason)
+    return _write_terminal_result(
         result_path=result_path,
         event_log_path=event_log_path,
         runtime_log_path=runtime_log_path,
@@ -358,23 +362,23 @@ def run(
     goal: str,
     request_id: str,
     studio_session_id: str | None,
-    selection: HermesBackendSelection,
+    selection: BackendSelection,
     provider: str | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
     health = runtime_health()
-    run_id = f"claude-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{_shared._safe_id(request_id)}"
+    run_id = f"claude-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{safe_run_id(request_id, fallback="claude_code-run")}"
     run_dir = _run_dir(run_id)
     event_log_path = run_dir / "events.jsonl"
     runtime_log_path = run_dir / "runtime.log"
     stdout_path = run_dir / "stdout.txt"
     stderr_path = run_dir / "stderr.txt"
     result_path = run_dir / "result.json"
-    started_at = _shared._now_iso()
-    workspace = _shared._workspace_for(selection, manifest)
-    preexisting_changed_paths = _shared._changed_paths(workspace)
+    started_at = _now_iso()
+    workspace = _workspace_for(selection, manifest)
+    preexisting_changed_paths = _changed_paths(workspace)
     requested_model = _requested_model(model)
-    _shared._append_event(
+    _append_event(
         event_log_path,
         "run_created",
         run_id=run_id,
@@ -383,7 +387,7 @@ def run(
         backend=BACKEND_TYPE,
         studio_session_id=studio_session_id,
     )
-    _shared._attach_studio_run(
+    _attach_studio_run(
         studio_session_id=studio_session_id,
         run_id=run_id,
         event_log_path=event_log_path,
@@ -396,7 +400,7 @@ def run(
     )
     if not dispatch_probe:
         dispatch_probe = _probe_claude_cli_contract(requested_model)
-    _shared._append_event(event_log_path, "claude_code_dispatch_probe", **dispatch_probe)
+    _append_event(event_log_path, "claude_code_dispatch_probe", **dispatch_probe)
 
     if provider and provider not in {PROVIDER, "claude-code"}:
         return _blocked_result(
@@ -450,7 +454,7 @@ def run(
         return _blocked_result(
             run_id=run_id,
             stop_reason="read_only_workspace_not_clean",
-            final_text=_shared._read_only_unclean_workspace_message(
+            final_text=_read_only_unclean_workspace_message(
                 list(preexisting_changed_paths)
             ),
             studio_session_id=studio_session_id,
@@ -470,7 +474,7 @@ def run(
 
     read_only_replan_used = False
     proposal_replan_used = False
-    prompt = _shared._build_prompt(
+    prompt = _build_prompt(
         goal,
         selection,
         workspace,
@@ -479,10 +483,10 @@ def run(
         backend_name=BACKEND_TYPE,
     )
     proposal_required = (
-        _shared._goal_requests_write_scope_proposal(goal)
+        _goal_requests_write_scope_proposal(goal)
         and not selection.writable_roots
     )
-    expected_proposal_paths = _shared._explicit_required_proposal_paths(goal)
+    expected_proposal_paths = _explicit_required_proposal_paths(goal)
     write_scope_proposals: list[dict[str, Any]] = []
     proposal_missing_reason: str | None = None
     task_findings = ""
@@ -549,14 +553,14 @@ def run(
             exit_code = 124
             stdout_path.write_text(str(exc.stdout or ""), encoding="utf-8")
             stderr_path.write_text(str(exc.stderr or ""), encoding="utf-8")
-            _shared._write_runtime_log(runtime_log_path, "Claude Code process timed out.")
+            _write_runtime_log(runtime_log_path, "Claude Code process timed out.")
         except Exception as exc:
             status = "failed"
             stop_reason = "claude_runtime_exception"
             exit_code = 1
             stdout_path.write_text("", encoding="utf-8")
             stderr_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
-            _shared._write_runtime_log(runtime_log_path, f"{type(exc).__name__}: {exc}")
+            _write_runtime_log(runtime_log_path, f"{type(exc).__name__}: {exc}")
 
         cli_envelope, raw_task_findings = _parse_cli_envelope(
             stdout_path.read_text(encoding="utf-8")
@@ -567,33 +571,33 @@ def run(
             exit_code = exit_code or 1
         runtime_detail = stderr_path.read_text(encoding="utf-8").strip()
         write_scope_proposals, task_findings = (
-            _shared._extract_write_scope_proposal_outputs(
+            _extract_write_scope_proposal_outputs(
                 raw_task_findings,
                 expected_allowed_roots=expected_proposal_paths,
             )
         )
         proposal_missing_reason = (
-            _shared._proposal_missing_reason(task_findings, runtime_detail)
+            _proposal_missing_reason(task_findings, runtime_detail)
             if proposal_required and not write_scope_proposals
             else None
         )
-        validation_status = _shared._infer_validation_status(
+        validation_status = infer_validation_status(
             task_findings or runtime_detail
         )
         if status == "completed" and validation_status == "failed":
             status = "failed"
             stop_reason = "validation_failed"
             exit_code = 1
-        changed = _shared._changed_paths_delta(
-            preexisting_changed_paths, _shared._changed_paths(workspace)
+        changed = _changed_paths_delta(
+            preexisting_changed_paths, _changed_paths(workspace)
         )
         if status == "completed" and not selection.writable_roots and changed:
-            restored_paths = _shared._restore_read_only_paths(workspace, changed)
+            restored_paths = _restore_read_only_paths(workspace, changed)
             if read_only_replan_used:
                 status = "failed"
                 stop_reason = "read_only_mutation_detected"
                 exit_code = 1
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "read_only_mutation_blocked",
                     changed_paths=list(changed),
@@ -601,14 +605,14 @@ def run(
                 )
                 changed = []
                 break
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "read_only_mutation_replan",
                 changed_paths=list(changed),
                 restored_paths=list(restored_paths),
             )
             read_only_replan_used = True
-            prompt = _shared._build_prompt(
+            prompt = _build_prompt(
                 goal,
                 selection,
                 workspace,
@@ -620,13 +624,13 @@ def run(
             continue
         if status == "completed" and proposal_required and not write_scope_proposals:
             if not proposal_replan_used:
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "proposal_contract_replan",
                     reason=proposal_missing_reason or "structured proposal missing",
                 )
                 proposal_replan_used = True
-                prompt = _shared._build_prompt(
+                prompt = _build_prompt(
                     goal,
                     selection,
                     workspace,
@@ -671,7 +675,7 @@ def run(
         proposal_missing_reason=proposal_missing_reason,
         cli_envelope=cli_envelope,
     )
-    result = _shared._apply_write_scope_enforcement_if_bound(
+    result = apply_write_scope_enforcement_if_bound(
         result,
         selection=selection,
         run_id=run_id,
@@ -679,7 +683,7 @@ def run(
     )
     stop_reason = str(result.get("stop_reason") or stop_reason)
     status = str(result.get("status") or status)
-    _shared._write_terminal_result(
+    _write_terminal_result(
         result_path=result_path,
         event_log_path=event_log_path,
         runtime_log_path=runtime_log_path,
@@ -687,7 +691,7 @@ def run(
         reason=stop_reason,
         started_at=started_at,
     )
-    _shared._attach_studio_run(
+    _attach_studio_run(
         studio_session_id=studio_session_id,
         run_id=run_id,
         event_log_path=event_log_path,
@@ -709,7 +713,7 @@ def _result_payload(
     event_log_path: Path,
     runtime_log_path: Path,
     changed_paths: list[str],
-    selection: HermesBackendSelection,
+    selection: BackendSelection,
     health: dict[str, Any],
     dispatch_probe: dict[str, Any],
     validation_status: str = "not_run",

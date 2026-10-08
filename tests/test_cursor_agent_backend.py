@@ -118,8 +118,8 @@ class CursorAgentRunBlockedTests(unittest.TestCase):
                 ),
                 patch.object(cursor_agent, "_run_dir", return_value=Path(tmp) / "run"),
                 patch.object(cursor_agent, "invoke_cursor_local", return_value=invoke),
-                patch.object(cursor_agent._shared, "_changed_paths", return_value=[]),
-                patch.object(cursor_agent._shared, "_changed_paths_delta", return_value=[]),
+                patch.object(cursor_agent, "_changed_paths", return_value=[]),
+                patch.object(cursor_agent, "_changed_paths_delta", return_value=[]),
             ):
                 (Path(tmp) / "run").mkdir()
                 result = cursor_agent.run(
@@ -150,8 +150,8 @@ class CursorAgentRunBlockedTests(unittest.TestCase):
                 ),
                 patch.object(cursor_agent, "_run_dir", return_value=Path(tmp) / "run"),
                 patch.object(cursor_agent, "invoke_cursor_local", return_value=invoke),
-                patch.object(cursor_agent._shared, "_changed_paths", return_value=[]),
-                patch.object(cursor_agent._shared, "_changed_paths_delta", return_value=[]),
+                patch.object(cursor_agent, "_changed_paths", return_value=[]),
+                patch.object(cursor_agent, "_changed_paths_delta", return_value=[]),
             ):
                 (Path(tmp) / "run").mkdir()
                 result = cursor_agent.run(

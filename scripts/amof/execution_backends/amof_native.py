@@ -1,7 +1,7 @@
 """AMOF Native Agent Runtime — first-party governed execution backend.
 
-Own agent loop, tools, write enforcement, and model adapter. Reuses shared
-Hermes helpers only for result envelope writing and changed_paths accounting.
+Own agent loop, tools, write enforcement, and model adapter. AMOF-owned
+contracts and runtime helpers are shared without importing another adapter.
 """
 
 from __future__ import annotations
@@ -30,10 +30,44 @@ from ..write_scope_proposals import (
     _normalize_repository_relative_scope_path,
     classify_repository_relative_scope_path,
 )
-from . import hermes_opensandbox as _shared
-from .hermes_opensandbox import (
+from .backend_identity import runner_backend_type
+from .runtime_utils import safe_run_id, infer_validation_status
+from .runtime_governance import (
+    FUTURE_ISOLATION_MODELS,
+    SUPPORTED_CAPABILITIES,
+    assert_no_dangerous_caps,
+    apply_write_scope_enforcement_if_bound,
+)
+from .prompt_contract import (
+    _goal_requests_write_scope_proposal,
+    _explicit_required_proposal_paths,
+    _primary_manifest_target,
+    _build_prompt,
+    _safe_tool_root_segment,
+    _relative_under_workspace,
+    _tool_visible_relative_root,
+    _manifest_targets_for_prompt,
+)
+from .remote_ial_mapping import (
+    _finite_number,
+    _extract_remote_ial_messages,
+    _remote_ial_tool_to_openai,
+    _finish_reason,
+)
+from .workspace_state import (
+    _workspace_for,
+    _workspace_repo_roots,
+    _changed_paths,
+    _changed_paths_delta,
+    _read_only_unclean_workspace_message,
+    _restore_read_only_paths,
+)
+from .result_io import _append_event, _write_runtime_log, _write_terminal_result, _attach_studio_run
+from .proposal_contract import (
     WRITE_SCOPE_PROPOSAL_REQUIRED,
     _manifest_repo_targets,
+    _extract_write_scope_proposal_outputs,
+    _proposal_missing_reason,
 )
 from . import context_assembly_receipt as _context_receipt
 from . import native_loop_budget as _loop_budget
@@ -44,8 +78,8 @@ BACKEND_TYPE = "amof_native"
 BACKEND_CONTRACT_VERSION = "amof-native-agent-runtime-v1"
 RUNTIME_CONTRACT = "AMOF Native Agent Runtime (first-party) + model adapter"
 ISOLATION_MODEL = "runtime_owner_workspace"
-FUTURE_ISOLATION_MODELS = tuple(_shared.FUTURE_ISOLATION_MODELS)
-SUPPORTED_CAPABILITIES = tuple(_shared.SUPPORTED_CAPABILITIES)
+FUTURE_ISOLATION_MODELS = tuple(FUTURE_ISOLATION_MODELS)
+SUPPORTED_CAPABILITIES = tuple(SUPPORTED_CAPABILITIES)
 DEFAULT_MODEL = "gpt-4o-mini"
 AGENT_LABEL = "AMOF Native Agent"
 SCRIPT_PROVIDER = "amof_native_script"
@@ -138,11 +172,11 @@ def _now_iso() -> str:
 
 
 def _safe_id(value: str) -> str:
-    return _shared._safe_id(value)
+    return safe_run_id(value, fallback="native-run")
 
 
 def is_amof_native_runner(record: dict[str, Any]) -> bool:
-    return _shared.runner_backend_type(record) == BACKEND_TYPE
+    return runner_backend_type(record) == BACKEND_TYPE
 
 
 def _script_path() -> Path | None:
@@ -283,7 +317,7 @@ def doctor_record(record: dict[str, Any]) -> dict[str, Any]:
     ]
     return {
         "runner_id": str(record.get("runner_id") or ""),
-        "backend_type": _shared.runner_backend_type(record),
+        "backend_type": runner_backend_type(record),
         "backend_contract_version": health.get("backend_contract_version"),
         "runtime_contract": health.get("runtime_contract"),
         "isolation_model": health.get("isolation_model"),
@@ -389,7 +423,7 @@ def build_selection(
     target_id: str | None = None,
 ) -> AmofNativeBackendSelection:
     normalized_caps = [str(item).strip() for item in requested_capabilities if str(item).strip()]
-    _shared._assert_no_dangerous_caps(normalized_caps)
+    assert_no_dangerous_caps(normalized_caps, backend_name="AMOF Native", error_type=AmofNativeBackendError)
     workspace = (
         Path(readable_root).expanduser().resolve(strict=False)
         if readable_root
@@ -397,7 +431,7 @@ def build_selection(
     )
     if workspace is not None and not workspace.is_dir():
         raise AmofNativeBackendError(f"readable root is not a directory: {readable_root}")
-    repo_roots = _shared._workspace_repo_roots(workspace) if workspace is not None else []
+    repo_roots = _workspace_repo_roots(workspace) if workspace is not None else []
     relative_grants = [
         _coerce_relative_grant(item, workspace=workspace, repo_roots=repo_roots)
         for item in approve_writable_roots
@@ -439,7 +473,7 @@ def _resolve_grants_at_runtime(
     selection: AmofNativeBackendSelection,
     workspace: Path,
 ) -> AmofNativeBackendSelection:
-    repo_roots = _shared._workspace_repo_roots(workspace)
+    repo_roots = _workspace_repo_roots(workspace)
     if not repo_roots:
         repo_roots = [workspace]
     resolved: list[str] = []
@@ -1058,7 +1092,7 @@ def _execute_scripted_loop(
             arguments = step.get("arguments") if isinstance(step.get("arguments"), dict) else {}
             output = tools.dispatch_tool(name, arguments)
             findings.append(output)
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "tool_call",
                 name=name,
@@ -1173,7 +1207,7 @@ def _chat_endpoint_and_headers() -> tuple[str, dict[str, str], str]:
 def _openai_compatible_from_remote_ial(remote: dict[str, Any], *, model: str) -> dict[str, Any]:
     """Normalize Remote IAL /v1/ial/chat into an OpenAI-like chat.completion object."""
     tool_calls = [
-        _shared._remote_ial_tool_to_openai(item, index)
+        _remote_ial_tool_to_openai(item, index)
         for index, item in enumerate(remote.get("tool_calls") or [], start=1)
         if isinstance(item, dict)
     ]
@@ -1185,7 +1219,7 @@ def _openai_compatible_from_remote_ial(remote: dict[str, Any], *, model: str) ->
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
     }
-    estimated_cost = _shared._finite_number(remote.get("estimated_cost"))
+    estimated_cost = _finite_number(remote.get("estimated_cost"))
     if estimated_cost is not None:
         usage["estimated_cost"] = estimated_cost
     if remote.get("cost_status") is not None:
@@ -1200,7 +1234,7 @@ def _openai_compatible_from_remote_ial(remote: dict[str, Any], *, model: str) ->
             {
                 "index": 0,
                 "message": message,
-                "finish_reason": _shared._finish_reason(remote.get("stop_reason"), tool_calls),
+                "finish_reason": _finish_reason(remote.get("stop_reason"), tool_calls),
             }
         ],
         "usage": usage,
@@ -1241,7 +1275,7 @@ def _emit_context_assembly_receipt(
             prompt_tokens_reported=prompt_tokens_reported,
         )
         if event_log_path is not None:
-            _shared._append_event(
+            _append_event(
                 Path(event_log_path),
                 "context_assembly_receipt_written",
                 call_index=int(call_index),
@@ -1250,7 +1284,7 @@ def _emit_context_assembly_receipt(
     except Exception as exc:
         if event_log_path is not None:
             try:
-                _shared._append_event(
+                _append_event(
                     Path(event_log_path),
                     "context_assembly_receipt_failed",
                     call_index=int(call_index),
@@ -1357,7 +1391,7 @@ def _chat_completion(
     timeout_seconds = native_ial_timeout_seconds()
     max_tokens = native_ial_max_tokens()
     if transport == TRANSPORT_REMOTE_IAL:
-        system, remote_messages = _shared._extract_remote_ial_messages(list(messages))
+        system, remote_messages = _extract_remote_ial_messages(list(messages))
         payload = {
             "system": system,
             "messages": remote_messages,
@@ -1631,7 +1665,7 @@ def _run_model_loop(
         model_turn_id = f"{run_key}:turn:{turn_number}"
         # Native does not auto-retry timed-out model calls; attempt is always 1 per turn.
         attempt_id = f"{model_turn_id}:attempt:1"
-        _shared._append_event(
+        _append_event(
             event_log_path,
             "model_turn",
             model_turn_id=model_turn_id,
@@ -1658,7 +1692,7 @@ def _run_model_loop(
         if read_stall_gate and repeated_reads_since_write >= 6:
             write_or_checkpoint_turn = True
             active_tools = [spec for spec in tool_specs if spec["function"]["name"] in {"write_file", "replace_text"}]
-            _shared._append_event(event_log_path, "workspace_read_stall_gate",
+            _append_event(event_log_path, "workspace_read_stall_gate",
                                   at_turn=turn_number,
                                   repeated_reads=repeated_reads_since_write)
         if budget_state.synthesis_required:
@@ -1671,7 +1705,7 @@ def _run_model_loop(
                     }
                 )
                 budget_state.synthesis_consumed = True
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "loop_budget_synthesis_required",
                     at_turn=turn_number,
@@ -1697,7 +1731,7 @@ def _run_model_loop(
                 call_index=call_index,
             )
         except AmofNativeTimeoutError as exc:
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "model_turn_timeout",
                 model_turn_id=exc.model_turn_id or model_turn_id,
@@ -1715,9 +1749,9 @@ def _run_model_loop(
         _runtime_usage.add_token_field(acc, "completion_tokens", completion_tokens)
         acc["model_calls"] = int(acc.get("model_calls") or 0) + 1
         actual_model = str(response.get("model") or model)
-        cost = _shared._finite_number(call_usage.get("estimated_cost"))
+        cost = _finite_number(call_usage.get("estimated_cost"))
         if cost is not None:
-            prior = _shared._finite_number(acc.get("estimated_cost_usd"))
+            prior = _finite_number(acc.get("estimated_cost_usd"))
             acc["estimated_cost_usd"] = (prior or 0.0) + float(cost)
         if call_usage.get("cost_status") is not None:
             acc["cost_status"] = call_usage.get("cost_status")
@@ -1734,7 +1768,7 @@ def _run_model_loop(
             "provider_receipt_ref": call_usage.get("provider_receipt_ref"),
         }
         acc.setdefault("calls", []).append(call_record)
-        _shared._append_event(
+        _append_event(
             event_log_path,
             "model_call_usage",
             model_turn_id=model_turn_id,
@@ -1765,7 +1799,7 @@ def _run_model_loop(
         tool_calls = message.get("tool_calls")
         if budget_state.synthesis_required and isinstance(tool_calls, list) and tool_calls:
             stop = _loop_budget.STOP_SYNTHESIS_NOT_COMPLETED
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "loop_budget_synthesis_not_completed",
                 at_turn=turn_number,
@@ -1808,7 +1842,7 @@ def _run_model_loop(
                     output = f"ERROR: {exc}"
                     findings.append(output)
                     acc["tool_calls"] = int(acc.get("tool_calls") or 0) + 1
-                    _shared._append_event(
+                    _append_event(
                         event_log_path,
                         "tool_call",
                         name=name,
@@ -1849,7 +1883,7 @@ def _run_model_loop(
                         read_counts[read_key] = read_counts.get(read_key, 0) + 1
                 if first_edit_path and turn_number == 1 and name == "replace_text":
                     first_edit_completed = True
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "tool_call",
                     name=name,
@@ -1890,7 +1924,7 @@ def _run_model_loop(
             next_turn = turn_number + 1
             if next_turn > absolute:
                 stop = _loop_budget.STOP_ABSOLUTE_TURN_LIMIT
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "loop_budget_absolute_stop",
                     at_turn=turn_number,
@@ -1904,7 +1938,7 @@ def _run_model_loop(
                     return "failed", "timeout", "\n".join(findings)
                 if budget_state.synthesis_required:
                     stop = _loop_budget.STOP_SYNTHESIS_NOT_COMPLETED
-                    _shared._append_event(
+                    _append_event(
                         event_log_path,
                         "loop_budget_synthesis_not_completed",
                         at_turn=turn_number,
@@ -1916,7 +1950,7 @@ def _run_model_loop(
                     outcome = _loop_budget.decide_readonly_synthesis(
                         budget_state, at_turn=turn_number
                     )
-                    _shared._append_event(
+                    _append_event(
                         event_log_path,
                         "loop_budget_readonly_synthesis_decision",
                         at_turn=turn_number,
@@ -1945,7 +1979,7 @@ def _run_model_loop(
                     at_turn=turn_number,
                     require_material=not workspace_write_progress,
                 )
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "loop_budget_extension_decision",
                     **{
@@ -1975,7 +2009,7 @@ def _run_model_loop(
             return "failed", "first_edit_not_requested", content or "\n".join(findings)
         if budget_state.synthesis_required and not content:
             stop = _loop_budget.STOP_SYNTHESIS_NOT_COMPLETED
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "loop_budget_synthesis_not_completed",
                 at_turn=turn_number,
@@ -2003,7 +2037,7 @@ def _changed_paths_outside_grants(
 ) -> list[str]:
     if not changed or not selection.writable_roots_relative:
         return list(changed) if changed and not selection.writable_roots_relative else []
-    repo_roots = _shared._workspace_repo_roots(workspace) or [workspace]
+    repo_roots = _workspace_repo_roots(workspace) or [workspace]
     outside: list[str] = []
     grant_rel = set(selection.writable_roots_relative)
     for item in changed:
@@ -2053,8 +2087,8 @@ def _blocked_result(
     )
     if extra_evidence:
         result["evidence_refs"].update(extra_evidence)
-    _shared._append_event(event_log_path, "run_blocked", reason=reason)
-    return _shared._write_terminal_result(
+    _append_event(event_log_path, "run_blocked", reason=reason)
+    return _write_terminal_result(
         result_path=result_path,
         event_log_path=event_log_path,
         runtime_log_path=runtime_log_path,
@@ -2088,12 +2122,12 @@ def run(
     runtime_log_path = run_dir / "runtime.log"
     result_path = run_dir / "result.json"
     started_at = _now_iso()
-    workspace = _shared._workspace_for(selection, manifest)
+    workspace = _workspace_for(selection, manifest)
     requested_model = _requested_model(model)
     effective_provider = _effective_provider(model)
     transport = _inference_transport()
 
-    _shared._append_event(
+    _append_event(
         event_log_path,
         "run_created",
         run_id=run_id,
@@ -2102,7 +2136,7 @@ def run(
         backend=BACKEND_TYPE,
         studio_session_id=studio_session_id,
     )
-    _shared._attach_studio_run(
+    _attach_studio_run(
         studio_session_id=studio_session_id,
         run_id=run_id,
         event_log_path=event_log_path,
@@ -2165,12 +2199,12 @@ def run(
             reason="target_binding_rejected",
         )
 
-    preexisting_changed_paths = _shared._changed_paths(workspace)
+    preexisting_changed_paths = _changed_paths(workspace)
     if not selection.writable_roots_relative and preexisting_changed_paths:
         return _blocked_result(
             run_id=run_id,
             stop_reason="read_only_workspace_not_clean",
-            final_text=_shared._read_only_unclean_workspace_message(list(preexisting_changed_paths)),
+            final_text=_read_only_unclean_workspace_message(list(preexisting_changed_paths)),
             studio_session_id=studio_session_id,
             event_log_path=event_log_path,
             runtime_log_path=runtime_log_path,
@@ -2184,7 +2218,7 @@ def run(
             extra_evidence={"preexisting_changed_paths": list(preexisting_changed_paths)},
         )
 
-    repo_roots = _shared._workspace_repo_roots(workspace) or [workspace]
+    repo_roots = _workspace_repo_roots(workspace) or [workspace]
     grant_paths = [Path(item) for item in selection.writable_roots_resolved]
     enforcer = _GrantEnforcer(
         workspace=workspace,
@@ -2202,15 +2236,15 @@ def run(
             deadline = time.monotonic() + float(selection.timeout_seconds)
 
     proposal_required = (
-        _shared._goal_requests_write_scope_proposal(goal)
+        _goal_requests_write_scope_proposal(goal)
         and not selection.writable_roots
     )
-    expected_proposal_paths = _shared._explicit_required_proposal_paths(goal)
+    expected_proposal_paths = _explicit_required_proposal_paths(goal)
     write_scope_proposals: list[dict[str, Any]] = []
     proposal_missing_reason: str | None = None
     proposal_replan_used = False
     read_only_replan_used = False
-    prompt = _shared._build_prompt(
+    prompt = _build_prompt(
         goal,
         selection,
         workspace,
@@ -2288,7 +2322,7 @@ def run(
             stop_reason = STOP_REASON_REMOTE_IAL_TOTAL_TIMEOUT
             exit_code = 124
             raw_task_findings = str(exc)
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 STOP_REASON_REMOTE_IAL_TOTAL_TIMEOUT,
                 error=str(exc),
@@ -2302,20 +2336,20 @@ def run(
             stop_reason = "grant_enforcement_failed"
             exit_code = 1
             raw_task_findings = str(exc)
-            _shared._append_event(event_log_path, "grant_enforcement_failed", error=str(exc))
+            _append_event(event_log_path, "grant_enforcement_failed", error=str(exc))
 
-        write_scope_proposals, task_findings = _shared._extract_write_scope_proposal_outputs(
+        write_scope_proposals, task_findings = _extract_write_scope_proposal_outputs(
             raw_task_findings or "",
             expected_allowed_roots=expected_proposal_paths,
         )
         proposal_missing_reason = (
-            _shared._proposal_missing_reason(task_findings, "")
+            _proposal_missing_reason(task_findings, "")
             if proposal_required and not write_scope_proposals
             else None
         )
 
-        changed = _shared._changed_paths_delta(
-            preexisting_changed_paths, _shared._changed_paths(workspace)
+        changed = _changed_paths_delta(
+            preexisting_changed_paths, _changed_paths(workspace)
         )
         outside = _changed_paths_outside_grants(changed, selection, workspace)
         if outside and status == "completed":
@@ -2323,7 +2357,7 @@ def run(
             stop_reason = "write_outside_grant"
             exit_code = 1
             task_findings = f"Modified paths outside grant: {', '.join(outside)}"
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "write_outside_grant",
                 changed_paths=list(changed),
@@ -2332,12 +2366,12 @@ def run(
             break
 
         if status == "completed" and not selection.writable_roots and changed:
-            restored_paths = _shared._restore_read_only_paths(workspace, changed)
+            restored_paths = _restore_read_only_paths(workspace, changed)
             if read_only_replan_used:
                 status = "failed"
                 stop_reason = "read_only_mutation_detected"
                 exit_code = 1
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "read_only_mutation_blocked",
                     changed_paths=list(changed),
@@ -2345,14 +2379,14 @@ def run(
                 )
                 changed = []
                 break
-            _shared._append_event(
+            _append_event(
                 event_log_path,
                 "read_only_mutation_replan",
                 changed_paths=list(changed),
                 restored_paths=list(restored_paths),
             )
             read_only_replan_used = True
-            prompt = _shared._build_prompt(
+            prompt = _build_prompt(
                 goal,
                 selection,
                 workspace,
@@ -2363,7 +2397,7 @@ def run(
             )
             continue
 
-        validation_status = _shared._infer_validation_status(task_findings)
+        validation_status = infer_validation_status(task_findings)
         if status == "completed" and validation_status == "failed":
             status = "failed"
             stop_reason = "validation_failed"
@@ -2372,13 +2406,13 @@ def run(
 
         if status == "completed" and proposal_required and not write_scope_proposals:
             if not proposal_replan_used:
-                _shared._append_event(
+                _append_event(
                     event_log_path,
                     "proposal_contract_replan",
                     reason=proposal_missing_reason or "structured proposal missing",
                 )
                 proposal_replan_used = True
-                prompt = _shared._build_prompt(
+                prompt = _build_prompt(
                     goal,
                     selection,
                     workspace,
@@ -2400,7 +2434,7 @@ def run(
         run_id=run_id,
         task_findings_available=bool(task_findings),
     )
-    _shared._write_runtime_log(runtime_log_path, task_findings or final_text)
+    _write_runtime_log(runtime_log_path, task_findings or final_text)
 
     result = _result_payload(
         run_id=run_id,
@@ -2427,7 +2461,7 @@ def run(
         loop_budget=loop_budget_telemetry or None,
         native_write_receipts=tools.write_receipts,
     )
-    result = _shared._apply_write_scope_enforcement_if_bound(
+    result = apply_write_scope_enforcement_if_bound(
         result,
         selection=selection,
         run_id=run_id,
@@ -2435,7 +2469,7 @@ def run(
     )
     stop_reason = str(result.get("stop_reason") or stop_reason)
     status = str(result.get("status") or status)
-    _shared._write_terminal_result(
+    _write_terminal_result(
         result_path=result_path,
         event_log_path=event_log_path,
         runtime_log_path=runtime_log_path,
@@ -2443,7 +2477,7 @@ def run(
         reason=stop_reason,
         started_at=started_at,
     )
-    _shared._attach_studio_run(
+    _attach_studio_run(
         studio_session_id=studio_session_id,
         run_id=run_id,
         event_log_path=event_log_path,
@@ -2582,7 +2616,7 @@ def _result_payload(
         ],
         raw_usage_refs=["evidence_refs.remote_ial_usage"],
     )
-    spent = _shared._finite_number(acc.get("estimated_cost_usd")) or 0.0
+    spent = _finite_number(acc.get("estimated_cost_usd")) or 0.0
     return {
         "result_kind": "agent_run_result",
         "contract_version": "agent-run-v1",

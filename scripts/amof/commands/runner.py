@@ -17,6 +17,7 @@ import yaml
 from ..app_config import load_contexts, resolve_active_context_name
 from ..app_paths import get_app_paths, runs_dir
 from ..execution_backends import amof_native, claude_code, cursor_agent, hermes_opensandbox
+from ..execution_backends.backend_identity import runner_backend_type
 from ..orchestrator.events import EventLog
 from .intake import IntakeCliError, _is_read_only_intake, _validate_packet
 
@@ -634,7 +635,7 @@ def _runner_summary(record: dict[str, Any]) -> dict[str, str]:
         "runner_id": str(record.get("runner_id") or ""),
         "context": str(record.get("context") or ""),
         "status": str(record.get("status") or ""),
-        "backend": hermes_opensandbox.runner_backend_type(record),
+        "backend": runner_backend_type(record),
         "capabilities": capability_summary or "-",
         "allowed_mutation_modes": mutation_summary or "-",
         "max_concurrency": str(record.get("max_concurrency") or ""),
@@ -787,7 +788,7 @@ def _doctor_issues() -> list[str]:
 def _doctor_backend_records() -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for record in _load_runners():
-        backend = hermes_opensandbox.runner_backend_type(record)
+        backend = runner_backend_type(record)
         if backend == hermes_opensandbox.BACKEND_TYPE:
             records.append(hermes_opensandbox.doctor_record(record))
         elif backend == claude_code.BACKEND_TYPE:
@@ -1206,7 +1207,7 @@ def _cmd_match(args: argparse.Namespace) -> int:
             reasons[-1] = reason
             evidence = _authority_candidate_evidence(record, authority_gate=authority_gate, runner_reason=reason)
         if eligible:
-            backend = hermes_opensandbox.runner_backend_type(record)
+            backend = runner_backend_type(record)
             backend_module = DISPATCH_BACKENDS.get(backend)
             dispatch_available = (
                 bool(backend_module.runtime_health()["dispatch_available"])
