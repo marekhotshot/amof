@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import fcntl
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -86,11 +87,14 @@ def create_hermes_decoupling_campaign(path: Path, *, campaign_id: str, objective
     )
 
 
-def create_cloud_hermes_continuation_campaign(path: Path, *, campaign_id: str) -> dict[str, Any]:
+def create_cloud_hermes_continuation_campaign(
+    path: Path, *, campaign_id: str, target_id: str | None = None,
+    expected_head: str | None = None,
+) -> dict[str, Any]:
     """Fixed read-only cloud proof; distinct from Native/Hermes decoupling."""
     objectives = (
-        ("pinned-checkout", "Verify execution occurs against the pinned repository checkout."),
-        ("stable-head", "Verify the repository remains on the same pinned HEAD after the first governed slice."),
+        ("pinned-checkout", "Verify that the pinned repository HEAD equals the authorized commit."),
+        ("stable-head", "Verify again that the pinned repository HEAD equals the authorized commit."),
     )
     plan = [{
         "slice_id": f"{campaign_id}-slice-{index}",
@@ -100,6 +104,11 @@ def create_cloud_hermes_continuation_campaign(path: Path, *, campaign_id: str) -
         "requested_capabilities": ["read"],
         "objective": goal,
         "expected_validation": "repo-head",
+        **({"mission_acceptance": {
+            "check_id": "repo-head", "target_id": target_id,
+            "command": ["git", "rev-parse", "HEAD"],
+            "expected_stdout": expected_head,
+        }} if target_id and expected_head else {}),
     } for index, (scope, goal) in enumerate(objectives, start=1)]
     return create_campaign(
         path, campaign_id=campaign_id,
@@ -159,9 +168,37 @@ def _candidate(state: dict[str, Any], proposal: dict[str, Any]) -> dict[str, Any
         "slice_id", "parent_campaign_id", "scope_tag", "requested_backend",
         "requested_capabilities", "objective", "expected_validation",
     )}
+    if "mission_acceptance" in proposal:
+        normalized["mission_acceptance"] = proposal["mission_acceptance"]
     if normalized != state["slice_plan"][number - 1]:
         raise ValueError("next slice differs from AMOF-authorized plan")
     return normalized
+
+
+def _mission_acceptance_pass(slice_record: dict[str, Any], result: dict[str, Any]) -> bool:
+    """Bind the trusted runtime observation to this slice's explicit objective check.
+
+    The runtime receipt establishes execution integrity independently. A slice
+    without this separate, pre-authorized objective criterion cannot continue.
+    """
+    criterion = slice_record.get("mission_acceptance")
+    observation = result.get("acceptance_observation")
+    if not isinstance(criterion, dict) or not isinstance(observation, dict):
+        return False
+    expected = criterion.get("expected_stdout")
+    target = criterion.get("target_id")
+    if (set(criterion) != {"check_id", "target_id", "command", "expected_stdout"}
+            or criterion.get("check_id") != slice_record.get("expected_validation")
+            or criterion.get("command") != ["git", "rev-parse", "HEAD"]
+            or not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{40}", expected) is None
+            or not isinstance(target, str) or not target.endswith(":" + expected)):
+        return False
+    return (observation.get("check_id") == criterion["check_id"]
+            and observation.get("command") == criterion["command"]
+            and observation.get("target_id") == target
+            and observation.get("exit_code") == 0
+            and str(observation.get("stdout") or "").strip() == expected
+            and observation.get("status") == "PASS")
 
 
 def _advance_campaign_unlocked(
@@ -224,6 +261,8 @@ def _advance_campaign_unlocked(
         result, evidence_root=handoff._acceptance_evidence_dir(handoff_id),
     ) != "PASS":
         state.update(status="BLOCKED", reason="authoritative_acceptance_not_pass")
+    elif not _mission_acceptance_pass(current, result):
+        state.update(status="BLOCKED", reason="mission_acceptance_not_pass")
     else:
         progress = observe_progress(current, result)
         if not isinstance(progress, dict) or not progress.get("ref") or not progress.get("sha256"):
@@ -247,11 +286,13 @@ def _advance_campaign_unlocked(
                         **current, "handoff_id": handoff_id, "run_id": result.get("session_id"),
                         "backend": result["backend"], "result_path": str(result_path),
                         "result_sha256": result_sha256, "acceptance_state": "PASS",
+                        "execution_acceptance": "PASS", "mission_acceptance": "PASS",
                         "progress_evidence": progress,
                         "continuation_decision": {
                             "decision": "CONTINUE" if remaining else "DONE",
                             "reasons": {
                                 "authoritative_acceptance": "PASS",
+                                "mission_acceptance": "PASS",
                                 "backend_provenance": "valid",
                                 "scope": "within_campaign",
                                 "authority_expansion": False,

@@ -8,9 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from amof.campaign_loop import advance_campaign, create_cloud_hermes_continuation_campaign, create_cloud_native_continuation_campaign, create_hermes_decoupling_campaign, load_campaign, next_hermes_decoupling_slice, run_campaign
+from amof.campaign_loop import advance_campaign, create_campaign, create_cloud_hermes_continuation_campaign, create_cloud_native_continuation_campaign, create_hermes_decoupling_campaign, load_campaign, next_hermes_decoupling_slice, run_campaign
 from amof.commands import handoff
-from test_canonical_acceptance_handoff import definition, observation, backend_result
+from test_canonical_acceptance_handoff import SHA, TARGET, definition, observation, backend_result
 
 
 class CampaignLoopTests(unittest.TestCase):
@@ -22,10 +22,25 @@ class CampaignLoopTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.path = self.home / "campaign.json"
-        create_hermes_decoupling_campaign(
-            self.path, campaign_id="campaign-hermes", objective="Remove implicit Hermes coupling",
-        )
+        self._create_bound_campaign()
         self.statuses = {}
+
+    def _create_bound_campaign(self):
+        plan = [{"slice_id": f"campaign-hermes-slice-{index}", "parent_campaign_id": "campaign-hermes",
+                 "scope_tag": scope, "requested_backend": backend,
+                 "requested_capabilities": ["read"],
+                 "objective": "Verify the pinned repository HEAD equals the authorized commit",
+                 "expected_validation": "repo-head",
+                 "mission_acceptance": {"check_id": "repo-head", "target_id": TARGET,
+                                        "command": ["git", "rev-parse", "HEAD"],
+                                        "expected_stdout": SHA}}
+                for index, (scope, backend) in enumerate(
+                    (("native-independence", "amof_native"),
+                     ("explicit-hermes", "hermes_opensandbox")), start=1)]
+        create_campaign(self.path, campaign_id="campaign-hermes",
+                        objective="Verify HEAD twice", allowed_backends=["amof_native", "hermes_opensandbox"],
+                        allowed_scope_tags=["native-independence", "explicit-hermes"],
+                        slice_plan=plan, max_slices=2)
 
     def _write_result(self, handoff_id, *, backend="amof_native", receipt=True, code=0,
                       status="completed", stop_reason="completed", forged=False):
@@ -91,7 +106,8 @@ class CampaignLoopTests(unittest.TestCase):
 
     def test_cloud_hermes_plan_continues_with_persisted_decision(self):
         self.path.unlink()
-        create_cloud_hermes_continuation_campaign(self.path, campaign_id="campaign-cloud")
+        create_cloud_hermes_continuation_campaign(self.path, campaign_id="campaign-cloud",
+                                                  target_id=TARGET, expected_head=SHA)
         self._write_result("handoff-one", backend="hermes_opensandbox")
         self._write_result("handoff-two", backend="hermes_opensandbox")
         dispatched = []
@@ -126,6 +142,27 @@ class CampaignLoopTests(unittest.TestCase):
         self.assertEqual(terminal["reason"], "authoritative_acceptance_not_pass")
         self.assertEqual(dispatched, ["campaign-cloud-slice-1"])
 
+    def test_runtime_checkout_pass_without_objective_binding_stops_campaign(self):
+        """The observed failed-inspection prose cannot be rescued by repo-head PASS."""
+        self.path.unlink()
+        create_cloud_hermes_continuation_campaign(self.path, campaign_id="campaign-cloud")
+        self._write_result("handoff-one", backend="hermes_opensandbox")
+        result_path = Path(self.statuses["handoff-one"]["canonical_result_path"])
+        result = json.loads(result_path.read_text())
+        result["task_findings"] = "The inspection could not be completed."
+        result_path.write_text(json.dumps(result))
+        self.statuses["handoff-one"]["result_sha256"] = hashlib.sha256(result_path.read_bytes()).hexdigest()
+        dispatched = []
+        terminal = run_campaign(
+            self.path, propose_next=next_hermes_decoupling_slice,
+            dispatch_handoff=lambda item: dispatched.append(item["slice_id"]) or "handoff-one",
+            observe_progress=lambda *_: {}, load_status=self.statuses.__getitem__,
+        )
+        self.assertEqual(terminal["status"], "BLOCKED")
+        self.assertEqual(terminal["reason"], "mission_acceptance_not_pass")
+        self.assertEqual(dispatched, ["campaign-cloud-slice-1"])
+        self.assertEqual(terminal["completed_slices"], [])
+
     def test_cloud_native_fixed_plan_uses_same_acceptance_gate(self):
         self.path.unlink()
         create_cloud_native_continuation_campaign(self.path, campaign_id="campaign-native")
@@ -142,11 +179,9 @@ class CampaignLoopTests(unittest.TestCase):
         terminal = run_campaign(self.path, propose_next=next_hermes_decoupling_slice,
                                 dispatch_handoff=dispatch, observe_progress=progress,
                                 load_status=self.statuses.__getitem__)
-        self.assertEqual(terminal["status"], "DONE")
-        self.assertEqual(len(dispatched), 2)
-        self.assertEqual([item["backend"] for item in terminal["completed_slices"]],
-                         ["amof_native", "amof_native"])
-        self.assertEqual(terminal["completed_slices"][0]["continuation_decision"]["decision"], "CONTINUE")
+        self.assertEqual(terminal["status"], "BLOCKED")
+        self.assertEqual(terminal["reason"], "mission_acceptance_not_pass")
+        self.assertEqual(len(dispatched), 1)
 
     def test_backend_prose_and_exit_zero_without_observation_do_not_continue(self):
         self._write_result("handoff-one", receipt=False, forged=True)
