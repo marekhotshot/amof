@@ -110,6 +110,30 @@ def create_cloud_hermes_continuation_campaign(path: Path, *, campaign_id: str) -
     )
 
 
+def create_cloud_native_continuation_campaign(path: Path, *, campaign_id: str) -> dict[str, Any]:
+    """Fixed read-only Native cloud proof; uses the unchanged campaign gate."""
+    objectives = (
+        ("pinned-checkout", "Verify Native inspects the pinned repository checkout read-only."),
+        ("stable-head", "Verify Native observes the same pinned repository HEAD in a second governed slice."),
+    )
+    plan = [{
+        "slice_id": f"{campaign_id}-slice-{index}",
+        "parent_campaign_id": campaign_id,
+        "scope_tag": scope,
+        "requested_backend": "amof_native",
+        "requested_capabilities": ["read"],
+        "objective": goal,
+        "expected_validation": "repo-head",
+    } for index, (scope, goal) in enumerate(objectives, start=1)]
+    return create_campaign(
+        path, campaign_id=campaign_id,
+        objective="Prove two governed read-only Native cloud slices continue on authoritative runtime acceptance.",
+        allowed_backends=["amof_native"],
+        allowed_scope_tags=[scope for scope, _ in objectives],
+        slice_plan=plan, max_slices=2,
+    )
+
+
 def load_campaign(path: Path) -> dict[str, Any]:
     state = json.loads(path.read_text(encoding="utf-8"))
     if state.get("schema") != SCHEMA:

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from amof.campaign_loop import advance_campaign, create_cloud_hermes_continuation_campaign, create_hermes_decoupling_campaign, load_campaign, next_hermes_decoupling_slice, run_campaign
+from amof.campaign_loop import advance_campaign, create_cloud_hermes_continuation_campaign, create_cloud_native_continuation_campaign, create_hermes_decoupling_campaign, load_campaign, next_hermes_decoupling_slice, run_campaign
 from amof.commands import handoff
 from test_canonical_acceptance_handoff import definition, observation, backend_result
 
@@ -125,6 +125,28 @@ class CampaignLoopTests(unittest.TestCase):
                                 observe_progress=lambda *_: {}, load_status=self.statuses.__getitem__)
         self.assertEqual(terminal["reason"], "authoritative_acceptance_not_pass")
         self.assertEqual(dispatched, ["campaign-cloud-slice-1"])
+
+    def test_cloud_native_fixed_plan_uses_same_acceptance_gate(self):
+        self.path.unlink()
+        create_cloud_native_continuation_campaign(self.path, campaign_id="campaign-native")
+        self._write_result("handoff-one", backend="amof_native")
+        self._write_result("handoff-two", backend="amof_native")
+        dispatched = []
+        def dispatch(item):
+            dispatched.append(item["slice_id"])
+            return "handoff-one" if len(dispatched) == 1 else "handoff-two"
+        def progress(item, _result):
+            path = self.home / f"{item['scope_tag']}.txt"
+            path.write_text(item["objective"])
+            return {"ref": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        terminal = run_campaign(self.path, propose_next=next_hermes_decoupling_slice,
+                                dispatch_handoff=dispatch, observe_progress=progress,
+                                load_status=self.statuses.__getitem__)
+        self.assertEqual(terminal["status"], "DONE")
+        self.assertEqual(len(dispatched), 2)
+        self.assertEqual([item["backend"] for item in terminal["completed_slices"]],
+                         ["amof_native", "amof_native"])
+        self.assertEqual(terminal["completed_slices"][0]["continuation_decision"]["decision"], "CONTINUE")
 
     def test_backend_prose_and_exit_zero_without_observation_do_not_continue(self):
         self._write_result("handoff-one", receipt=False, forged=True)
