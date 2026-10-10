@@ -5,8 +5,10 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -128,6 +130,7 @@ class PreparedHandoffPacket:
     payload_kind: str
     payload: PreparedPayload
     state: str
+    campaign_binding: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -143,6 +146,7 @@ class PreparedHandoffPacket:
             "payload_kind": self.payload_kind,
             "payload": self.payload.to_dict(),
             "state": self.state,
+            **({"campaign_binding": self.campaign_binding} if self.campaign_binding is not None else {}),
         }
 
 
@@ -1016,8 +1020,70 @@ def _write_packet(packet: PreparedHandoffPacket) -> Path:
     fd = os.open(packet_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
     os.chmod(packet_path, 0o600)
+    for directory in (outbox.parent.parent, outbox.parent, outbox):
+        directory_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     return packet_path
+
+
+def campaign_dispatch_identity(binding: dict[str, Any]) -> tuple[str, str, str]:
+    """Return a stable handoff ID, idempotency key, and target fingerprint."""
+    required = {"version", "campaign_id", "slice_id", "project_id", "canonical_mission_id",
+                "target_id", "expected_source_sha", "workspace_id", "repo_name", "repo_owner", "branch_ref"}
+    if set(binding) != required or binding.get("version") != 2:
+        raise ValueError("campaign binding v2 requires exact identity fields")
+    for key in required - {"version"}:
+        if not isinstance(binding[key], str) or not binding[key].strip():
+            raise ValueError(f"campaign binding {key} is required")
+    if re.fullmatch(r"[0-9a-f]{40}", binding["expected_source_sha"]) is None:
+        raise ValueError("campaign source SHA must be exact")
+    if not Path(binding["workspace_id"]).is_absolute():
+        raise ValueError("campaign workspace identity must be an absolute path")
+    expected_target = (f"github_app:{binding['repo_owner']}/{binding['repo_name']}:"
+                       f"{binding['expected_source_sha']}")
+    if binding["target_id"] != expected_target:
+        raise ValueError("campaign target and source identity mismatch")
+    target = {key: binding[key] for key in ("target_id", "expected_source_sha", "workspace_id",
+                                           "repo_name", "repo_owner", "branch_ref")}
+    target_fingerprint = hashlib.sha256(_canonical_json_bytes(target)).hexdigest()
+    identity = {key: binding[key] for key in ("campaign_id", "slice_id", "project_id", "canonical_mission_id")}
+    digest = hashlib.sha256(_canonical_json_bytes(identity)).hexdigest()
+    return f"campaign-{digest[:40]}", f"campaign-dispatch-{digest}", target_fingerprint
+
+
+def prepare_campaign_handoff(*, binding: dict[str, Any], canonical_packet_text: str) -> dict[str, str]:
+    """Create or verify one durable, immutable packet before dispatch."""
+    handoff_id, key, target_fingerprint = campaign_dispatch_identity(binding)
+    canonical, canonical_text = _parse_canonical_mission_packet_text(
+        canonical_packet_text, field_name="campaign canonical mission packet",
+        require_canonical_text=True, studio_session_id=None,
+    )
+    if (canonical.mission_id != binding["canonical_mission_id"] or
+            canonical.repo_name != binding["repo_name"] or
+            (canonical.repo_owner or "") != binding["repo_owner"] or
+            canonical.branch_ref != binding["branch_ref"]):
+        raise ValueError("campaign Mission or repository binding mismatch")
+    payload = _validated_payload_from_text(canonical_text, field_name="campaign packet")
+    packet = PreparedHandoffPacket(
+        schema_version=HANDOFF_PACKET_SCHEMA_VERSION, handoff_id=handoff_id,
+        source="campaign", target=HANDOFF_TARGET_AMOF_AGENT, studio_session_id=None,
+        payload_kind="canonical_mission_packet", payload=payload, state="prepared",
+        campaign_binding={**binding, "idempotency_key": key, "target_fingerprint": target_fingerprint},
+    )
+    try:
+        path = _write_packet(packet)
+    except FileExistsError:
+        path, existing = _load_prepared_packet(handoff_id)
+        if existing != packet:
+            raise ValueError("campaign prepared handoff identity conflict") from None
+    return {"handoff_id": handoff_id, "idempotency_key": key,
+            "target_fingerprint": target_fingerprint, "packet_path": str(path)}
 
 
 def _build_packet(
@@ -1063,6 +1129,7 @@ def _parse_prepared_handoff_packet(payload: dict[str, Any]) -> PreparedHandoffPa
         "payload_kind",
         "payload",
         "state",
+        "campaign_binding",
     }
     extras = sorted(set(payload) - allowed)
     if extras:
@@ -1116,6 +1183,21 @@ def _parse_prepared_handoff_packet(payload: dict[str, Any]) -> PreparedHandoffPa
         prepared_payload = _validated_payload_from_text(
             canonical_text, field_name="payload.text"
         )
+    campaign_binding = payload.get("campaign_binding")
+    if campaign_binding is not None:
+        if not isinstance(campaign_binding, dict):
+            raise ValueError("campaign binding must be an object")
+        identity = {key: value for key, value in campaign_binding.items()
+                    if key not in {"idempotency_key", "target_fingerprint"}}
+        expected_id, key, fingerprint = campaign_dispatch_identity(identity)
+        if (handoff_id != expected_id or campaign_binding.get("idempotency_key") != key or
+                campaign_binding.get("target_fingerprint") != fingerprint or
+                payload_kind != "canonical_mission_packet" or
+                canonical_packet.mission_id != identity["canonical_mission_id"] or
+                canonical_packet.repo_name != identity["repo_name"] or
+                (canonical_packet.repo_owner or "") != identity["repo_owner"] or
+                canonical_packet.branch_ref != identity["branch_ref"]):
+            raise ValueError("campaign prepared handoff binding mismatch")
     return PreparedHandoffPacket(
         schema_version=HANDOFF_PACKET_SCHEMA_VERSION,
         handoff_id=handoff_id,
@@ -1125,6 +1207,7 @@ def _parse_prepared_handoff_packet(payload: dict[str, Any]) -> PreparedHandoffPa
         payload_kind=payload_kind,
         payload=prepared_payload,
         state="prepared",
+        campaign_binding=campaign_binding,
     )
 
 
@@ -1167,10 +1250,63 @@ def _load_execution_state(handoff_id: str) -> Optional[HandoffExecutionState]:
 
 
 def _write_execution_state(state: HandoffExecutionState) -> Path:
-    return _write_operator_only_json(
-        _handoff_state_dir() / f"{state.handoff_id}.json",
-        state.to_dict(),
-    )
+    directory = _ensure_operator_only_dir(_handoff_state_dir())
+    path = directory / f"{state.handoff_id}.json"
+    temporary = directory / f".{state.handoff_id}.{uuid.uuid4().hex}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(_canonical_json_bytes(state.to_dict()))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def _execution_claim_path(handoff_id: str) -> Path:
+    return _handoff_state_dir() / "claims" / f"{_validate_handoff_id(handoff_id)}.json"
+
+
+def _claim_execution_once(handoff_id: str) -> str:
+    """Durably claim an attempt before any runner or write binding can start.
+
+    O_EXCL is the cross-process compare-and-swap. A stale claim is deliberately
+    never reclaimed: an interrupted worker may have performed an external side
+    effect before its result was persisted.
+    """
+    path = _execution_claim_path(handoff_id)
+    _ensure_operator_only_dir(path.parent)
+    for directory in (path.parent.parent.parent.parent, path.parent.parent.parent,
+                      path.parent.parent):
+        directory_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    owner = uuid.uuid4().hex
+    payload = {"schema_version": 1, "handoff_id": handoff_id, "owner": owner,
+               "claimed_at": _now_iso()}
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise ValueError("handoff execution already claimed; reconcile its result or mark UNCERTAIN") from exc
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(_canonical_json_bytes(payload))
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    return owner
 
 
 def _acceptance_evidence_dir(handoff_id: str) -> Path:
@@ -1748,6 +1884,34 @@ def _load_execution_manifest(args: Any) -> dict[str, Any]:
         ) from exc
 
 
+def _verify_campaign_execution_target(packet: PreparedHandoffPacket, manifest: dict[str, Any]) -> None:
+    """Compare the bound target with the workspace selected for execution."""
+    binding = packet.campaign_binding
+    if binding is None:
+        return
+    repos = manifest.get("repos")
+    if not isinstance(repos, list) or len(repos) != 1 or not isinstance(repos[0], dict):
+        raise ValueError("campaign execution requires one exact manifest repository")
+    repo = repos[0]
+    workspace = Path(binding["workspace_id"])
+    path = Path(str(repo.get("path") or ""))
+    if (not path.is_absolute() or path.resolve(strict=False) != workspace.resolve(strict=False)
+            or repo.get("name") != binding["repo_name"]):
+        raise ValueError("campaign execution workspace or repository mismatch")
+    expected_url = f"https://github.com/{binding['repo_owner']}/{binding['repo_name']}.git"
+    if repo.get("url") != expected_url:
+        raise ValueError("campaign execution repository URL mismatch")
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(workspace), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("campaign source identity unavailable") from exc
+    if completed.stdout.strip() != binding["expected_source_sha"]:
+        raise ValueError("campaign source SHA mismatch")
+
+
 def _build_safe_evidence_refs(result: dict[str, Any]) -> dict[str, Optional[str]]:
     return {
         "plan_path": _optional_text(result.get("plan_path")),
@@ -1844,6 +2008,10 @@ def _handoff_status_payload(
         "sha256": loaded_packet.payload.sha256,
         "request_id": handoff_id,
         "run_id": str((result or {}).get("session_id") or run_info.get("run_id") or "").strip() or None,
+        "recovery_state": (
+            "UNCERTAIN" if _execution_claim_path(handoff_id).exists() and result is None
+            else "RECORDED" if result is not None else "NOT_DISPATCHED"
+        ),
         "runner_id": _optional_text((result or {}).get("runner_id")),
         "backend": _optional_text((result or {}).get("backend")),
         "stop_reason": _optional_text((result or {}).get("stop_reason")),
@@ -2206,7 +2374,7 @@ def _execute_agent_from_handoff(
     handoff_id = _validate_handoff_id(str(getattr(args, "handoff_id", "")))
     packet_path, packet = _load_prepared_packet(handoff_id)
     existing_state = _load_execution_state(handoff_id)
-    if existing_state is not None and existing_state.status not in {"accepted", "queued"}:
+    if existing_state is not None and existing_state.status != "accepted":
         raise ValueError(
             f"handoff packet is not eligible for re-execution; current state is {existing_state.status}."
         )
@@ -2220,7 +2388,9 @@ def _execute_agent_from_handoff(
         raise RuntimeError("preview-only")
 
     manifest = _load_execution_manifest(args)
+    _verify_campaign_execution_target(packet, manifest)
     binding: dict[str, Any] | None = None
+    _claim_execution_once(handoff_id)
     started_at = _now_iso()
     _write_execution_state(
         HandoffExecutionState(
@@ -2569,7 +2739,7 @@ def cmd_handoff_execute_agent(args: Any) -> int:
         handoff_id = _validate_handoff_id(str(getattr(args, "handoff_id", "")))
         _load_prepared_packet(handoff_id)
         current_state = _load_execution_state(handoff_id)
-        if current_state is not None and current_state.status not in {"accepted", "queued"}:
+        if current_state is not None and current_state.status != "accepted":
             raise ValueError(
                 f"handoff packet is not eligible for re-execution; current state is {current_state.status}."
             )

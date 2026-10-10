@@ -22,6 +22,7 @@ from .write_scope_enforcement import load_receipt
 
 SCHEMA = "amof.campaign/v1"
 TERMINAL = {"DONE", "BLOCKED", "ESCALATION_REQUIRED"}
+BOUND_DISPATCH_FLAG = "AMOF_CAMPAIGN_MISSION_RUN_V2"
 
 
 def next_hermes_decoupling_slice(state: dict[str, Any]) -> dict[str, Any] | None:
@@ -42,6 +43,11 @@ def _save(path: Path, state: dict[str, Any]) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temp, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def create_campaign(
@@ -51,6 +57,7 @@ def create_campaign(
     allowed_capabilities: list[str] | None = None,
     allowed_target_id: str | None = None,
     allowed_write_roots: list[str] | None = None,
+    mission_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist a bounded campaign envelope; no write authority is minted."""
     if path.exists() or not campaign_id or not objective.strip() or not allowed_backends or not allowed_scope_tags:
@@ -80,6 +87,29 @@ def create_campaign(
         "completed_slices": [], "evidence_refs": [], "progress_fingerprints": [],
         "no_progress_count": 0,
     }
+    if mission_binding is not None:
+        if os.environ.get(BOUND_DISPATCH_FLAG, "").strip().lower() not in {"1", "true", "yes", "on"}:
+            raise ValueError("bound campaign dispatch is disabled")
+        base = dict(mission_binding)
+        if "campaign_id" in base or "slice_id" in base:
+            raise ValueError("campaign binding identity is derived from the campaign plan")
+        journal = {}
+        for item in slice_plan:
+            binding = {**base, "campaign_id": campaign_id, "slice_id": item["slice_id"]}
+            handoff_id, key, fingerprint = handoff.campaign_dispatch_identity(binding)
+            if roots and binding["target_id"] != allowed_target_id:
+                raise ValueError("campaign binding target differs from write authority envelope")
+            criterion = item.get("mission_acceptance")
+            if isinstance(criterion, dict) and criterion.get("target_id") != binding["target_id"]:
+                raise ValueError("campaign binding target differs from slice acceptance target")
+            journal[item["slice_id"]] = {
+                "handoff_id": handoff_id, "idempotency_key": key,
+                "target_fingerprint": fingerprint, "state": "NOT_DISPATCHED",
+                "prepared_handoff_ref": None, "accepted_dispatch_ref": None,
+                "run_id": None, "terminal_decision": None,
+            }
+        state["mission_binding"] = base
+        state["dispatch_journal"] = journal
     _save(path, state)
     return state
 
@@ -322,11 +352,73 @@ def _mission_acceptance_pass(slice_record: dict[str, Any], result: dict[str, Any
             and observation.get("status") == "PASS")
 
 
+def _bound_dispatch(
+    path: Path, state: dict[str, Any], current: dict[str, Any], *,
+    prepare_handoff: Callable[[dict[str, Any], dict[str, Any]], dict[str, str]] | None,
+    dispatch_prepared: Callable[[dict[str, Any], str, str], str] | None,
+    load_status: Callable[[str], dict[str, Any]],
+) -> str:
+    """Persist each intent before its side effect and never replay an uncertain one."""
+    if prepare_handoff is None or dispatch_prepared is None:
+        raise ValueError("bound campaign requires prepare and dispatch callbacks")
+    binding = {**state["mission_binding"], "campaign_id": state["campaign_id"],
+               "slice_id": current["slice_id"]}
+    handoff_id, key, fingerprint = handoff.campaign_dispatch_identity(binding)
+    journal = state["dispatch_journal"][current["slice_id"]]
+    if (journal["handoff_id"] != handoff_id or journal["idempotency_key"] != key or
+            journal["target_fingerprint"] != fingerprint):
+        raise ValueError("campaign dispatch journal identity mismatch")
+    if journal["state"] in {"NOT_DISPATCHED", "PREPARE_INTENT", "PREPARED"} and _write_request(current):
+        write_block = _check_write_approval(state, current)
+        if write_block:
+            raise ValueError(write_block)
+    if journal["state"] == "NOT_DISPATCHED":
+        journal["state"] = "PREPARE_INTENT"
+        _save(path, state)
+    if journal["state"] == "PREPARE_INTENT":
+        prepared = prepare_handoff(current, binding)
+        if prepared.get("handoff_id") != handoff_id or prepared.get("idempotency_key") != key:
+            raise ValueError("prepared handoff identity mismatch")
+        _, packet = handoff._load_prepared_packet(handoff_id)
+        if packet.campaign_binding != {**binding, "idempotency_key": key,
+                                       "target_fingerprint": fingerprint}:
+            raise ValueError("prepared handoff binding mismatch")
+        journal["prepared_handoff_ref"] = str(prepared.get("packet_path") or "")
+        journal["state"] = "PREPARED"
+        _save(path, state)
+    if journal["state"] in {"PREPARED", "DISPATCH_INTENT", "ACCEPTED"}:
+        _, packet = handoff._load_prepared_packet(handoff_id)
+        if packet.campaign_binding != {**binding, "idempotency_key": key,
+                                       "target_fingerprint": fingerprint}:
+            raise ValueError("prepared handoff binding mismatch")
+    if journal["state"] == "PREPARED":
+        journal["state"] = "DISPATCH_INTENT"
+        _save(path, state)
+        accepted_ref = dispatch_prepared(current, handoff_id, key)
+        if not isinstance(accepted_ref, str) or not accepted_ref.strip():
+            raise ValueError("dispatch acceptance reference missing")
+        journal["accepted_dispatch_ref"] = accepted_ref
+        journal["state"] = "ACCEPTED"
+        _save(path, state)
+    if journal["state"] == "DISPATCH_INTENT":
+        authoritative = load_status(handoff_id)
+        if authoritative.get("accepted") is not True:
+            raise ValueError("UNCERTAIN: dispatch intent has no authoritative acceptance")
+        journal["accepted_dispatch_ref"] = str(authoritative.get("tracking_ref") or handoff_id)
+        journal["state"] = "ACCEPTED"
+        _save(path, state)
+    if journal["state"] != "ACCEPTED":
+        raise ValueError("campaign dispatch state cannot be reconciled")
+    return handoff_id
+
+
 def _advance_campaign_unlocked(
     path: Path, *, propose_next: Callable[[dict[str, Any]], dict[str, Any] | None],
     dispatch_handoff: Callable[[dict[str, Any]], str],
     observe_progress: Callable[[dict[str, Any], dict[str, Any]], dict[str, str]],
     load_status: Callable[[str], dict[str, Any]] = handoff._handoff_status_payload,
+    prepare_handoff: Callable[[dict[str, Any], dict[str, Any]], dict[str, str]] | None = None,
+    dispatch_prepared: Callable[[dict[str, Any], str, str], str] | None = None,
 ) -> dict[str, Any]:
     """Advance at most one slice, using the existing governed handoff boundary.
 
@@ -337,40 +429,56 @@ def _advance_campaign_unlocked(
     state = load_campaign(path)
     if state["status"] in TERMINAL:
         return state
-    if state["current_slice"] is not None:
+    bound = "mission_binding" in state
+    if state["current_slice"] is not None and not bound:
         state.update(status="BLOCKED", reason="uncertain_inflight_slice_requires_recovery")
         _save(path, state)
         return state
-    proposal = propose_next(dict(state))
-    if proposal is None:
-        state.update(status="DONE" if state["completed_slices"] else "BLOCKED",
-                     reason="completion_evidence_recorded" if state["completed_slices"] else "completion_without_evidence")
-        _save(path, state)
-        return state
-    if len(state["completed_slices"]) >= state["authority"]["max_slices"]:
-        state.update(status="BLOCKED", reason="campaign_slice_budget_exhausted")
-        _save(path, state)
-        return state
-    try:
-        current = _candidate(state, proposal)
-    except ValueError as exc:
-        state.update(status="ESCALATION_REQUIRED", reason=str(exc))
-        _save(path, state)
-        return state
-    if _write_request(current):
-        write_block = _check_write_approval(state, current)
-        if write_block:
-            state.update(status="BLOCKED", reason=write_block)
+    if state["current_slice"] is not None:
+        current = state["current_slice"]
+        if bound and (len(state["completed_slices"]) >= len(state["slice_plan"]) or
+                      current != state["slice_plan"][len(state["completed_slices"])]):
+            state.update(status="BLOCKED", reason="inflight_slice_differs_from_authorized_plan")
             _save(path, state)
             return state
-    state["current_slice"] = current
-    _save(path, state)
+    else:
+        proposal = propose_next(dict(state))
+        if proposal is None:
+            state.update(status="DONE" if state["completed_slices"] else "BLOCKED",
+                         reason="completion_evidence_recorded" if state["completed_slices"] else "completion_without_evidence")
+            _save(path, state)
+            return state
+        if len(state["completed_slices"]) >= state["authority"]["max_slices"]:
+            state.update(status="BLOCKED", reason="campaign_slice_budget_exhausted")
+            _save(path, state)
+            return state
+        try:
+            current = _candidate(state, proposal)
+        except ValueError as exc:
+            state.update(status="ESCALATION_REQUIRED", reason=str(exc))
+            _save(path, state)
+            return state
+        if _write_request(current):
+            write_block = _check_write_approval(state, current)
+            if write_block:
+                state.update(status="BLOCKED", reason=write_block)
+                _save(path, state)
+                return state
+        state["current_slice"] = current
+        _save(path, state)
     try:
-        handoff_id = dispatch_handoff(current)
+        handoff_id = (_bound_dispatch(
+            path, state, current, prepare_handoff=prepare_handoff,
+            dispatch_prepared=dispatch_prepared, load_status=load_status,
+        ) if bound else dispatch_handoff(current))
         status = load_status(handoff_id)
         result_path = Path(str(status.get("canonical_result_path") or ""))
         result_sha256 = status.get("result_sha256")
         if not result_path.is_file() or not isinstance(result_sha256, str):
+            if bound and status.get("accepted") is True:
+                state.update(status="WAITING", reason="accepted_dispatch_awaiting_canonical_result")
+                _save(path, state)
+                return state
             raise ValueError("canonical handoff result is missing")
         raw = result_path.read_bytes()
         if hashlib.sha256(raw).hexdigest() != result_sha256:
@@ -378,6 +486,12 @@ def _advance_campaign_unlocked(
         result = json.loads(raw)
     except (OSError, ValueError, TypeError, KeyError) as exc:
         state.update(status="BLOCKED", reason=f"handoff_result_unavailable: {exc}")
+        if bound:
+            journal = state["dispatch_journal"][current["slice_id"]]
+            journal["terminal_decision"] = (
+                "BLOCKED_NO_DISPATCH" if journal["state"] in
+                {"NOT_DISPATCHED", "PREPARE_INTENT", "PREPARED"} else "BLOCKED_UNCERTAIN"
+            )
         _save(path, state)
         return state
     write_receipt = None
@@ -437,6 +551,14 @@ def _advance_campaign_unlocked(
                     })
                     state["evidence_refs"].extend([str(result_path), progress["ref"]])
                     state.update(status="CONTINUE", reason="accepted_slice_progress", current_slice=None)
+    if bound:
+        journal = state["dispatch_journal"][current["slice_id"]]
+        journal["run_id"] = result.get("session_id")
+        journal["terminal_decision"] = (
+            state["completed_slices"][-1]["continuation_decision"]["decision"]
+            if state["status"] == "CONTINUE" else "BLOCKED"
+        )
+        journal["state"] = "TERMINAL"
     _save(path, state)
     return state
 
@@ -446,6 +568,8 @@ def advance_campaign(
     dispatch_handoff: Callable[[dict[str, Any]], str],
     observe_progress: Callable[[dict[str, Any], dict[str, Any]], dict[str, str]],
     load_status: Callable[[str], dict[str, Any]] = handoff._handoff_status_payload,
+    prepare_handoff: Callable[[dict[str, Any], dict[str, Any]], dict[str, str]] | None = None,
+    dispatch_prepared: Callable[[dict[str, Any], str, str], str] | None = None,
 ) -> dict[str, Any]:
     """Serialize advance calls so one campaign cannot dispatch twice at once."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -455,6 +579,7 @@ def advance_campaign(
         return _advance_campaign_unlocked(
             path, propose_next=propose_next, dispatch_handoff=dispatch_handoff,
             observe_progress=observe_progress, load_status=load_status,
+            prepare_handoff=prepare_handoff, dispatch_prepared=dispatch_prepared,
         )
 
 
@@ -463,12 +588,15 @@ def run_campaign(
     dispatch_handoff: Callable[[dict[str, Any]], str],
     observe_progress: Callable[[dict[str, Any], dict[str, Any]], dict[str, str]],
     load_status: Callable[[str], dict[str, Any]] = handoff._handoff_status_payload,
+    prepare_handoff: Callable[[dict[str, Any], dict[str, Any]], dict[str, str]] | None = None,
+    dispatch_prepared: Callable[[dict[str, Any], str, str], str] | None = None,
 ) -> dict[str, Any]:
     """Continue without operator micro-tasks until a bounded terminal decision."""
     while True:
         state = advance_campaign(
             path, propose_next=propose_next, dispatch_handoff=dispatch_handoff,
             observe_progress=observe_progress, load_status=load_status,
+            prepare_handoff=prepare_handoff, dispatch_prepared=dispatch_prepared,
         )
-        if state["status"] in TERMINAL:
+        if state["status"] in TERMINAL or state["status"] == "WAITING":
             return state
