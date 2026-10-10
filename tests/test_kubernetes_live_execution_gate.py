@@ -157,6 +157,36 @@ class LiveExecutionGateTests(unittest.TestCase):
         values.update(overrides)
         return KubernetesOperation(**values)
 
+    def test_exact_operation_denies_changed_patch_before_live_transport(self) -> None:
+        exact = {
+            "namespace": NAMESPACE,
+            "verb": "patch",
+            "resource": "deployments",
+            "name": DEPLOYMENT,
+            "patch": {"annotation": {"key": ALLOWED_ANNOTATION_KEY, "value": ANNOTATION_VALUE}},
+        }
+        approval = self._propose_approve(self._body(exact_operation=exact))
+        denied = execute_kubernetes_capability(
+            operation=self._op(
+                patch={"annotation": {"key": ALLOWED_ANNOTATION_KEY, "value": "changed-value"}},
+                run_id="exact-live-denied",
+            ),
+            approval_id=approval["approval_id"],
+            executor=self.executor,
+            store=self.store,
+        )
+        self.assertFalse(denied.ok)
+        self.assertEqual(denied.code, "wrong_operation")
+        self.assertEqual(self.transport.calls, [])
+        allowed = execute_kubernetes_capability(
+            operation=self._op(run_id="exact-live-allowed"),
+            approval_id=approval["approval_id"],
+            executor=self.executor,
+            store=self.store,
+        )
+        self.assertTrue(allowed.ok)
+        self.assertEqual([call["op"] for call in self.transport.calls], ["get", "patch", "get"])
+
     def test_runner_and_hermes_still_deny_raw_kubernetes_mutation(self) -> None:
         self.assertIn("kubernetes_mutation", HERMES_DENIED_CAPABILITIES)
         self.assertIn("kubernetes", HERMES_DENIED_CAPABILITIES)

@@ -73,9 +73,10 @@ ACCEPTANCE_PASS = "PASS"
 ACCEPTANCE_FAIL = "FAIL"
 ACCEPTANCE_UNVERIFIED = "UNVERIFIED"
 
-ALLOWED_PATCH_KEYS = frozenset({"replicas", "annotation"})
+ALLOWED_PATCH_KEYS = frozenset({"replicas", "annotation", "readinessProbe"})
 ALLOWED_ANNOTATION_KEY = "amof.dev/capability-probe"
 _ANNOTATION_VALUE_RE = re.compile(r"^[A-Za-z0-9._:/=@-]{1,128}$")
+_K8S_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _WORKER_IDENTITY_MARKERS = frozenset(
     {
         "worker",
@@ -265,11 +266,32 @@ def normalize_patch(value: Any) -> dict[str, Any] | None:
         )
     if not value:
         raise KubernetesCapabilityError("patch must not be empty", code="invalid_patch")
-    if "replicas" in value and "annotation" in value:
+    if len(value) != 1:
         raise KubernetesCapabilityError(
             "patch must use one bounded operation shape",
             code="invalid_patch",
         )
+    if "readinessProbe" in value:
+        probe = value["readinessProbe"]
+        if not isinstance(probe, dict) or set(probe) != {
+            "container", "expectedTimeoutSeconds", "timeoutSeconds"
+        }:
+            raise KubernetesCapabilityError(
+                "readinessProbe patch requires container, expectedTimeoutSeconds and timeoutSeconds only",
+                code="invalid_patch",
+            )
+        container = probe["container"]
+        if not isinstance(container, str) or _K8S_NAME_RE.fullmatch(container) is None:
+            raise KubernetesCapabilityError("invalid readinessProbe container", code="invalid_patch")
+        if type(probe["expectedTimeoutSeconds"]) is not int or probe["expectedTimeoutSeconds"] != 1:
+            raise KubernetesCapabilityError("readinessProbe expected timeout must be 1", code="invalid_patch")
+        if type(probe["timeoutSeconds"]) is not int or probe["timeoutSeconds"] != 3:
+            raise KubernetesCapabilityError("readinessProbe new timeout must be 3", code="invalid_patch")
+        return {"readinessProbe": {
+            "container": container,
+            "expectedTimeoutSeconds": 1,
+            "timeoutSeconds": 3,
+        }}
     if "replicas" in value:
         replicas = value["replicas"]
         if not isinstance(replicas, int) or isinstance(replicas, bool) or replicas < 0:
@@ -321,6 +343,17 @@ def classify_operation(body: dict[str, Any], operation: KubernetesOperation) -> 
         return "wrong_resource"
     if verb == "get" and operation.name in (None, ""):
         return "wrong_resource"
+    exact = frozen.get("exact_operation")
+    if operation.patch is not None and "readinessProbe" in operation.patch and exact is None:
+        return "exact_operation_required"
+    if exact is not None and {
+        "namespace": namespace,
+        "verb": verb,
+        "resource": resource,
+        "name": operation.name,
+        "patch": normalize_patch(operation.patch),
+    } != exact:
+        return "wrong_operation"
     return None
 
 
@@ -340,6 +373,7 @@ def default_fixture_state() -> dict[str, Any]:
                         "generation": 1,
                         "resource_version": "1",
                         "annotations": {},
+                        "containers": [{"name": "web", "readinessProbe": {"timeoutSeconds": 1}}],
                     }
                 }
             }
@@ -418,6 +452,18 @@ class FixtureKubernetesExecutor:
                 annotations = dict(updated.get("annotations") or {})
                 annotations[patch["annotation"]["key"]] = patch["annotation"]["value"]
                 updated["annotations"] = annotations
+            if "readinessProbe" in patch:
+                wanted = patch["readinessProbe"]["container"]
+                containers = updated.get("containers")
+                if not isinstance(containers, list) or sum(
+                    isinstance(item, dict) and item.get("name") == wanted for item in containers
+                ) != 1:
+                    raise KubernetesCapabilityError("readiness container is ambiguous or missing", code="invalid_patch")
+                target = next(item for item in containers if item.get("name") == wanted)
+                probe = target.get("readinessProbe")
+                if not isinstance(probe, dict) or probe.get("timeoutSeconds") != 1:
+                    raise KubernetesCapabilityError("readiness timeout precondition failed", code="invalid_patch")
+                probe["timeoutSeconds"] = 3
             updated["generation"] = int(updated.get("generation") or 0) + 1
             updated["resource_version"] = str(int(updated.get("resource_version") or 0) + 1)
             bucket[operation.name] = updated
@@ -990,6 +1036,8 @@ def _operation_name(operation: KubernetesOperation) -> str:
         return "annotation_patch"
     if patch and "replicas" in patch:
         return "replica_patch"
+    if patch and "readinessProbe" in patch:
+        return "readiness_timeout_patch"
     return str(operation.verb or "").strip().lower() or "unknown"
 
 
@@ -1017,6 +1065,64 @@ def _acceptance_for(compliance: str, *, verified: bool, executed: bool) -> str:
     if compliance == COMPLIANCE_WITHIN_SCOPE and executed and verified:
         return ACCEPTANCE_PASS
     return ACCEPTANCE_FAIL
+
+
+def _readiness_result_is_safe(result: Any, operation: KubernetesOperation) -> bool:
+    """Only allow the adapter's small, independently read evidence into PASS."""
+    if not isinstance(result, dict) or set(result) - {
+        "executed", "verified", "verification_method", "verification_reason",
+        "result_digest", "before_digest", "after_digest", "before", "after",
+        "changed", "warnings",
+    }:
+        return False
+    if result.get("warnings") or result.get("verification_reason") is not None:
+        return False
+    if result.get("verification_method") != "live_readback_compare":
+        return False
+    before, after = result.get("before"), result.get("after")
+    evidence_keys = {
+        "apiVersion", "kind", "name", "namespace", "uid",
+        "resourceVersion", "generation", "readiness",
+    }
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    if set(before) != evidence_keys or set(after) != evidence_keys:
+        return False
+    patch = operation.patch["readinessProbe"]
+    for evidence, expected_timeout in ((before, 1), (after, 3)):
+        if (
+            evidence.get("apiVersion") != "apps/v1"
+            or evidence.get("kind") != "Deployment"
+            or evidence.get("name") != operation.name
+            or evidence.get("namespace") != operation.namespace
+            or not isinstance(evidence.get("uid"), str)
+            or _K8S_NAME_RE.fullmatch(evidence["uid"]) is None
+            or not isinstance(evidence.get("resourceVersion"), str)
+            or re.fullmatch(r"[A-Za-z0-9._-]{1,128}", evidence["resourceVersion"]) is None
+            or type(evidence.get("generation")) is not int
+            or evidence.get("readiness") != {
+                "container": patch["container"], "timeoutSeconds": expected_timeout,
+            }
+        ):
+            return False
+    if (
+        before["uid"] != after["uid"]
+        or result.get("changed") is not True
+        or after["generation"] <= before["generation"]
+        or not _resource_version_of(after)
+        or not _resource_version_of(before)
+        or not (
+            int(after["resourceVersion"]) > int(before["resourceVersion"])
+            if before["resourceVersion"].isdigit() and after["resourceVersion"].isdigit()
+            else after["resourceVersion"] != before["resourceVersion"]
+        )
+    ):
+        return False
+    return (
+        result.get("before_digest") == _sha256_canonical(before)
+        and result.get("after_digest") == _sha256_canonical(after)
+        and result.get("result_digest") == _sha256_canonical({"before": before, "after": after})
+    )
 
 
 def _build_receipt(
@@ -1072,6 +1178,7 @@ def _build_receipt(
             "denied_namespaces": list(binding["body"]["denied_namespaces"]),
             "denied_verbs": list(binding["body"]["denied_verbs"]),
             "denied_resources": list(binding["body"]["denied_resources"]),
+            "exact_operation": binding["body"].get("exact_operation"),
         },
         "target": {
             "cluster": operation.cluster,
@@ -1192,6 +1299,7 @@ def execute_kubernetes_capability(
     )
     if not op.run_id:
         raise KubernetesCapabilityError("run_id is required", code="invalid_request")
+    readiness_attempt = bool(op.patch and "readinessProbe" in op.patch)
 
     if not approval_id and not binding_id:
         denial = _denial(code="no_approval", message="no approval provided", operation=op)
@@ -1208,13 +1316,21 @@ def execute_kubernetes_capability(
                     code="no_binding",
                 )
             approval = load_approval(binding["approval_id"], store=store, now=now)
+            if binding["run_id"] != op.run_id:
+                raise KubernetesCapabilityError("binding run mismatch", code="no_binding")
+            if approval["status"] != STATUS_APPROVED:
+                status_code = {
+                    STATUS_EXPIRED: "expired", STATUS_CONSUMED: "reused_single_use",
+                    STATUS_REVOKED: "revoked",
+                }.get(approval["status"], "no_approval")
+                raise KubernetesCapabilityError("binding approval is inactive", code=status_code)
         else:
             approval = load_approval(str(approval_id), store=store, now=now)
             binding = create_binding(approval["approval_id"], run_id=op.run_id, store=store, now=now)
     except KubernetesCapabilityError as exc:
         denial = _denial(
             code=exc.code or "no_approval",
-            message=str(exc),
+            message=exc.code or "authority unavailable",
             operation=op,
             approval=approval,
             binding=binding,
@@ -1277,10 +1393,12 @@ def execute_kubernetes_capability(
         binding = _finalize_binding(
             binding["binding_id"],
             status=STATUS_FAILED,
-            consumes_approval=False,
+            consumes_approval=readiness_attempt,
             reason="interrupted",
             store=store,
         )
+        if readiness_attempt:
+            approval = _transition_approval(approval["approval_id"], STATUS_CONSUMED, store=store)
         receipt = _build_receipt(
             binding=binding,
             approval=approval,
@@ -1292,7 +1410,7 @@ def execute_kubernetes_capability(
             verified=False,
             verification_method=None,
             change=None,
-            stop_reason=str(exc),
+            stop_reason="interrupted",
             code="unverified",
         )
         _write_receipt(receipt, store=store)
@@ -1304,46 +1422,56 @@ def execute_kubernetes_capability(
             approval=approval,
         )
     except KubernetesCapabilityError as exc:
+        # Once the executor has been entered, a timeout or malformed read-back
+        # cannot prove whether the patch reached the API. Never retry this grant.
+        uncertain = readiness_attempt
         binding = _finalize_binding(
             binding["binding_id"],
             status=STATUS_FAILED,
-            consumes_approval=False,
+            consumes_approval=uncertain,
             reason=exc.code or "execution_failed",
             store=store,
         )
+        if uncertain:
+            approval = _transition_approval(approval["approval_id"], STATUS_CONSUMED, store=store)
         receipt = _build_receipt(
             binding=binding,
             approval=approval,
             operation=op,
-            compliance=COMPLIANCE_DENIED,
-            acceptance_state=ACCEPTANCE_FAIL,
+            compliance=COMPLIANCE_UNVERIFIED if uncertain else COMPLIANCE_DENIED,
+            acceptance_state=ACCEPTANCE_UNVERIFIED if uncertain else ACCEPTANCE_FAIL,
             within_scope=True,
             executed=False,
-            verified=True,
+            verified=not uncertain,
             verification_method="executor_error",
             change=None,
-            stop_reason=str(exc),
-            code=exc.code or "execution_failed",
+            stop_reason=exc.code or "execution_failed",
+            code="unverified" if uncertain else exc.code or "execution_failed",
         )
         _write_receipt(receipt, store=store)
         return ExecutionOutcome(
             ok=False,
-            code=exc.code or "execution_failed",
+            code="unverified" if uncertain else exc.code or "execution_failed",
             receipt=receipt,
             binding=binding,
             approval=approval,
         )
 
     executed = bool(result.get("executed"))
-    verified = bool(result.get("verified"))
+    verified = bool(result.get("verified")) and not bool(result.get("warnings"))
+    if readiness_attempt:
+        verified = verified and _readiness_result_is_safe(result, op)
     if not executed or not verified:
+        consumes = readiness_attempt
         binding = _finalize_binding(
             binding["binding_id"],
             status=STATUS_FAILED,
-            consumes_approval=False,
+            consumes_approval=consumes,
             reason="unverified",
             store=store,
         )
+        if consumes:
+            approval = _transition_approval(approval["approval_id"], STATUS_CONSUMED, store=store)
         receipt = _build_receipt(
             binding=binding,
             approval=approval,
@@ -1353,7 +1481,7 @@ def execute_kubernetes_capability(
             within_scope=True,
             executed=executed,
             verified=False,
-            verification_method=result.get("verification_method"),
+            verification_method="live_readback_compare" if readiness_attempt else result.get("verification_method"),
             change=None,
             stop_reason="executor returned unverified result",
             code="unverified",

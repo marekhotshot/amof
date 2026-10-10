@@ -59,6 +59,12 @@ class KubernetesTransport(Protocol):
     ) -> dict[str, Any]:
         """Apply the AMOF-owned annotation merge patch."""
 
+    def patch_deployment_readiness_timeout(
+        self, *, kubeconfig: str, context: str, namespace: str, name: str,
+        uid: str, resource_version: str, container_index: int, container: str,
+    ) -> dict[str, Any]:
+        """Conditionally replace one named container's timeout from 1 to 3."""
+
 
 @dataclass(frozen=True)
 class ResolvedClusterTarget:
@@ -181,13 +187,33 @@ def resolve_cluster_target(
     return target
 
 
-def safe_deployment_evidence(obj: Any) -> dict[str, Any]:
+def _readiness_container(obj: dict[str, Any], name: str) -> tuple[int, int]:
+    spec = obj.get("spec")
+    template = spec.get("template") if isinstance(spec, dict) else None
+    pod_spec = template.get("spec") if isinstance(template, dict) else None
+    containers = pod_spec.get("containers") if isinstance(pod_spec, dict) else None
+    if not isinstance(containers, list) or not containers:
+        raise KubernetesCapabilityError("Deployment containers are missing", code="invalid_patch")
+    names = [item.get("name") if isinstance(item, dict) else None for item in containers]
+    if any(not isinstance(item, str) or _DNS_LABEL_RE.fullmatch(item) is None for item in names):
+        raise KubernetesCapabilityError("Deployment has an unnamed or invalid container", code="invalid_patch")
+    if len(names) != len(set(names)) or names.count(name) != 1:
+        raise KubernetesCapabilityError("readiness container is ambiguous or missing", code="invalid_patch")
+    index = names.index(name)
+    probe = containers[index].get("readinessProbe")
+    timeout = probe.get("timeoutSeconds") if isinstance(probe, dict) else None
+    if type(timeout) is not int:
+        raise KubernetesCapabilityError("readiness timeout is missing", code="invalid_patch")
+    return index, timeout
+
+
+def safe_deployment_evidence(obj: Any, *, readiness_container: str | None = None) -> dict[str, Any]:
     if not isinstance(obj, dict):
         raise KubernetesCapabilityError("deployment payload is not an object", code="unverified")
     metadata = obj.get("metadata") if isinstance(obj.get("metadata"), dict) else {}
     annotations = metadata.get("annotations") if isinstance(metadata.get("annotations"), dict) else {}
     generation = metadata.get("generation")
-    return {
+    safe = {
         "apiVersion": obj.get("apiVersion"),
         "kind": obj.get("kind"),
         "name": metadata.get("name"),
@@ -195,8 +221,36 @@ def safe_deployment_evidence(obj: Any) -> dict[str, Any]:
         "uid": metadata.get("uid"),
         "resourceVersion": None if metadata.get("resourceVersion") is None else str(metadata.get("resourceVersion")),
         "generation": generation if isinstance(generation, int) and not isinstance(generation, bool) else None,
-        "annotation": annotations.get(ALLOWED_ANNOTATION_KEY),
     }
+    if readiness_container is None:
+        safe["annotation"] = annotations.get(ALLOWED_ANNOTATION_KEY)
+    else:
+        _, timeout = _readiness_container(obj, readiness_container)
+        safe["readiness"] = {"container": readiness_container, "timeoutSeconds": timeout}
+    return safe
+
+
+def _readiness_only_change(before: dict[str, Any], after: dict[str, Any], container: str) -> bool:
+    """Compare whole API objects in memory without exporting their sensitive fields."""
+    before_copy = json.loads(json.dumps(before))
+    after_copy = json.loads(json.dumps(after))
+    before_index, _ = _readiness_container(before_copy, container)
+    after_index, _ = _readiness_container(after_copy, container)
+    if before_index != after_index:
+        return False
+    for item in (before_copy, after_copy):
+        metadata = item.get("metadata")
+        if not isinstance(metadata, dict):
+            return False
+        for field in ("resourceVersion", "generation", "managedFields"):
+            metadata.pop(field, None)
+        annotations = metadata.get("annotations")
+        if isinstance(annotations, dict):
+            # Deployment controller updates this revision independently of the patch.
+            annotations.pop("deployment.kubernetes.io/revision", None)
+        item.pop("status", None)
+    after_copy["spec"]["template"]["spec"]["containers"][after_index]["readinessProbe"]["timeoutSeconds"] = 1
+    return before_copy == after_copy
 
 
 def _resource_version_newer(before: str | None, after: str | None) -> bool:
@@ -213,6 +267,9 @@ def verify_live_result(
     before: dict[str, Any] | None,
     after: dict[str, Any],
     expected_annotation: str | None,
+    expected_readiness: str | None = None,
+    before_raw: dict[str, Any] | None = None,
+    after_raw: dict[str, Any] | None = None,
 ) -> tuple[bool, str | None]:
     if after.get("kind") not in {None, "Deployment"}:
         return False, "read-back kind is not Deployment"
@@ -225,7 +282,20 @@ def verify_live_result(
     if before is not None and before.get("uid") not in {None, ""} and before.get("uid") != after.get("uid"):
         return False, "read-back uid diverged from pre-image"
     if operation.verb == LIVE_PATCH:
-        if expected_annotation is None or after.get("annotation") != expected_annotation:
+        if expected_readiness is not None:
+            if (
+                before is None
+                or before.get("readiness") != {"container": expected_readiness, "timeoutSeconds": 1}
+                or after.get("readiness") != {"container": expected_readiness, "timeoutSeconds": 3}
+            ):
+                return False, "expected readiness timeout mutation is not observable"
+            if before_raw is None or after_raw is None or not _readiness_only_change(
+                before_raw, after_raw, expected_readiness
+            ):
+                return False, "unexpected Deployment change accompanies readiness patch"
+            if not isinstance(before.get("generation"), int) or not isinstance(after.get("generation"), int) or after["generation"] <= before["generation"]:
+                return False, "Deployment generation did not advance"
+        elif expected_annotation is None or after.get("annotation") != expected_annotation:
             return False, "expected annotation mutation is not observable"
         if before is None or not _resource_version_newer(
             before.get("resourceVersion"),
@@ -304,6 +374,35 @@ class RecordingTransport:
         self.objects[self._key(namespace, name)] = updated
         return json.loads(json.dumps(updated))
 
+    def patch_deployment_readiness_timeout(
+        self, *, kubeconfig: str, context: str, namespace: str, name: str,
+        uid: str, resource_version: str, container_index: int, container: str,
+    ) -> dict[str, Any]:
+        self.calls.append({
+            "op": "patch_readiness", "namespace": namespace, "name": name,
+            "container": container, "container_index": container_index,
+        })
+        obj = self.objects.get(self._key(namespace, name))
+        if obj is None:
+            raise KubernetesCapabilityError("deployment not found", code="wrong_resource")
+        metadata = obj.get("metadata") or {}
+        index, timeout = _readiness_container(obj, container)
+        if (
+            metadata.get("uid") != uid
+            or str(metadata.get("resourceVersion")) != resource_version
+            or index != container_index
+            or timeout != 1
+        ):
+            raise KubernetesCapabilityError("readiness patch precondition failed", code="execution_failed")
+        updated = json.loads(json.dumps(obj))
+        updated["spec"]["template"]["spec"]["containers"][index]["readinessProbe"]["timeoutSeconds"] = 3
+        if not self.fail_readback:
+            new_metadata = updated["metadata"]
+            new_metadata["resourceVersion"] = str(int(resource_version) + 1)
+            new_metadata["generation"] = int(new_metadata.get("generation") or 0) + 1
+            self.objects[self._key(namespace, name)] = updated
+        return json.loads(json.dumps(updated))
+
 
 class KubectlTransport:
     """AMOF-constructed kubectl argv. No shell string, no worker flags."""
@@ -341,6 +440,11 @@ class KubectlTransport:
             raise KubernetesCapabilityError(
                 "kubernetes transport rejected the API call",
                 code="execution_failed",
+            )
+        if completed.stderr.strip():
+            raise KubernetesCapabilityError(
+                "kubernetes transport emitted a warning",
+                code="unverified",
             )
         try:
             payload = json.loads(completed.stdout)
@@ -416,10 +520,31 @@ class KubectlTransport:
             ]
         )
 
+    def patch_deployment_readiness_timeout(
+        self, *, kubeconfig: str, context: str, namespace: str, name: str,
+        uid: str, resource_version: str, container_index: int, container: str,
+    ) -> dict[str, Any]:
+        _assert_dns_label(container, field="container")
+        if not uid or not resource_version or type(container_index) is not int or container_index < 0:
+            raise KubernetesCapabilityError("missing readiness patch precondition", code="invalid_patch")
+        path = f"/spec/template/spec/containers/{container_index}"
+        patch = [
+            {"op": "test", "path": "/metadata/uid", "value": uid},
+            {"op": "test", "path": "/metadata/resourceVersion", "value": resource_version},
+            {"op": "test", "path": f"{path}/name", "value": container},
+            {"op": "test", "path": f"{path}/readinessProbe/timeoutSeconds", "value": 1},
+            {"op": "replace", "path": f"{path}/readinessProbe/timeoutSeconds", "value": 3},
+        ]
+        return self._run([
+            *self._base_argv(kubeconfig=kubeconfig, context=context, namespace=namespace),
+            "patch", "deployment", name, "--type", "json", "-p",
+            json.dumps(patch, separators=(",", ":")), "-o", "json",
+        ])
+
 
 @dataclass
 class LiveKubernetesExecutor:
-    """One governed live lane: Deployment get + annotation patch + read-back."""
+    """Governed Deployment get, bounded patch, and independent read-back."""
 
     transport: KubernetesTransport = field(default_factory=KubectlTransport)
     registry: dict[str, ResolvedClusterTarget] | None = None
@@ -453,26 +578,47 @@ class LiveKubernetesExecutor:
             namespace=namespace,
             name=name,
         )
-        before = safe_deployment_evidence(before_obj)
+        patch = normalize_patch(operation.patch) if verb == LIVE_PATCH else None
+        readiness = patch.get("readinessProbe") if patch else None
+        readiness_container = readiness["container"] if readiness else None
+        before = safe_deployment_evidence(before_obj, readiness_container=readiness_container)
         expected_annotation = None
+        expected_readiness = None
         after_obj = before_obj
         changed = False
         if verb == LIVE_PATCH:
-            patch = normalize_patch(operation.patch)
-            if not patch or "annotation" not in patch:
+            if not patch or not ({"annotation", "readinessProbe"} & set(patch)):
                 raise KubernetesCapabilityError(
-                    "live mutate requires the bounded annotation patch",
+                    "live mutate requires a bounded Deployment patch",
                     code="invalid_patch",
                 )
-            expected_annotation = patch["annotation"]["value"]
-            after_obj = self.transport.patch_deployment_annotation(
-                kubeconfig=kubeconfig,
-                context=context,
-                namespace=namespace,
-                name=name,
-                key=patch["annotation"]["key"],
-                value=expected_annotation,
-            )
+            if readiness:
+                if (
+                    before.get("kind") != "Deployment"
+                    or before.get("name") != name
+                    or before.get("namespace") != namespace
+                    or not before.get("uid")
+                    or not before.get("resourceVersion")
+                    or before.get("readiness", {}).get("timeoutSeconds") != 1
+                ):
+                    raise KubernetesCapabilityError("readiness pre-image is incomplete or changed", code="unverified")
+                index, _ = _readiness_container(before_obj, readiness_container)
+                expected_readiness = readiness_container
+                after_obj = self.transport.patch_deployment_readiness_timeout(
+                    kubeconfig=kubeconfig, context=context, namespace=namespace, name=name,
+                    uid=before["uid"], resource_version=before["resourceVersion"],
+                    container_index=index, container=readiness_container,
+                )
+            else:
+                expected_annotation = patch["annotation"]["value"]
+                after_obj = self.transport.patch_deployment_annotation(
+                    kubeconfig=kubeconfig,
+                    context=context,
+                    namespace=namespace,
+                    name=name,
+                    key=patch["annotation"]["key"],
+                    value=expected_annotation,
+                )
             # Always read back. Process/API success is not verification.
             after_obj = self.transport.get_deployment(
                 kubeconfig=kubeconfig,
@@ -480,14 +626,20 @@ class LiveKubernetesExecutor:
                 namespace=namespace,
                 name=name,
             )
-        after = safe_deployment_evidence(after_obj)
+        after = safe_deployment_evidence(after_obj, readiness_container=readiness_container)
         verified, reason = verify_live_result(
             operation=operation,
             before=before,
             after=after,
             expected_annotation=expected_annotation,
+            expected_readiness=expected_readiness,
+            before_raw=before_obj if readiness else None,
+            after_raw=after_obj if readiness else None,
         )
-        changed = verb == LIVE_PATCH and after.get("annotation") != before.get("annotation")
+        changed = verb == LIVE_PATCH and (
+            after.get("readiness") != before.get("readiness") if readiness
+            else after.get("annotation") != before.get("annotation")
+        )
         result = {
             "executed": True,
             "verified": verified,
