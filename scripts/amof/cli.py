@@ -227,6 +227,11 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Explicitly confirm writing one prepared packet to the local AMOF outbox",
     )
+    handoff_prepare.add_argument(
+        "--campaign-binding-json",
+        default=None,
+        help="Use the campaign's durable v2 identity for this canonical packet",
+    )
     handoff_accept_agent = handoff_sub.add_parser(
         "accept-agent",
         help="Idempotently accept one prepared AMOF-Agent-targeted packet for asynchronous governed execution",

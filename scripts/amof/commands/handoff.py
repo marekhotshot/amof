@@ -1057,12 +1057,13 @@ def campaign_dispatch_identity(binding: dict[str, Any]) -> tuple[str, str, str]:
     return f"campaign-{digest[:40]}", f"campaign-dispatch-{digest}", target_fingerprint
 
 
-def prepare_campaign_handoff(*, binding: dict[str, Any], canonical_packet_text: str) -> dict[str, str]:
+def prepare_campaign_handoff(*, binding: dict[str, Any], canonical_packet_text: str,
+                             studio_session_id: str | None = None) -> dict[str, str]:
     """Create or verify one durable, immutable packet before dispatch."""
     handoff_id, key, target_fingerprint = campaign_dispatch_identity(binding)
     canonical, canonical_text = _parse_canonical_mission_packet_text(
         canonical_packet_text, field_name="campaign canonical mission packet",
-        require_canonical_text=True, studio_session_id=None,
+        require_canonical_text=True, studio_session_id=studio_session_id,
     )
     if (canonical.mission_id != binding["canonical_mission_id"] or
             canonical.repo_name != binding["repo_name"] or
@@ -1072,7 +1073,8 @@ def prepare_campaign_handoff(*, binding: dict[str, Any], canonical_packet_text: 
     payload = _validated_payload_from_text(canonical_text, field_name="campaign packet")
     packet = PreparedHandoffPacket(
         schema_version=HANDOFF_PACKET_SCHEMA_VERSION, handoff_id=handoff_id,
-        source="campaign", target=HANDOFF_TARGET_AMOF_AGENT, studio_session_id=None,
+        source="campaign", target=HANDOFF_TARGET_AMOF_AGENT,
+        studio_session_id=studio_session_id,
         payload_kind="canonical_mission_packet", payload=payload, state="prepared",
         campaign_binding={**binding, "idempotency_key": key, "target_fingerprint": target_fingerprint},
     )
@@ -2680,6 +2682,13 @@ def cmd_handoff_prepare(args: Any) -> int:
         payload = _read_single_stdin_payload(
             payload_kind, studio_session_id=studio_session_id
         )
+        campaign_binding_json = getattr(args, "campaign_binding_json", None)
+        campaign_binding = json.loads(campaign_binding_json) if campaign_binding_json else None
+        if campaign_binding is not None:
+            if not isinstance(campaign_binding, dict) or payload_kind != "canonical_mission_packet":
+                raise ValueError("campaign preparation requires a canonical packet and object binding")
+            if source != "campaign" or target != HANDOFF_TARGET_AMOF_AGENT:
+                raise ValueError("campaign preparation requires campaign to amof-agent")
     except ValueError as exc:
         _stderr(f"[handoff] {exc}")
         return 1
@@ -2699,17 +2708,26 @@ def cmd_handoff_prepare(args: Any) -> int:
         )
         return 0
 
-    packet = _build_packet(
-        source=source,
-        target=target,
-        studio_session_id=studio_session_id,
-        payload_kind=payload_kind,
-        payload=payload,
-    )
-    packet_path = _write_packet(packet)
+    if campaign_binding is not None:
+        prepared = prepare_campaign_handoff(
+            binding=campaign_binding, canonical_packet_text=payload.text,
+            studio_session_id=studio_session_id,
+        )
+        packet_path = Path(prepared["packet_path"])
+        handoff_id = prepared["handoff_id"]
+    else:
+        packet = _build_packet(
+            source=source,
+            target=target,
+            studio_session_id=studio_session_id,
+            payload_kind=payload_kind,
+            payload=payload,
+        )
+        packet_path = _write_packet(packet)
+        handoff_id = packet.handoff_id
     receipt = PreparedHandoffReceipt(
         status="prepared",
-        handoff_id=packet.handoff_id,
+        handoff_id=handoff_id,
         packet_path=str(packet_path),
         character_count=payload.character_count,
         utf8_byte_count=payload.utf8_byte_count,

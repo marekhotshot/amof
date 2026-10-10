@@ -1,6 +1,7 @@
 """Cross-process proof for the durable handoff execution claim."""
 
 import multiprocessing
+import json
 import os
 import tempfile
 import unittest
@@ -59,6 +60,35 @@ def _execute_contender(home, handoff_id, barrier, marker, answers):
 
 
 class HandoffAtomicClaimTests(unittest.TestCase):
+    def test_cli_prepare_accepts_exact_campaign_identity_and_replay(self):
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"AMOF_HOME": home}):
+            binding = {
+                "version": 2, "campaign_id": "campaign-cli", "slice_id": "slice-one",
+                "project_id": "project-one", "canonical_mission_id": "mission-one",
+                "target_id": "github_app:example/repo:" + "a" * 40,
+                "expected_source_sha": "a" * 40, "workspace_id": str(Path(home) / "workspace"),
+                "repo_name": "repo", "repo_owner": "example", "branch_ref": "main",
+            }
+            canonical = handoff.CanonicalMissionPacket(
+                schema_version=1, contract_version="canonical-mission-packet-v1",
+                mission_id="mission-one", ticket_id="ticket-one", task_class="validation",
+                classification="internal", goal="Verify", objective="Verify one slice",
+                repo_name="repo", repo_owner="example", branch_ref="main",
+                execution_allowed=True, requested_mode="read_only",
+                allowed_mutations=("read_only",), forbidden_mutations=("runtime_mutation",),
+                validation_gates=("repo-head",),
+            )
+            args = SimpleNamespace(source="campaign", target="amof-agent", studio_session=None,
+                                   payload_kind="canonical-mission-packet", confirm=True,
+                                   campaign_binding_json=json.dumps(binding))
+            with patch.object(handoff.sys, "stdin") as stdin, patch.object(handoff, "_emit_json_stdout") as emit:
+                stdin.buffer.read.return_value = handoff._canonical_json(canonical.to_payload()).encode()
+                self.assertEqual(handoff.cmd_handoff_prepare(args), 0)
+                self.assertEqual(handoff.cmd_handoff_prepare(args), 0)
+            self.assertEqual(emit.call_count, 2)
+            self.assertEqual(emit.call_args.args[0]["handoff_id"],
+                             handoff.campaign_dispatch_identity(binding)[0])
+
     def test_legacy_queued_without_claim_is_not_reexecuted(self):
         with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"AMOF_HOME": home}):
             payload = handoff._validated_payload_from_text("Inspect only", field_name="test")

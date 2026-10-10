@@ -138,6 +138,7 @@ def create_hermes_decoupling_campaign(path: Path, *, campaign_id: str, objective
 def create_cloud_hermes_continuation_campaign(
     path: Path, *, campaign_id: str, target_id: str | None = None,
     expected_head: str | None = None,
+    mission_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fixed read-only cloud proof; distinct from Native/Hermes decoupling."""
     objectives = (
@@ -163,7 +164,7 @@ def create_cloud_hermes_continuation_campaign(
         objective="Prove two governed read-only cloud slices continue on authoritative runtime acceptance.",
         allowed_backends=["hermes_opensandbox"],
         allowed_scope_tags=[scope for scope, _ in objectives],
-        slice_plan=plan, max_slices=2,
+        slice_plan=plan, max_slices=2, mission_binding=mission_binding,
     )
 
 
