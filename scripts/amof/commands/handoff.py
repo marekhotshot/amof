@@ -1908,6 +1908,11 @@ def _verify_campaign_execution_target(packet: PreparedHandoffPacket, manifest: d
     expected_url = f"https://github.com/{binding['repo_owner']}/{binding['repo_name']}.git"
     if repo.get("url") != expected_url:
         raise ValueError("campaign execution repository URL mismatch")
+    if path == job_mount:
+        if (repo.get("sha") != binding["expected_source_sha"]
+                or repo.get("target_id") != binding["target_id"]):
+            raise ValueError("campaign execution packaged source identity mismatch")
+        return
     try:
         completed = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "HEAD"],
