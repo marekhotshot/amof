@@ -162,6 +162,11 @@ class HandoffAtomicClaimTests(unittest.TestCase):
                         SimpleNamespace(handoff_id=first["handoff_id"], confirm=True))
                 external.assert_not_called()
             self.assertFalse(handoff._execution_claim_path(first["handoff_id"]).exists())
+            job_manifest = {"repos": [{"name": "repo", "url": "https://github.com/example/repo.git",
+                                       "path": "/run-work/files"}]}
+            with (patch.object(handoff.subprocess, "run", return_value=SimpleNamespace(stdout="a" * 40)) as git):
+                handoff._verify_campaign_execution_target(handoff._load_prepared_packet(first["handoff_id"])[1], job_manifest)
+                self.assertEqual(git.call_args.args[0][2], "/run-work/files")
             right_manifest = {"repos": [{"name": "repo", "url": "https://github.com/example/repo.git",
                                           "path": binding["workspace_id"]}]}
             with (patch.object(handoff, "_load_execution_manifest", return_value=right_manifest),

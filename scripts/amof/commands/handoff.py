@@ -1897,7 +1897,12 @@ def _verify_campaign_execution_target(packet: PreparedHandoffPacket, manifest: d
     repo = repos[0]
     workspace = Path(binding["workspace_id"])
     path = Path(str(repo.get("path") or ""))
-    if (not path.is_absolute() or path.resolve(strict=False) != workspace.resolve(strict=False)
+    # Execution Jobs package the pinned checkout into their fixed, isolated mount.
+    # The repository URL and Git HEAD checks below still bind that mount to the
+    # campaign's frozen source identity.
+    job_mount = Path("/run-work/files")
+    if (not path.is_absolute()
+            or path.resolve(strict=False) not in {workspace.resolve(strict=False), job_mount}
             or repo.get("name") != binding["repo_name"]):
         raise ValueError("campaign execution workspace or repository mismatch")
     expected_url = f"https://github.com/{binding['repo_owner']}/{binding['repo_name']}.git"
@@ -1905,7 +1910,7 @@ def _verify_campaign_execution_target(packet: PreparedHandoffPacket, manifest: d
         raise ValueError("campaign execution repository URL mismatch")
     try:
         completed = subprocess.run(
-            ["git", "-C", str(workspace), "rev-parse", "HEAD"],
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
             capture_output=True, text=True, check=True, timeout=10,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
