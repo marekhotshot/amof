@@ -1557,6 +1557,13 @@ def _host_extension_budget_open(model: str) -> bool:
         return False
 
 
+def _workspace_code_scope(tools: NativeAgentTools, writable: bool) -> bool:
+    # Exact-file code grants need the same bounded coding budget as directory
+    # grants. They remain restricted to their original approved paths.
+    return bool(writable and (getattr(tools, "workspace_directory", None) or
+                              getattr(tools, "exact_code_paths", None)))
+
+
 def _run_model_loop(
     *,
     goal: str,
@@ -1634,7 +1641,7 @@ def _run_model_loop(
     # authority grant or an increase to the model-call budget.
     read_counts: dict[str, int] = {}
     repeated_reads_since_write = 0
-    workspace_code = bool(writable and getattr(tools, "workspace_directory", None))
+    workspace_code = _workspace_code_scope(tools, writable)
     read_stall_gate = workspace_code and "AMOF_READ_STALL_GATE: enabled" in goal
     write_or_checkpoint_turn = False
     run_key = _safe_id(run_id or "native-run")

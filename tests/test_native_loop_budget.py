@@ -55,6 +55,18 @@ class NativeLoopBudgetPolicyTests(unittest.TestCase):
         policy.validate()
         self.assertEqual(lb.default_policy().absolute_turn_limit, 18)
 
+    def test_exact_file_code_grant_uses_coding_budget_without_widening_scope(self) -> None:
+        from amof.execution_backends import amof_native
+
+        class ExactTools:
+            workspace_directory = None
+            exact_code_paths = ("src/AgentSourceSettings.tsx",)
+
+        self.assertTrue(amof_native._workspace_code_scope(ExactTools(), True))
+        self.assertFalse(amof_native._workspace_code_scope(ExactTools(), False))
+        ExactTools.exact_code_paths = None
+        self.assertFalse(amof_native._workspace_code_scope(ExactTools(), True))
+
     def test_workspace_recent_window_and_stagnation(self) -> None:
         state = LoopBudgetState(lb.workspace_code_policy())
         for turn in range(1, 17):
