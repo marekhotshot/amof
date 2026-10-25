@@ -121,6 +121,51 @@ class RomuloReadinessPilotTests(unittest.TestCase):
         self.assertEqual(load_approval(approval["approval_id"], store=self.store)["status"], "consumed")
         self.assertNotIn(SENTINEL, json.dumps(result.receipt))
 
+    def test_reviewed_uid_resource_version_and_context_are_bound_to_approval(self):
+        body = _body()
+        body["exact_operation"].update({
+            "expected_context": "synthetic-context", "expected_uid": "uid-syn-01",
+            "expected_resource_version": "17",
+        })
+        proposal = propose_kubernetes_capability(
+            run_id="synthetic-proposal-observed", body=body,
+            requested_by="worker:synthetic", store=self.store,
+        )
+        approval = approve_proposal(
+            proposal["proposal_id"], ttl="30m",
+            approved_by="operator:synthetic-simulated", store=self.store,
+        )
+        expected = {"expected_context": "synthetic-context", "expected_uid": "uid-syn-01",
+                    "expected_resource_version": "17"}
+        for field, value in (("expected_context", "wrong-context"),
+                             ("expected_uid", "wrong-uid"),
+                             ("expected_resource_version", "18")):
+            denied = self._execute(approval["approval_id"], **{**expected, field: value})
+            self.assertEqual(denied.code, "wrong_operation")
+            self.assertEqual(self.transport.calls, [])
+        accepted = self._execute(approval["approval_id"], **expected)
+        self.assertTrue(accepted.ok)
+
+    def test_stale_reviewed_resource_version_stops_before_patch(self):
+        body = _body()
+        body["exact_operation"].update({
+            "expected_context": "synthetic-context", "expected_uid": "uid-syn-01",
+            "expected_resource_version": "17",
+        })
+        proposal = propose_kubernetes_capability(
+            run_id="synthetic-proposal-stale", body=body,
+            requested_by="worker:synthetic", store=self.store,
+        )
+        approval = approve_proposal(proposal["proposal_id"], ttl="30m",
+                                    approved_by="operator:synthetic-simulated", store=self.store)
+        self.transport.objects[(NAMESPACE, DEPLOYMENT)]["metadata"]["resourceVersion"] = "18"
+        result = self._execute(approval["approval_id"],
+                               expected_context="synthetic-context", expected_uid="uid-syn-01",
+                               expected_resource_version="17")
+        self.assertFalse(result.ok)
+        self.assertEqual([call["op"] for call in self.transport.calls], ["get"])
+        self.assertEqual(load_approval(approval["approval_id"], store=self.store)["status"], "consumed")
+
     def test_missing_expired_consumed_and_mismatched_approvals_have_zero_transport_calls(self):
         self.assertEqual(self._execute().code, "no_approval")
         self.assertEqual(self.transport.calls, [])

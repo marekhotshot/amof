@@ -166,6 +166,9 @@ class KubernetesOperation:
     mission_id: str = ""
     requested_by: str = ""
     run_id: str = ""
+    expected_context: str = ""
+    expected_uid: str = ""
+    expected_resource_version: str = ""
 
 
 @dataclass
@@ -312,6 +315,10 @@ def operation_digest(operation: KubernetesOperation) -> str:
         "name": operation.name,
         "patch": normalize_patch(operation.patch),
     }
+    if operation.expected_context:
+        payload["expected_context"] = operation.expected_context
+        payload["expected_uid"] = operation.expected_uid
+        payload["expected_resource_version"] = operation.expected_resource_version
     return _sha256_canonical(payload)
 
 
@@ -346,13 +353,20 @@ def classify_operation(body: dict[str, Any], operation: KubernetesOperation) -> 
     exact = frozen.get("exact_operation")
     if operation.patch is not None and "readinessProbe" in operation.patch and exact is None:
         return "exact_operation_required"
-    if exact is not None and {
+    actual_exact = {
         "namespace": namespace,
         "verb": verb,
         "resource": resource,
         "name": operation.name,
         "patch": normalize_patch(operation.patch),
-    } != exact:
+    }
+    if exact is not None and "expected_context" in exact:
+        actual_exact.update({
+            "expected_context": operation.expected_context,
+            "expected_uid": operation.expected_uid,
+            "expected_resource_version": operation.expected_resource_version,
+        })
+    if exact is not None and actual_exact != exact:
         return "wrong_operation"
     return None
 
@@ -1296,6 +1310,9 @@ def execute_kubernetes_capability(
         mission_id=str(operation.mission_id or "").strip(),
         requested_by=str(operation.requested_by or "").strip(),
         run_id=str(operation.run_id or "").strip(),
+        expected_context=str(operation.expected_context or "").strip(),
+        expected_uid=str(operation.expected_uid or "").strip(),
+        expected_resource_version=str(operation.expected_resource_version or "").strip(),
     )
     if not op.run_id:
         raise KubernetesCapabilityError("run_id is required", code="invalid_request")

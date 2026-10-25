@@ -184,9 +184,11 @@ def normalize_kubernetes_capability_body(value: Any) -> dict[str, Any]:
     exact_operation = None
     if value.get("exact_operation") is not None:
         raw = value["exact_operation"]
-        if not isinstance(raw, dict) or set(raw) != {"namespace", "verb", "resource", "name", "patch"}:
+        base_fields = {"namespace", "verb", "resource", "name", "patch"}
+        observed_fields = {"expected_context", "expected_uid", "expected_resource_version"}
+        if not isinstance(raw, dict) or set(raw) not in (base_fields, base_fields | observed_fields):
             raise CapabilityBodyError(
-                "exact_operation requires namespace, verb, resource, name and patch only"
+                "exact_operation requires the exact target and optional complete observed identity"
             )
         exact_namespace = str(raw["namespace"] or "").strip()
         exact_verb = str(raw["verb"] or "").strip().lower()
@@ -222,6 +224,17 @@ def normalize_kubernetes_capability_body(value: Any) -> dict[str, Any]:
             "name": exact_name,
             "patch": exact_patch,
         }
+        if observed_fields <= set(raw):
+            context = raw["expected_context"]
+            uid = raw["expected_uid"]
+            resource_version = raw["expected_resource_version"]
+            if ("readinessProbe" not in exact_patch or
+                    not isinstance(context, str) or re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._:@-]{0,251}[A-Za-z0-9])?", context) is None or
+                    not isinstance(uid, str) or re.fullmatch(r"[A-Za-z0-9._-]{1,128}", uid) is None or
+                    not isinstance(resource_version, str) or re.fullmatch(r"[A-Za-z0-9._-]{1,128}", resource_version) is None):
+                raise CapabilityBodyError("invalid observed Deployment identity")
+            exact_operation.update({"expected_context": context, "expected_uid": uid,
+                                    "expected_resource_version": resource_version})
 
     return {
         "capability": capability,

@@ -572,6 +572,11 @@ class LiveKubernetesExecutor:
         )
         kubeconfig = str(target.kubeconfig)
         context = target.context
+        if operation.expected_context and context != operation.expected_context:
+            raise KubernetesCapabilityError(
+                "registered Kubernetes context differs from frozen operation",
+                code="wrong_cluster",
+            )
         before_obj = self.transport.get_deployment(
             kubeconfig=kubeconfig,
             context=context,
@@ -582,6 +587,14 @@ class LiveKubernetesExecutor:
         readiness = patch.get("readinessProbe") if patch else None
         readiness_container = readiness["container"] if readiness else None
         before = safe_deployment_evidence(before_obj, readiness_container=readiness_container)
+        if readiness and operation.expected_uid and (
+            before.get("uid") != operation.expected_uid or
+            before.get("resourceVersion") != operation.expected_resource_version
+        ):
+            raise KubernetesCapabilityError(
+                "Deployment UID or resourceVersion changed since reviewed Agreement",
+                code="stale_observation",
+            )
         expected_annotation = None
         expected_readiness = None
         after_obj = before_obj
