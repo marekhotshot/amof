@@ -1,0 +1,26 @@
+name: Romulo exact adapter
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Exact capability and product bridge contracts
+        env:
+          PYTHONPATH: scripts
+        run: >-
+          python3 -m unittest
+          tests.test_kubernetes_capability_v0
+          tests.test_kubernetes_live_execution_gate
+          tests.test_romulo_product_bridge
+          tests.test_romulo_readiness_pilot
