@@ -114,6 +114,73 @@ class KubernetesCapabilityV0Tests(unittest.TestCase):
         values.update(overrides)
         return KubernetesOperation(**values)
 
+    def _exact_body(self):
+        return _body(
+            exact_operation={
+                "namespace": "demo",
+                "verb": "patch",
+                "resource": "deployments",
+                "name": "web",
+                "patch": {"replicas": 3},
+            }
+        )
+
+    def test_exact_operation_rejects_changed_target_action_and_patch_before_transport(self) -> None:
+        class Spy(FixtureKubernetesExecutor):
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            def execute(self, operation):
+                self.calls += 1
+                return super().execute(operation)
+
+        spy = Spy()
+        proposal = self._propose(self._exact_body())
+        approval = self._approve(proposal["proposal_id"])
+        for index, changes in enumerate((
+            {"name": "other"},
+            {"verb": "get", "patch": None},
+            {"patch": {"replicas": 4}},
+        )):
+            result = execute_kubernetes_capability(
+                operation=self._op(run_id=f"exact-denial-{index}", **changes),
+                approval_id=approval["approval_id"],
+                executor=spy,
+                store=self.store,
+            )
+            self.assertFalse(result.ok)
+            self.assertEqual(result.code, "wrong_operation")
+            self.assertEqual(result.receipt["acceptance_state"], ACCEPTANCE_FAIL)
+            self.assertFalse(result.receipt["executed"])
+        self.assertEqual(spy.calls, 0)
+        accepted = execute_kubernetes_capability(
+            operation=self._op(run_id="exact-accepted"),
+            approval_id=approval["approval_id"],
+            executor=spy,
+            store=self.store,
+        )
+        self.assertTrue(accepted.ok)
+        self.assertEqual(spy.calls, 1)
+        self.assertEqual(accepted.receipt["granted"]["exact_operation"]["name"], "web")
+
+    def test_exact_operation_rejects_protected_or_unsupported_patch(self) -> None:
+        with self.assertRaises(CapabilityBodyError):
+            normalize_kubernetes_capability_body(
+                _body(exact_operation={
+                    "namespace": "kube-system", "verb": "patch",
+                    "resource": "deployments", "name": "web", "patch": {"replicas": 3},
+                })
+            )
+        with self.assertRaises(CapabilityBodyError):
+            normalize_kubernetes_capability_body(
+                _body(exact_operation={
+                    "namespace": "demo", "verb": "patch",
+                    "resource": "deployments", "name": "web",
+                    "patch": {"readinessProbe": {"timeoutSeconds": 3}},
+                })
+            )
+
     def test_read_body_rejects_mutate_verb(self) -> None:
         with self.assertRaises(CapabilityBodyError):
             normalize_kubernetes_capability_body(
