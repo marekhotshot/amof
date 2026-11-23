@@ -36,6 +36,10 @@ chmod 0755 "${FAKE_BIN}/cursor"
   env -u AMOF_ROOT -u AMOF_CWD -u PYTHONPATH \
     PATH="${FAKE_BIN}:${PATH}" \
     AMOF_HOME="${AMOF_HOME_DIR}" \
+    "${ARTIFACT_PATH}" proof show AMOF-15MIN-RUNTIME-AUTHORITY-DEMO-001 --json > "${LOG_DIR}/public-proof.json"
+  env -u AMOF_ROOT -u AMOF_CWD -u PYTHONPATH \
+    PATH="${FAKE_BIN}:${PATH}" \
+    AMOF_HOME="${AMOF_HOME_DIR}" \
     "${ARTIFACT_PATH}" check > "${LOG_DIR}/check.txt" 2>&1
   env -u AMOF_ROOT -u AMOF_CWD -u PYTHONPATH \
     PATH="${FAKE_BIN}:${PATH}" \
@@ -71,6 +75,23 @@ if ! rg -q "^AMOF v${EXPECTED_VERSION}$" "${LOG_DIR}/version.txt"; then
   echo "FAIL: standalone artifact did not report AMOF v${EXPECTED_VERSION}" >&2
   exit 1
 fi
+
+python3 - "${LOG_DIR}/public-proof.json" <<'PYPROOF'
+import json
+from pathlib import Path
+import sys
+
+proof = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+expected = {
+    "ticket_id": "AMOF-15MIN-RUNTIME-AUTHORITY-DEMO-001",
+    "promotion_sha": "2fe9a4516f568d3d4aa1e0124df99f8b377ab097",
+    "acceptance": "PASS",
+    "verification": "PASS",
+    "gitops_sha": None,
+}
+if any(key not in proof or proof[key] != value for key, value in expected.items()):
+    raise SystemExit("FAIL: standalone artifact did not return the pinned public proof")
+PYPROOF
 
 if ! rg -q 'installed \(version probe timed out: cursor --version\)' "${LOG_DIR}/check.txt"; then
   echo "FAIL: standalone artifact check did not report the timed out cursor version probe" >&2

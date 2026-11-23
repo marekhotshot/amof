@@ -1,0 +1,25 @@
+{
+  "acceptance": "PASS",
+  "authority": [
+    "reference.action",
+    "kubernetes.mutate",
+    "git.write"
+  ],
+  "bundle_id": "76030098c895348cf23a8362d51daad97ecc6a0f18d47dfa61bf7a62413bc64b",
+  "candidate_branch": "ticket/AMOF-15MIN-RUNTIME-AUTHORITY-DEMO-001-demo",
+  "environment": {
+    "identity": null,
+    "kind": "none",
+    "note": "Code-only promotion. Reproduce with: python3 scripts/amof.py demo migration --non-interactive"
+  },
+  "evidence_digest": "sha256:e368b4143b424502821f69a1b6469d18035562d54d70eb61c734ab3836773d98",
+  "gitops_sha": null,
+  "promotion_id": "promote-76030098c895348c",
+  "promotion_sha": "2fe9a4516f568d3d4aa1e0124df99f8b377ab097",
+  "proof": "docs/proofs/AMOF-15MIN-RUNTIME-AUTHORITY-DEMO-001.json",
+  "schema": "amof.public_promotion_proof/v0",
+  "source_sha": "b54bfdcdb4b099145543d99b1bf438db4c493f65",
+  "ticket_id": "AMOF-15MIN-RUNTIME-AUTHORITY-DEMO-001",
+  "verification": "PASS",
+  "verification_method": "amof_demo_non_interactive"
+}

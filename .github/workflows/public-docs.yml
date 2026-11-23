@@ -24,8 +24,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build allowlisted public docs
         run: python3 scripts/build-public-docs.py --out dist/public-docs
+      # Keep deploy inputs scoped to these steps; publish only a boolean.
+      - name: Check Cloudflare deploy configuration
+        id: deploy-config
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+            printf 'enabled=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'enabled=false\n' >> "$GITHUB_OUTPUT"
+          fi
       - name: Deploy to Cloudflare Pages
-        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+        if: ${{ steps.deploy-config.outputs.enabled == 'true' }}
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

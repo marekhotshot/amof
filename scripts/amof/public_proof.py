@@ -9,12 +9,22 @@ promote-main commit identity plus public-safe verification labels.
 
 from __future__ import annotations
 
+import hashlib
 import json
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
 SCHEMA = "amof.public_promotion_proof/v0"
 PROOFS_DIRNAME = "docs/proofs"
+# Exact byte mirrors of these already-published docs/proofs files only.
+# An unreviewed checkout file cannot become a packaged proof.
+_PUBLIC_PROOFS = (
+    ("AMOF-15MIN-RUNTIME-AUTHORITY-DEMO-001", 984,
+     "e337d6bf2975b06d44827286d0f2ff6173a5e9443b3b3482f6efa79a00e74bd6"),
+    ("AMOF-K8S-LIVE-EXECUTION-GATE-001", 974,
+     "d81c961a8fb15b3cc4cabadc9bea684734961adc21863cc20a34724bce1a1530"),
+)
 REQUIRED_FIELDS = (
     "schema",
     "promotion_sha",
@@ -58,8 +68,6 @@ class PublicProofError(ValueError):
 
 
 def _sha256_canonical(value: Any) -> str:
-    import hashlib
-
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
 
@@ -107,12 +115,23 @@ def proofs_dir(repo_root: Path | None = None) -> Path:
 
 
 def list_proofs(repo_root: Path | None = None) -> list[dict[str, Any]]:
-    directory = proofs_dir(repo_root)
-    if not directory.is_dir():
-        return []
+    directory = files("amof").joinpath("proofs") if repo_root is None else proofs_dir(repo_root.resolve())
     out = []
-    for path in sorted(directory.glob("AMOF-*.json")):
-        out.append(normalize_public_proof(json.loads(path.read_text(encoding="utf-8"))))
+    for ticket_id, expected_size, expected_hash in _PUBLIC_PROOFS:
+        path = directory.joinpath(f"{ticket_id}.json")
+        try:
+            if repo_root is not None and isinstance(path, Path) and path.resolve(strict=True) != path:
+                raise PublicProofError(f"public proof {ticket_id} has a redirected path")
+            with path.open("rb") as handle:
+                raw = handle.read(expected_size + 1)
+        except (OSError, RuntimeError):
+            raise PublicProofError(f"public proof {ticket_id} is unavailable") from None
+        if len(raw) != expected_size or hashlib.sha256(raw).hexdigest() != expected_hash:
+            raise PublicProofError(f"public proof {ticket_id} checksum mismatch")
+        proof = normalize_public_proof(json.loads(raw))
+        if proof["ticket_id"] != ticket_id:
+            raise PublicProofError(f"public proof {ticket_id} has an unexpected identity")
+        out.append(proof)
     return out
 
 
@@ -120,10 +139,7 @@ def load_proof(ticket_or_sha: str, *, repo_root: Path | None = None) -> dict[str
     ref = str(ticket_or_sha or "").strip()
     if not ref:
         raise PublicProofError("ticket or SHA is required")
-    directory = proofs_dir(repo_root)
-    direct = directory / f"{ref}.json"
-    if direct.is_file():
-        return normalize_public_proof(json.loads(direct.read_text(encoding="utf-8")))
+    # The reference is an identifier, never a filesystem or resource path.
     for proof in list_proofs(repo_root):
         if ref in {proof["ticket_id"], proof["promotion_sha"], proof["source_sha"], proof["promotion_id"]}:
             return proof
