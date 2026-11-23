@@ -4,21 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 from ..public_proof import PublicProofError, list_proofs, load_proof
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
-
-
 def cmd_proof(args: argparse.Namespace) -> int:
     action = str(getattr(args, "proof_cmd", "") or "list")
-    root = _repo_root()
     try:
         if action == "list":
-            proofs = list_proofs(root)
+            proofs = list_proofs()
             if getattr(args, "json", False):
                 print(json.dumps(proofs, indent=2, sort_keys=True))
             else:
@@ -34,7 +28,7 @@ def cmd_proof(args: argparse.Namespace) -> int:
                         f"{authority}  {proof['acceptance']}"
                     )
             return 0
-        proof = load_proof(str(args.ref), repo_root=root)
+        proof = load_proof(str(args.ref))
         if getattr(args, "json", False):
             print(json.dumps(proof, indent=2, sort_keys=True))
         else:

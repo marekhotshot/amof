@@ -50,6 +50,8 @@ amof = [
     "contracts/examples/*.json",
     "contracts/examples/*.md",
     "examples/write-scope/*.json",
+    "proofs/AMOF-15MIN-RUNTIME-AUTHORITY-DEMO-001.json",
+    "proofs/AMOF-K8S-LIVE-EXECUTION-GATE-001.json",
 ]
 
 [tool.setuptools.packages.find]
